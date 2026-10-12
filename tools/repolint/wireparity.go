@@ -28,6 +28,7 @@ const (
 	tsLookFile      = "desktop/frontend-next/src/port/look.ts"
 	tsHubFile       = "desktop/frontend-next/src/port/hub.ts"
 	tsChartFile     = "desktop/frontend-next/src/ui/chart/spec.ts"
+	tsSurfaceFile   = "desktop/frontend-next/src/ui/surface/spec.ts"
 )
 
 // mirroredWireTypes are the Go types the desktop keeps a second, hand-written
@@ -36,6 +37,13 @@ const (
 // wrong. Declared and not inferred, for the reason the sensitive paths are: no
 // spelling tells a mirrored contract from a struct with json tags.
 var mirroredWireTypes = []wireMirror{
+	{"internal/contract/event/event.go", "AskAnswer", tsWireFile, "AskAnswer"},
+	{"internal/contract/eventwire/ask.go", "AskQuestion", tsWireFile, "AskQuestion"},
+	{"internal/contract/surfacespec/spec.go", "Spec", tsSurfaceFile, "SurfaceSpec"},
+	{"internal/contract/surfacespec/spec.go", "Node", tsWireFile, "ExtensionViewNode"},
+	{"internal/contract/surfacespec/spec.go", "Field", tsWireFile, "SurfaceField"},
+	{"internal/contract/surfacespec/spec.go", "Option", tsWireFile, "SurfaceOption"},
+	{"internal/contract/eventwire/extension.go", "ExtensionViewNode", tsWireFile, "ExtensionViewNode"},
 	{"internal/contract/eventwire/extension.go", "ExtensionSurface", tsWireFile, "ExtensionSurface"},
 	{"internal/contract/event/notice_payload.go", "DormantPermissionRule", tsBoundaryFile, "DormantPermissionRule"},
 	{"internal/frontend/serve/branch.go", "workspaceBranchesView", tsWorkspaceFile, "WorkspaceBranches"},

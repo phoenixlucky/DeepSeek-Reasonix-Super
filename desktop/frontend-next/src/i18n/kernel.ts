@@ -22,6 +22,12 @@ export const ACCOUNT_SIGNIN_DISABLED = "account.signin_disabled";
 export const SAVED_NOT_APPLIED: readonly string[] = ["provider.saved_while_running", "provider.saved_model_unlisted", "runtime.rebuild_failed", "runtime.saved_while_running"];
 
 const SAID: Record<string, string> = {
+  "surface.value_invalid": "填写内容不符合字段要求，请检查后重试",
+  "surface.expired": "界面已失效，请等待新的请求",
+  "surface.schema_invalid": "界面描述不符合约定",
+  "surface.spec_version_unsupported": "界面版本暂不支持",
+  "surface.limit_exceeded": "界面内容超过限制",
+  "surface.component_unknown": "界面包含不支持的组件",
   "surface.replay_incomplete": "扩展界面恢复失败",
   "shell.destructive_target": "递归删除目标受保护或超出授权范围；请使用工作区或授权目录内的字面路径",
   "shell.analysis_unknown": "无法确定递归删除范围；请使用字面命令名、路径和解释器内容",

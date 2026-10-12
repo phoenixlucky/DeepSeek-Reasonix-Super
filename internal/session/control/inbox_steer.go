@@ -303,7 +303,7 @@ func (c *Controller) lockPromptFor(ctx context.Context, kind string) bool {
 
 func askAnswersHaveSelection(answers []event.AskAnswer) bool {
 	for _, answer := range answers {
-		if len(answer.Selected) > 0 {
+		if len(answer.Selected) > 0 || len(answer.Value) > 0 {
 			return true
 		}
 	}

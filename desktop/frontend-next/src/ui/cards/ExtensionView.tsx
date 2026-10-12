@@ -1,4 +1,5 @@
 import type { ExtensionViewNode } from "../../port/wire";
+import type { ReactNode } from "react";
 
 // The host half of the composed-surface contract: an extension sends a tree of
 // primitives, and every one of them is drawn here with the components this app
@@ -9,27 +10,28 @@ import type { ExtensionViewNode } from "../../port/wire";
 interface Props {
   body: ExtensionViewNode[];
   onAction?: (actionId: string) => void;
+  renderField?: (node: ExtensionViewNode) => ReactNode;
 }
 
-export function ExtensionView({ body, onAction }: Props) {
+export function ExtensionView({ body, onAction, renderField }: Props) {
   return (
     <div className="xview">
-      <Nodes nodes={body} onAction={onAction} />
+      <Nodes nodes={body} onAction={onAction} renderField={renderField} />
     </div>
   );
 }
 
-function Nodes({ nodes, onAction }: { nodes: ExtensionViewNode[]; onAction?: (id: string) => void }) {
+function Nodes({ nodes, onAction, renderField }: { nodes: ExtensionViewNode[]; onAction?: (id: string) => void; renderField?: Props["renderField"] }) {
   return (
     <>
       {nodes.map((n, i) => (
-        <Node key={`${n.kind}:${n.key ?? n.actionId ?? n.value ?? i}`} n={n} onAction={onAction} />
+        <Node key={`${n.kind}:${n.key ?? n.actionId ?? n.value ?? i}`} n={n} onAction={onAction} renderField={renderField} />
       ))}
     </>
   );
 }
 
-function Node({ n, onAction }: { n: ExtensionViewNode; onAction?: (id: string) => void }) {
+function Node({ n, onAction, renderField }: { n: ExtensionViewNode; onAction?: (id: string) => void; renderField?: Props["renderField"] }) {
   switch (n.kind) {
     case "text":
       return <span className="xv-t" data-tone={n.tone}>{n.value}</span>;
@@ -41,13 +43,13 @@ function Node({ n, onAction }: { n: ExtensionViewNode; onAction?: (id: string) =
     case "row":
       return (
         <div className="xv-row">
-          <Nodes nodes={n.children ?? []} onAction={onAction} />
+          <Nodes nodes={n.children ?? []} onAction={onAction} renderField={renderField} />
         </div>
       );
     case "stack":
       return (
         <div className="xv-stack">
-          <Nodes nodes={n.children ?? []} onAction={onAction} />
+          <Nodes nodes={n.children ?? []} onAction={onAction} renderField={renderField} />
         </div>
       );
     case "kv":
@@ -74,6 +76,8 @@ function Node({ n, onAction }: { n: ExtensionViewNode; onAction?: (id: string) =
       );
     case "divider":
       return <hr className="xv-hr" />;
+    case "field": case "choice_card":
+      return renderField?.(n) ?? null;
     default:
       // A node kind this build does not know is skipped rather than shown as
       // a blank: an older frontend meeting a newer extension should look like

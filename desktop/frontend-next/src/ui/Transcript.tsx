@@ -12,6 +12,7 @@ import { chartOfTool } from "./chart/spec";
 import { GuardianCard } from "./cards/GuardianCard";
 import { ApprovalCard, type PlanAction } from "./cards/ApprovalCard";
 import { AskCard } from "./cards/AskCard";
+import { SurfaceCard, surfaceTool } from "./surface/SurfaceCard";
 import { ElicitCard } from "./cards/ElicitCard";
 import { SayCard, type ReplyActions } from "./cards/SayCard";
 import { CompactionCard } from "./cards/CompactionCard";
@@ -51,7 +52,7 @@ interface Props {
   onApprove: (itemId: string, id: string, v: ApprovalVerdict) => Promise<void>;
   onFullAccess: (itemId: string) => Promise<void>;
   onPlan: (itemId: string, id: string, action: PlanAction) => Promise<void>;
-  onAnswer: (itemId: string, id: string, answers: { questionId: string; selected: string[] }[]) => Promise<void>;
+  onAnswer: (itemId: string, id: string, answers: { questionId: string; selected: string[]; value?: Record<string, unknown> }[]) => Promise<void>;
   onForget: (itemId: string, name: string) => void;
   // Takes a still-queued line back. Only rows the kernel has given an
   // item id can offer it, and only until the turn reads them.
@@ -716,6 +717,7 @@ const Row = memo(function Row({
       // needs. Drawing the tool call too put two copies of the same question on
       // screen, each answerable.
       if (it.tool.name === "ask") return null;
+      { const surface = surfaceTool(it.tool, it.running); if (surface !== undefined) return surface; }
       return (() => {
         const card = (
           <ToolCard
@@ -743,7 +745,7 @@ const Row = memo(function Row({
     case "approval":
       return <ApprovalCard item={it} onApprove={onApprove} onFullAccess={onFullAccess} onPlan={onPlan} />;
     case "ask":
-      return it.ask.origin ? <ElicitCard item={it} onAnswer={onAnswer} /> : <AskCard item={it} onAnswer={onAnswer} />;
+      return it.ask.questions.some(q => q.surface) ? <SurfaceCard item={it} onAnswer={onAnswer} /> : it.ask.origin ? <ElicitCard item={it} onAnswer={onAnswer} /> : <AskCard item={it} onAnswer={onAnswer} />;
     case "compaction":
       return <CompactionCard c={it.c} done={it.done} />;
 

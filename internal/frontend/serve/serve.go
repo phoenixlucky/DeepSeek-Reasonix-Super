@@ -684,20 +684,6 @@ func (s *Server) goal(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// answer responds to an ask_request.
-func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		ID      string            `json:"id"`
-		Answers []event.AskAnswer `json:"answers"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
-		missingField(w, "id")
-		return
-	}
-	answerAs(s.ctl(), r, body.ID, body.Answers)
-	w.WriteHeader(http.StatusNoContent)
-}
-
 // forget deletes a saved memory by name.
 func (s *Server) forget(w http.ResponseWriter, r *http.Request) {
 	var body struct {

@@ -540,11 +540,12 @@ func TestUpdateSinkAskRequestUsesPermissionChoices(t *testing.T) {
 	}}
 	sink := newUpdateSink(fn, "sess-1")
 	got := make(chan []event.AskAnswer, 1)
-	sink.bindAnswer(func(id string, answers []event.AskAnswer) {
+	sink.bindAnswer(func(id string, answers []event.AskAnswer) error {
 		if id != "ask-1" {
 			t.Errorf("answer id = %q, want ask-1", id)
 		}
 		got <- answers
+		return nil
 	})
 
 	sink.Emit(event.Event{Kind: event.AskRequest, Ask: event.Ask{
@@ -577,7 +578,7 @@ func TestUpdateSinkAskCancelledReturnsNoAnswers(t *testing.T) {
 	}}
 	sink := newUpdateSink(fn, "sess-1")
 	got := make(chan []event.AskAnswer, 1)
-	sink.bindAnswer(func(_ string, answers []event.AskAnswer) { got <- answers })
+	sink.bindAnswer(func(_ string, answers []event.AskAnswer) error { got <- answers; return nil })
 
 	sink.Emit(event.Event{Kind: event.AskRequest, Ask: event.Ask{
 		ID: "ask-2",
@@ -744,7 +745,7 @@ func TestUpdateSinkDeclinesAServersFormWithoutPrompting(t *testing.T) {
 	}}
 	sink := newUpdateSink(fn, "sess-1")
 	got := make(chan []event.AskAnswer, 1)
-	sink.bindAnswer(func(_ string, answers []event.AskAnswer) { got <- answers })
+	sink.bindAnswer(func(_ string, answers []event.AskAnswer) error { got <- answers; return nil })
 	sink.Emit(event.Event{Kind: event.AskRequest, Ask: event.Ask{
 		ID:        "ask-3",
 		Origin:    &event.AskOrigin{Kind: event.AskOriginMCP, Source: "evil"},

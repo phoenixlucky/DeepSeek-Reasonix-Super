@@ -2,6 +2,15 @@
 // alone — one catalogue is still the model, and this file is read as its
 // continuation: same keying by Chinese source text, same grouping by screen.
 export const EN_SETTINGS: Record<string, string> = {
+  "已提交": "Submitted",
+  "未选择": "No selection",
+  "暂不回答": "Skip for now",
+  "填写内容不符合字段要求，请检查后重试": "The values do not meet the field requirements. Check them and retry.",
+  "界面已失效，请等待新的请求": "This surface has expired. Wait for a new request.",
+  "界面描述不符合约定": "The surface description does not match the contract.",
+  "界面版本暂不支持": "This surface version is not supported.",
+  "界面内容超过限制": "The surface exceeds the supported limits.",
+  "界面包含不支持的组件": "The surface contains an unsupported component.",
   "浏览器标签": "Browser tabs",
   "关闭其他浏览器标签": "Close other browser tabs",
   "关闭全部浏览器标签": "Close all browser tabs",

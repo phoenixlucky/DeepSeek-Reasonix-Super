@@ -102,12 +102,13 @@ export function useGateActions({ port, dispatch, refreshStatus, fail, onRevise }
   );
 
   const onAnswer = useCallback(
-    async (itemId: string, id: string, answers: { questionId: string; selected: string[] }[]) => {
+    async (itemId: string, id: string, answers: { questionId: string; selected: string[]; value?: Record<string, unknown> }[]) => {
       try {
         await port.answer(id, answers);
-        dispatch({ kind: "__decided", id: itemId, answers: answers.map((a) => a.selected) } as never);
+        dispatch({ kind: "__decided", id: itemId, answers: answers.map((a) => a.selected), values: answers.find(a => a.value !== undefined)?.value } as never);
       } catch (e) {
         fail(e);
+        if (answers.some(a => a.value !== undefined)) throw e;
       }
     },
     [port, fail],

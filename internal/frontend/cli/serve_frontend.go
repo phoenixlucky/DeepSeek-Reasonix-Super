@@ -396,7 +396,8 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 	// rebuilds this controller in place before the normal web UI is exposed.
 	paneSink := reporter.Wrap(bc)
 	ctrl, err := setupProfileWithOverrides(ctx, *model, *maxSteps, false, paneSink, profile, cliBuildOverrides{
-		Version: opts.version, OnSessionRecovered: cliSessionRecoveredHandler(leases),
+		NativeSurfaces: true,
+		Version:        opts.version, OnSessionRecovered: cliSessionRecoveredHandler(leases),
 		ProviderResolver: providerResolver,
 	})
 	if err != nil {
@@ -406,7 +407,6 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 	defer ctrl.Close()
 	SetTaskJobKiller(ctrlKillerAdapter{ctrl})
 
-	// Auto-save target: reuse the resumed file, else a fresh one — same as chat.
 	if *resume != "" {
 		_ = ctrl.Resume(resumeSession, *resume)
 	} else if *sessionID != "" {
@@ -427,7 +427,7 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 
 	// A hub, so this frontend drives several sessions at once the way the studio
 	// window does. The session this command was started for is the first pane.
-	hub := serve.NewHub(serve.HubOptions{Serve: serveCfg, DecorateSink: reporter.Wrap, ProviderResolver: providerResolver, Page: pageOrWarn(*page)})
+	hub := serve.NewHub(serve.HubOptions{Serve: serveCfg, NativeSurfaces: true, DecorateSink: reporter.Wrap, ProviderResolver: providerResolver, Page: pageOrWarn(*page)})
 	adoptFirstPane(hub, ctrl, bc, paneSink, serveCfg, leases)
 	return runServeFrontend(ctrl, hub, serveCfg, serveFrontendOptions{
 		command: opts.command, address: *addr,

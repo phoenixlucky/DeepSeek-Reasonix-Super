@@ -15,6 +15,7 @@ import (
 )
 
 type cliBuildOverrides struct {
+	NativeSurfaces bool
 	// Version marks a top-level session of a real installation, which is what
 	// lets the assembly record a last-known-good config snapshot. Nested and
 	// rebuild paths leave it empty; the snapshot is recorded once per process.
@@ -53,6 +54,7 @@ func cliProfileBuildOptions(modelName string, maxStepsOverride int, requireKey b
 		MaxStepsKey:          "--max-steps",
 		RequireKey:           requireKey,
 		Sink:                 sink,
+		NativeSurfaces:       overrides.NativeSurfaces,
 		AgentPreset:          boot.NormalizeAgentPreset(profile),
 		TokenMode:            boot.NormalizeTokenMode(profile),
 		SessionDir:           resolveCLISessionDirFor(overrides.WorkspaceRoot),

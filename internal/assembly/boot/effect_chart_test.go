@@ -26,7 +26,7 @@ func chartCall(t *testing.T, id string, spec string) string {
 	return string(b)
 }
 
-func buildChartAssembly(t *testing.T, kind string, probe *capabilityProbeProvider, dir string) *control.Controller {
+func buildChartAssembly(t *testing.T, kind string, probe *capabilityProbeProvider, dir string, sinks ...event.Sink) *control.Controller {
 	t.Helper()
 	provider.Register(kind, func(provider.Config) (provider.Provider, error) { return probe, nil })
 	writeFile(t, dir, "reasonix.toml", `
@@ -41,7 +41,11 @@ kind = "`+kind+`"
 model = "x"
 `)
 	approveWorkspace(t, dir)
-	ctrl, err := Build(context.Background(), Options{Sink: event.Discard, WorkspaceRoot: dir})
+	sink := event.Discard
+	if len(sinks) != 0 {
+		sink = sinks[0]
+	}
+	ctrl, err := Build(context.Background(), Options{Sink: sink, WorkspaceRoot: dir, NativeSurfaces: true})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

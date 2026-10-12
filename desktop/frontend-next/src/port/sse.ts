@@ -738,10 +738,10 @@ export class SsePort extends SseWorkspace implements AgentPort {
       persist: verdict === "always",
     });
   }
-  answer(id: string, answers: { questionId: string; selected: string[] }[]) {
+  answer(id: string, answers: { questionId: string; selected: string[]; value?: Record<string, unknown> }[]) {
     return this.postAcked("/answer", {
       id,
-      answers: answers.map((a) => ({ QuestionID: a.questionId, Selected: a.selected })),
+      answers: answers.map((a) => ({ QuestionID: a.questionId, Selected: a.selected, ...(a.value !== undefined ? { Value: a.value } : {}) })),
     });
   }
   extensionSurfaces() {

@@ -570,7 +570,7 @@ export interface AgentPort {
   // A plan card has three outcomes, not two. The id is the host's; the frontend
   // sends it back untouched rather than describing the state it thinks it is in.
   planDecision(id: string, action: PlanAction): Promise<void>;
-  answer(id: string, answers: { questionId: string; selected: string[] }[]): Promise<void>;
+  answer(id: string, answers: { questionId: string; selected: string[]; value?: Record<string, unknown> }[]): Promise<void>;
   // Installed theme packs and which one is active. The list carries every
   // pack's tokens so a picker can preview without a second request.
   context(): Promise<ContextBreakdown>;

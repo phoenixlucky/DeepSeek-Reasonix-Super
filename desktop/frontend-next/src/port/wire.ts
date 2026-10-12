@@ -268,6 +268,7 @@ export interface AskOption {
 export interface AskAnswer {
   QuestionID: string;
   Selected: string[];
+  Value?: Record<string, unknown>;
 }
 
 export interface AskQuestion {
@@ -281,6 +282,8 @@ export interface AskQuestion {
   multi?: boolean;
   // Prefilled answer: a form sent back to be corrected keeps what was given.
   default?: string[];
+  surface?: import("../ui/surface/spec").SurfaceSpec;
+  callId?: string;
 }
 
 // Who is asking, when it is not the agent: an MCP server's form.
@@ -377,7 +380,7 @@ export interface ExtensionNotification {
 export type ExtensionViewTone = "dim" | "strong" | "ok" | "warn" | "err" | "accent";
 
 export interface ExtensionViewNode {
-  kind: "text" | "markdown" | "row" | "stack" | "kv" | "meter" | "pip" | "button" | "divider";
+  kind: "text" | "markdown" | "row" | "stack" | "kv" | "meter" | "pip" | "button" | "divider" | "field" | "choice_card";
   value?: string;
   key?: string;
   label?: string;
@@ -385,6 +388,24 @@ export interface ExtensionViewNode {
   progress?: number;
   actionId?: string;
   children?: ExtensionViewNode[];
+  field?: SurfaceField;
+}
+
+export interface SurfaceField {
+  type: "string" | "number" | "bool" | "choice" | "multichoice";
+  required?: boolean;
+  default?: string | number | boolean | string[];
+  min?: number;
+  max?: number;
+  max_length?: number;
+  options?: SurfaceOption[];
+}
+
+export interface SurfaceOption {
+  value: string;
+  label: string;
+  description?: string;
+  preview?: string;
 }
 
 export interface ExtensionView {

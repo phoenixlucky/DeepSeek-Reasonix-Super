@@ -380,17 +380,6 @@ type AskOption struct {
 	Description string `json:"description,omitempty" externalizable:"true"`
 }
 
-// AskQuestion is one JSON-formatted structured ask question.
-type AskQuestion struct {
-	ID      string      `json:"id"`
-	Header  string      `json:"header,omitempty"`
-	Prompt  string      `json:"prompt" externalizable:"true"`
-	Reason  string      `json:"reason,omitempty"`
-	Options []AskOption `json:"options"`
-	Multi   bool        `json:"multi,omitempty"`
-	Default []string    `json:"default,omitempty"`
-}
-
 // AskOrigin is the JSON form of an event.AskOrigin.
 type AskOrigin struct {
 	Kind     string `json:"kind"`
@@ -436,7 +425,7 @@ var boundKindNames = map[event.BoundKind]string{
 
 func toWireTool(t event.Tool) *Tool {
 	wt := &Tool{
-		ID: t.ID, Name: t.Name, Args: t.Args,
+		ID: t.ID, Name: t.Name, Args: SurfaceArgs(t.Name, t.ResolvedName, t.Args),
 		ResolvedName: t.ResolvedName, CapabilityID: t.CapabilityID,
 		Output: t.Output, Images: t.Images, Err: t.Err, RefusalCode: t.RefusalCode,
 		WorkspaceLease: toWireWorkspaceLease(t.WorkspaceLease),
@@ -671,7 +660,7 @@ func ToWireAsk(a event.Ask) *Ask {
 		for j, o := range q.Options {
 			opts[j] = AskOption{Label: o.Label, Description: o.Description}
 		}
-		qs[i] = AskQuestion{ID: q.ID, Header: q.Header, Prompt: q.Prompt, Reason: q.Reason, Options: opts, Multi: q.Multi, Default: q.Default}
+		qs[i] = AskQuestion{ID: q.ID, Header: q.Header, Prompt: q.Prompt, Reason: q.Reason, Options: opts, Multi: q.Multi, Default: q.Default, Surface: q.Surface, CallID: q.CallID}
 	}
 	out := &Ask{ID: a.ID, Questions: qs}
 	if o := a.Origin; o != nil {

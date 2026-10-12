@@ -27,14 +27,25 @@ export const promptOpen = (it: Item) => promptKey(it) !== undefined && !promptSe
 // and the local id is kept so an answer already in flight still lands on it.
 export function prompted(s: SessionState, doing: string, next: Item): SessionState {
   const key = promptKey(next);
-  const at = s.items.findIndex((it) => it.t === next.t && promptKey(it) === key);
+  const call = surfaceCall(next);
+  const at = s.items.findIndex((it) => it.t === next.t && (promptKey(it) === key || call && it.t === "ask" && it.surfaceExpired && it.ask.id === call));
   if (at < 0) return { ...s, doing, items: [...s.items, next] };
   // A frame replayed from the log for a question already answered is history,
   // not a new wait: reopening it would ask again for a decision already made.
-  if (promptSealed(s.items[at])) return s;
+  if (promptSealed(s.items[at]) && !(s.items[at].t === "ask" && s.items[at].surfaceExpired)) return s;
   const items = s.items.slice();
   items[at] = { ...next, id: s.items[at].id };
   return { ...s, doing, items };
+}
+
+function surfaceCall(item: Item) {
+  return item.t === "ask" && item.ask.questions[0]?.surface ? item.ask.questions[0].callId : undefined;
+}
+
+export function restoredPrompts(history: Item[], current: Item[]) {
+  const retained = current.filter(i => i.t === "extension" || promptOpen(i));
+  const calls = new Set(retained.map(surfaceCall).filter(Boolean));
+  return [...history.filter(i => !(i.t === "ask" && i.surfaceExpired && calls.has(i.ask.id))), ...retained];
 }
 
 // A prompt answered somewhere else — another window, a revise — is a transition,

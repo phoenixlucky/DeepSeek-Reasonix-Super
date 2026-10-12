@@ -5,6 +5,8 @@
 // event is emitted.
 package event
 
+import "reasonix/internal/contract/surfacespec"
+
 // Surface kinds carried by ExtensionSurfacePayload.Kind, mirroring the
 // protocol's own. "request" is reserved: a blocking prompt currently routes
 // through the ordinary AskRequest channel rather than arriving as a surface.
@@ -51,16 +53,7 @@ type ExtensionViewSurface struct {
 
 // ExtensionViewNode mirrors protocol.UINode. Tone says what a node means, not
 // what colour it is: the palette stays the frontend's.
-type ExtensionViewNode struct {
-	Kind     string
-	Value    string
-	Key      string
-	Label    string
-	Tone     string
-	Progress *float64
-	ActionID string
-	Children []ExtensionViewNode
-}
+type ExtensionViewNode = surfacespec.Node
 
 // ExtensionPanelView is a standing surface for the frontend's side rail
 // (mirrors UIPanelPayload). No Markdown: see the protocol DTO for why.

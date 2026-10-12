@@ -363,6 +363,9 @@ func (b *builder) wireTools() error {
 		session: b.session, bashEnforced: env.bash.Enforce, extraRoots: b.workspaceExtraRoots()})
 	b.addIsolation()
 	registerSessionTools(t.reg, opts.Ablation, b.roots, b.session.dir, b.prompt.memory.Store)
+	if opts.NativeSurfaces {
+		t.reg.Add(agent.NewRenderSurfaceTool())
+	}
 
 	t.runners = skillRunners{readOnly: t.skillRun.runReadOnly, run: t.skillRun.run, profile: skillProfile(cfg, t.sub.inheritedFor)}
 	t.cmds = loadCommands(opts, root)

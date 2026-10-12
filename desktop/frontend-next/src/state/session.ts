@@ -1,5 +1,6 @@
 import { measureInteractions } from "./interactions";
 import { foldExtension } from "./extension";
+import { surfaceHistory } from "../ui/surface/call";
 import type { CostCoverage, Receipt, Tool, WireEvent } from "../port/wire";
 import { noteTool, type Executions } from "./executions";
 import { estimateTokens, sample } from "../port/tokens";
@@ -15,7 +16,7 @@ import { splitProviderSearch } from "./providersearch";
 
 export type { Item, Metrics, PlanStep, RememberedFact, RuntimeNotice, SessionState, TodoStatus, TurnTerminal, Waiting };
 export { currentStep, stepDone, stepLabel };
-import { askFromCall, promptOpen, prompted, sealByReceipt } from "./prompts";
+import { askFromCall, promptOpen, prompted, sealByReceipt, restoredPrompts } from "./prompts";
 import { nameTurnStart, othersSteer } from "./turn_start";
 import { appendText, foldMessage, sealSay } from "./say";
 import { nextId } from "./ids";
@@ -212,7 +213,7 @@ export type SessionEvent =
   | { kind: "__user"; text: string; pending: boolean; id?: string }
   | { kind: "__unsent"; id: string }
   | { kind: "__queued"; id: string; itemId: string; queued: "steer" | "followup"; paused?: boolean }
-  | { kind: "__decided"; id: string; verdict?: string; answers?: string[][] }
+  | { kind: "__decided"; id: string; verdict?: string; answers?: string[][]; values?: Record<string, unknown> }
   | { kind: "__forgot"; id: string }
   | { kind: "__runtime_seen"; id: string }
   // The transcript has drawn these cards, so their one entrance is spent.
@@ -289,7 +290,7 @@ function apply(s: SessionState, ev: SessionEvent): SessionState {
               // This window's own answer, landed. The receipt it caused rides the
               // event stream and can arrive first, sealing the card as answered
               // elsewhere; the answer this window sent is the truer account.
-              ? { ...i, answered: ev.answers ?? [], answeredElsewhere: false, by: undefined, said: undefined }
+              ? { ...i, answered: ev.answers ?? [], surfaceValues: ev.values, answeredElsewhere: false, by: undefined, said: undefined }
               : i,
       ),
     };
@@ -300,7 +301,7 @@ function apply(s: SessionState, ev: SessionEvent): SessionState {
     // How the restored turns ended is not in the record; a live turn that
     // vanished mid-flight leaves null, which is a different answer.
     const terminal: TurnTerminal = ev.items.length ? { kind: "unread" } : s.terminal;
-    return { ...s, executions: ev.executions, terminal, items: [...ev.items, ...s.items.filter((i) => i.t === "extension" || promptOpen(i))], plan: ev.plan ? livePlan(ev.plan) : s.plan };
+    return { ...s, executions: ev.executions, terminal, items: restoredPrompts(ev.items, s.items), plan: ev.plan ? livePlan(ev.plan) : s.plan };
   }
   // The kernel's canonical task list, asked for rather than re-derived: the
   // advances are not todo_write calls, and the refused writes are.
@@ -438,7 +439,7 @@ function apply(s: SessionState, ev: SessionEvent): SessionState {
       return ev.approval ? prompted(s, "等待批准", { t: "approval", id: nextId(), a: ev.approval }) : s;
 
     case "ask_request":
-      if (!ev.ask || s.items.some(i => i.t === "ask" && i.ask.id === ev.ask!.id)) return s;
+      if (!ev.ask || s.items.some(i => i.t === "ask" && i.ask.id === ev.ask!.id && !i.surfaceExpired)) return s;
       return prompted(s, "等待你回答", { t: "ask", id: nextId(), ask: ev.ask });
 
     case "compaction_started":
@@ -770,7 +771,7 @@ export function fromHistory(msgs: HistoryMessage[]): { items: Item[]; executions
   // conversation reads differently before and after a reopen.
   const merged: Item[] = [];
   for (const it of out) {
-    merged.push(it);
+    merged.push(surfaceHistory(it));
     foldLastRead(merged);
   }
   return { items: merged, executions };

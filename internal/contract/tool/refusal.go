@@ -5,6 +5,10 @@ package tool
 
 import "strings"
 
+type RefusalIdentity interface {
+	RefusalCode() string
+}
+
 // Refusal is one host refusal. Code is the identity and the only thing a reader
 // may classify on; Message is presentation and may be reworded or translated
 // without changing what the refusal means. Whoever first knows why the call

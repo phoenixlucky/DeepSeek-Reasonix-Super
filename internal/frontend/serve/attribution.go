@@ -30,10 +30,9 @@ func approveAs(ctrl control.SessionAPI, r *http.Request, id string, allow, sessi
 }
 
 // answerAs settles a question as the one who answered it.
-func answerAs(ctrl control.SessionAPI, r *http.Request, id string, answers []event.AskAnswer) {
+func answerAs(ctrl control.SessionAPI, r *http.Request, id string, answers []event.AskAnswer) error {
 	if via := viaOf(r); via != nil {
-		ctrl.AnswerQuestionFrom(id, answers, via)
-		return
+		return ctrl.AnswerQuestionFrom(id, answers, via)
 	}
-	ctrl.AnswerQuestion(id, answers)
+	return ctrl.AnswerQuestion(id, answers)
 }

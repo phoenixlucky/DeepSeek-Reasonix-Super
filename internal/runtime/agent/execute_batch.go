@@ -545,7 +545,7 @@ launch:
 func scheduleUpToDecision(reg *tool.Registry, calls []provider.ToolCall) ([]provider.ToolCall, int) {
 	for i, c := range calls {
 		t, _, ambiguous := reg.ResolveCall(c.Name)
-		if t != nil && len(ambiguous) == 0 && tool.IsDecisionBarrier(t) {
+		if t != nil && len(ambiguous) == 0 && tool.IsDecisionBarrierCall(t, json.RawMessage(c.Arguments)) {
 			return calls[:i+1], i
 		}
 	}
@@ -587,6 +587,10 @@ func refusalCodeOf(err error) string {
 	var refusal tool.Refusal
 	if errors.As(err, &refusal) {
 		return refusal.Code
+	}
+	var identity tool.RefusalIdentity
+	if errors.As(err, &identity) {
+		return identity.RefusalCode()
 	}
 	return ""
 }

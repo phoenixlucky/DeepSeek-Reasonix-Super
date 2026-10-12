@@ -91,8 +91,8 @@ func (s *updateSink) bindApprove(fn func(id string, allow, session, persist bool
 
 // bindAnswer installs the controller's AnswerQuestion callback for AskRequest
 // events.
-func (s *updateSink) bindAnswer(fn func(id string, answers []event.AskAnswer)) {
-	s.answer = fn
+func (s *updateSink) bindAnswer(fn func(id string, answers []event.AskAnswer) error) {
+	s.answer = func(id string, answers []event.AskAnswer) { _ = fn(id, answers) }
 }
 
 // bindStatus installs the vendor-status observer. It receives typed events,

@@ -118,7 +118,7 @@ func historyMessagesWith(msgs []provider.Message, attachments func(string) []eve
 				hm.ToolCalls = make([]historyToolCall, len(m.ToolCalls))
 				for i, tc := range m.ToolCalls {
 					hm.ToolCalls[i] = historyToolCall{
-						ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments,
+						ID: tc.ID, Name: tc.Name, Arguments: eventwire.SurfaceArgs(tc.Name, tc.ResolvedName, tc.Arguments),
 						ResolvedName: tc.ResolvedName, CapabilityID: tc.CapabilityID,
 					}
 				}

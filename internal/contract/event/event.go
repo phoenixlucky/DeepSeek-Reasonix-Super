@@ -18,6 +18,7 @@ import (
 
 	"reasonix/internal/contract/agentgraph"
 	"reasonix/internal/contract/provider"
+	"reasonix/internal/contract/surfacespec"
 )
 
 // Kind tags an Event. Read the field(s) documented for that kind.
@@ -401,6 +402,8 @@ type AskQuestion struct {
 	Options []AskOption
 	Multi   bool     // allow selecting more than one option
 	Default []string // prefilled answer, for a form sent back to be corrected
+	Surface *surfacespec.Spec
+	CallID  string
 }
 
 // AskOrigin names the external party behind an AskRequest the agent did not
@@ -507,6 +510,7 @@ type GuardianResult struct {
 type AskAnswer struct {
 	QuestionID string
 	Selected   []string
+	Value      json.RawMessage `json:",omitempty"`
 }
 
 // FinalReadiness carries machine-readable recovery requirements on TurnDone.

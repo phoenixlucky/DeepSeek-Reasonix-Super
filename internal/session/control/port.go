@@ -84,7 +84,7 @@ type Approvals interface {
 	// ResolveRecovery answers an Auto Guard card: continue|continue_task|revise. Revise
 	// refuses the mutation and steers feedback.
 	ResolveRecovery(id string, action agent.RecoveryAction, feedback string) error
-	AnswerQuestion(id string, answers []event.AskAnswer)
+	AnswerQuestion(id string, answers []event.AskAnswer) error
 	Ask(ctx context.Context, questions []event.AskQuestion) ([]event.AskAnswer, error)
 	ReplayPendingPrompts()
 	ReplayPendingPromptsWith(sinkFactory func() event.Sink)
@@ -409,7 +409,7 @@ type Settings interface {
 type Provenance interface {
 	SubmitHTTPFrom(input, format string, via *provider.Via) Admission
 	ApproveFrom(id string, allow, session, persist bool, via *provider.Via)
-	AnswerQuestionFrom(id string, answers []event.AskAnswer, via *provider.Via)
+	AnswerQuestionFrom(id string, answers []event.AskAnswer, via *provider.Via) error
 }
 
 // LocalShell is a `!` command typed on the machine the kernel runs on. Only
@@ -432,6 +432,7 @@ type Commits interface {
 // a frontend that drives all of it: the TUI does, and the HTTP server all but
 // one. A leaner frontend names EditorAPI instead.
 type SurfaceHistory interface {
+	NativeSurfaces() bool
 	ExtensionSurfaces() []event.ExtensionSurfacePayload
 }
 
