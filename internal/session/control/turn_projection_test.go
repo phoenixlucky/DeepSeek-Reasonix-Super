@@ -20,14 +20,18 @@ func TestTurnBlockOrderIsDeclared(t *testing.T) {
 	want := []string{
 		"hook-context",
 		"current-date",
+		"session-scratch",
 		"available-skills",
 		"project-instructions",
+		"project-rules",
+		"scoped-rules",
 		"mcp-prompt-failure",
 		"refused-calls",
 		"scheduled-run",
 		"background-jobs",
 		"memory-update",
 		"reasoning-language",
+		"turn-narration",
 		"response-language",
 		"", // the plan-mode marker, which is a line and not a block
 		"active-goal",

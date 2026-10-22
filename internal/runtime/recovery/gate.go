@@ -33,6 +33,10 @@ type Options struct {
 	TaskSummary     func() string
 	MaxReviewBlocks int // consecutive reviewer blocks before stop-and-report guidance
 	Now             func() time.Time
+	// WaitingOnPerson is called as the gate starts waiting for a card to be
+	// answered. The func it returns runs when the wait ends and reports whether
+	// the caller could take back what it set aside for the wait.
+	WaitingOnPerson func(ctx context.Context) (resumed func() error)
 	// Headless, when true, never waits for a human: blocks the mutation with a
 	// structured blocker message instead.
 	Headless bool
@@ -878,24 +882,17 @@ func (g *Gate) askHuman(ctx context.Context, taskID, fp string, gen uint64, prop
 	g.mu.Unlock()
 	g.persist()
 
-	select {
-	case payload := <-reply:
-		decision, err := g.decisionFromResolve(payload)
-		if err == nil && decision.Allow && proposal.PlanTransition {
-			decision.AuthorizePlanReplacement = true
-		}
-		decision.Generation = gen
-		return decision, err
-	case <-ctx.Done():
-		g.mu.Lock()
-		delete(g.waiters, approvalID)
-		delete(g.taskOf, approvalID)
-		delete(g.pending, approvalID)
-		delete(g.awaiting, taskID)
-		g.mu.Unlock()
-		g.persist()
-		return Decision{Allow: false, Blocked: true, Message: "blocked: Auto Guard confirmation cancelled", Generation: gen}, ctx.Err()
+	var resumed func() error
+	if g.opts.WaitingOnPerson != nil {
+		resumed = g.opts.WaitingOnPerson(ctx)
 	}
+	decision, err := g.awaitCard(ctx, taskID, approvalID, reply, proposal, gen)
+	if resumed != nil {
+		if rerr := resumed(); rerr != nil && err == nil {
+			return Decision{Allow: false, Blocked: true, Message: "blocked: " + rerr.Error(), Generation: gen}, rerr
+		}
+	}
+	return decision, err
 }
 
 func taskGrantScopeKey(proposal Proposal) string {

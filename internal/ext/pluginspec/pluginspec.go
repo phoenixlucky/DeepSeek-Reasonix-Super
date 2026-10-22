@@ -5,6 +5,8 @@
 package pluginspec
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,11 +27,15 @@ type Options struct {
 	LaunchManager         *mcplaunch.Manager
 	ConfigSource          string
 	StateHome             string
+	ProcessScope          string
+	SessionPackageRoots   map[string]SessionPackageRoot
 	WriterRoots           []string
-	ForbidReadRoots       []string
-	Network               bool
-	PackageOwners         map[string]string
-	OAuthHTTPClient       *http.Client
+	// WritableRoots are what the session lets tools write; a local server is told them.
+	WritableRoots   []string
+	ForbidReadRoots []string
+	Network         bool
+	PackageOwners   map[string]string
+	OAuthHTTPClient *http.Client
 }
 
 // ForRoot maps entries against a workspace root without runtime policy.
@@ -71,6 +77,7 @@ func FromEntry(e config.PluginEntry, workspaceRoot string, opts Options) plugin.
 		CallTimeout:                   secondsDuration(e.CallTimeoutSeconds),
 		ToolTimeouts:                  toolTimeoutDurations(e.ToolTimeoutSeconds),
 		WorkspaceRoot:                 strings.TrimSpace(workspaceRoot),
+		WritableRoots:                 append([]string(nil), opts.WritableRoots...),
 		LaunchManager:                 opts.LaunchManager,
 		ConfigSource:                  configSource,
 		Authorized:                    e.Source.UserAuthorized(),
@@ -91,6 +98,7 @@ func ApplyIsolation(spec *plugin.Spec, workspaceRoot string, opts Options) {
 	if spec == nil {
 		return
 	}
+	ApplySessionPackageRoot(spec, opts.SessionPackageRoots)
 	// Authorized user MCP defaults to trusted host process mode. Confined mode
 	// is opt-in for internal managed deployments/tests and is never selected by
 	// ordinary install paths.
@@ -102,12 +110,18 @@ func ApplyIsolation(spec *plugin.Spec, workspaceRoot string, opts Options) {
 	}
 	stateDir := plugin.MCPStateDir(opts.StateHome, workspaceRoot, spec.Name)
 	spec.StateDir = stateDir
+	processDir := stateDir
+	if opts.ProcessScope != "" {
+		digest := sha256.Sum256([]byte(opts.ProcessScope))
+		processDir = filepath.Join(stateDir, "sessions", hex.EncodeToString(digest[:12]))
+		spec.ProcessStateDir = processDir
+	}
 	if spec.ResolvedProcessMode() != plugin.MCPProcessConfined {
 		// Host mode still gets a private state/cache/temp tree; only the OS
 		// command sandbox is omitted so local app integrations keep working.
 		return
 	}
-	writerRoots := appendUniquePaths([]string{stateDir}, opts.WriterRoots...)
+	writerRoots := appendUniquePaths([]string{processDir}, opts.WriterRoots...)
 	readerRoots := []string{workspaceRoot}
 	if home, err := os.UserHomeDir(); err == nil {
 		readerRoots = appendUniquePaths(readerRoots, home)
@@ -201,7 +215,7 @@ func toolTimeoutDurations(seconds map[string]int) map[string]time.Duration {
 
 func appendUniquePaths(base []string, extra ...string) []string {
 	out := append([]string(nil), base...)
-	seen := make(map[string]struct{}, len(out)+len(extra))
+	seen := make(map[string]struct{}, len(out))
 	for _, path := range out {
 		seen[pathComparisonKey(path)] = struct{}{}
 	}

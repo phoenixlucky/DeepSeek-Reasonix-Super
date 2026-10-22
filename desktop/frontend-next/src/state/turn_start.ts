@@ -13,7 +13,7 @@ export function nameTurnStart(s: SessionState, ev: WireEvent): SessionState {
   const named = s.awaitingTurnStart[at];
   const seat = s.items.findIndex((i) => i.t === "user" && i.id === named);
   const was = s.items[seat] as Extract<Item, { t: "user" }>;
-  const row = { ...was, authoredTurn: ev.authoredTurn, msgIndex: ev.msgIndex, pending: false, via: ev.via, attachments: ev.attachments };
+  const row = { ...was, authoredTurn: ev.authoredTurn, msgIndex: ev.msgIndex, pending: false, via: ev.via, attachments: ev.attachments, at: Date.now() };
   // A follow-up that waited in the queue takes its seat where its turn began,
   // under the same rule a delivered steer follows: the transcript is ordered by
   // what happened, and the wait belongs to the composer.

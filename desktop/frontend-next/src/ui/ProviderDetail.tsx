@@ -8,32 +8,16 @@ import { PROVIDER_EDIT_DISABLED, reason } from "../i18n/kernel";
 import { HttpError } from "../port/http_error";
 import { checkFailure } from "./provider_check";
 import { StudioIcon } from "./StudioIcon";
-import { EffortShape } from "./EffortShape";
-
-// How a turn's context reaches the next one. Auto is vendor detection, which is
-// the only honest answer for an endpoint nobody has characterised; the other two
-// are what a reader picks when the endpoint has already contradicted it.
-const CONTINUATIONS: ReadonlyArray<readonly [string, string]> = [
-  ["", "自动"],
-  ["stateful", "引用上一轮"],
-  ["stateless", "每轮完整发送"],
-];
-
-const CONTINUATION_WHY: Record<string, string> = {
-  "": "按端点厂商判断。中转站若回报 previous_response_id 不受支持，改为「每轮完整发送」。",
-  stateful: "只发送新的一轮，历史由端点自己保存 —— 前缀缓存命中率最高，但要求端点真的存了。",
-  stateless: "每轮重发完整历史。中转站只转发、不保存状态时用这一档。",
-};
 
 // The selected account, edited in place. The protocol is a switch on it rather
 // than a fact on a row, because both entries are the same key at the same host;
 // 测试连接 is what turns "which protocol did we record" back into a finding.
 export function ProviderDetail({
-  a, port, busy, setBusy, kind, onProtocol, onRemove, removeFailed, onRename, onEdited, onFailed, onDirty, declare,
+  a, port, busy, setBusy, kind, onProtocol, onRemove, removeFailed, onRename, onEdited, onChecked, onDirty, declare,
 }: {
   a: Account; port: Port; busy: string; setBusy: (b: string) => void;
   kind: string; onProtocol: (kind: string) => void; onRemove: (name: string) => void; removeFailed: string; onRename: () => void;
-  onEdited: () => void | Promise<void>; onFailed: (why: string) => void; onDirty: (dirty: boolean) => void; declare?: string;
+  onEdited: () => void | Promise<void>; onChecked: () => void; onDirty: (dirty: boolean) => void; declare?: string;
 }) {
   const [found, setFound] = useState<ProviderCheck | null>(null);
   // A refusal is not a failed probe. The kernel withholds these routes from a
@@ -49,19 +33,6 @@ export function ProviderDetail({
   const checking = busy === `check:${entry.name}`;
   const inUse = a.kinds.some((k) => a.byKind[k].inUse);
 
-  const write = async (tag: string, call: () => Promise<void>) => {
-    setBusy(`${tag}:${entry.name}`);
-    onFailed("");
-    try {
-      await call();
-      onEdited();
-    } catch (e) {
-      onFailed(reason(e));
-    } finally {
-      setBusy("");
-    }
-  };
-
   const check = async () => {
     setBusy(`check:${entry.name}`);
     setFound(null);
@@ -69,6 +40,7 @@ export function ProviderDetail({
     setRefused("");
     try {
       setFound(await port.checkProvider(entry.name));
+      onChecked();
     } catch (e) {
       // Read off the code the kernel sent, never the status: 403 is also what a
       // gateway in front of it answers, and that is a different thing to do next.
@@ -83,7 +55,7 @@ export function ProviderDetail({
   // vendor adds models to endpoints we already know; a stored list never finds
   // out on its own, and the probe is the one place that already has the answer.
   const unlisted = (found?.models ?? []).filter((m) => !entry.models.includes(m));
-  const options = a.kinds.length > 1 || entry.canWebSearch || entry.canSetThinking || entry.canSetContinuation;
+  const options = a.kinds.length > 1;
   return (
     <section className="pdetail" aria-label={a.label}>
       <header className="pdetail-hd">
@@ -94,7 +66,7 @@ export function ProviderDetail({
               aria-label={t("重命名 {name}（F2）", { name: a.label })} title={t("重命名 {name}（F2）", { name: a.label })}
               onClick={onRename}><StudioIcon name="edit" /></button>
           </span>
-          <small>{t(KIND_LABEL[entry.kind] ?? entry.kind)} · {a.host}</small>
+          <small title={`${t(KIND_LABEL[entry.kind] ?? entry.kind)} · ${a.host}`}>{t(KIND_LABEL[entry.kind] ?? entry.kind)} · {a.host}</small>
         </span>
         {inUse && <i className="pdetail-use">{t("正在用")}</i>}
         <button className="act" data-action="provider.probe" onClick={check} disabled={busy !== ""}>
@@ -164,59 +136,12 @@ export function ProviderDetail({
               </span>
             </div>
           )}
-          {entry.canWebSearch && (
-            <div className="vway">
-              <span className="lb">{t("联网搜索")}</span>
-              <div className="seg" role="group" aria-label={t("{name} 的联网搜索", { name: a.label })}>
-                {[true, false].map((on) => (
-                  <button key={String(on)} data-action="provider.web-search" data-target={entry.name} data-value={String(on)}
-                    aria-pressed={entry.webSearch === on} disabled={busy !== ""}
-                    onClick={() => write("search", () => port.setProviderWebSearch(entry.name, on))}>
-                    {t(on ? "开" : "关")}
-                  </button>
-                ))}
-              </div>
-              <span className="why">{t("端点自己执行的搜索，不占本地工具。")}</span>
-            </div>
-          )}
-          {entry.canSetThinking && (
-            <div className="vway">
-              <span className="lb">{t("思考参数")}</span>
-              <div className="seg" role="group" aria-label={t("{name} 的思考参数", { name: a.label })}>
-                {[true, false].map((on) => (
-                  <button key={String(on)} data-action="provider.thinking" data-target={entry.name} data-value={String(on)}
-                    aria-pressed={(entry.sendsThinking ?? true) === on} disabled={busy !== ""}
-                    onClick={() => write("thinking", () => port.setProviderThinking(entry.name, on))}>
-                    {t(on ? "自动" : "不发送")}
-                  </button>
-                ))}
-              </div>
-              <span className="why">
-                {t(entry.sendsThinking === false ? "只发送常规聊天参数，不再指定思考深度；模型自身的推理行为不受影响。" : "部分中转站不支持思考控制字段，会拒绝整个请求。遇到这种情况请切换为「不发送」。")}
-              </span>
-              {entry.sendsThinking !== false && <EffortShape field={entry.effortField} level={entry.supportedEfforts?.[0]} className="why" />}
-            </div>
-          )}
-          {entry.canSetContinuation && (
-            <div className="vway">
-              <span className="lb">{t("上下文续接")}</span>
-              <div className="seg" role="group" aria-label={t("{name} 的上下文续接方式", { name: a.label })}>
-                {CONTINUATIONS.map(([mode, label]) => (
-                  <button key={mode} data-action="provider.continuation" data-target={entry.name} data-value={mode}
-                    aria-pressed={(entry.continuation ?? "") === mode} disabled={busy !== ""}
-                    onClick={() => write("continuation", () => port.setProviderContinuation(entry.name, mode))}>
-                    {t(label)}
-                  </button>
-                ))}
-              </div>
-              <span className="why">{t(CONTINUATION_WHY[entry.continuation ?? ""] ?? CONTINUATION_WHY[""])}</span>
-            </div>
-          )}
         </div>
       )}
       <EditConn
         key={`${entry.name}:${revision}`}
         entry={entry}
+        label={a.label}
         wireFixed={a.kinds.length > 1}
         initialCheck={found?.ok ? found : undefined}
         port={port}

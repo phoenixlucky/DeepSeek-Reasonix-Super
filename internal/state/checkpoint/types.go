@@ -112,6 +112,7 @@ type Meta struct {
 	CoverageGaps       []CoverageGap
 	ExpiredFilePayload bool
 	ActiveWriters      []ActiveWriter
+	ForkCopied         bool
 	Legacy             bool
 	DisabledReason     string
 }
@@ -228,11 +229,12 @@ const (
 type TransactionState string
 
 const (
-	TxPrepared   TransactionState = "prepared"
-	TxCommitting TransactionState = "committing"
-	TxCommitted  TransactionState = "committed"
-	TxAborted    TransactionState = "aborted"
-	TxUndone     TransactionState = "undone"
+	TxPrepared    TransactionState = "prepared"
+	TxCommitting  TransactionState = "committing"
+	TxCommitted   TransactionState = "committed"
+	TxAborted     TransactionState = "aborted"
+	TxUndone      TransactionState = "undone"
+	TxInvalidated TransactionState = "invalidated"
 )
 
 // TransactionTarget is one file's forward/restore payload inside a transaction.

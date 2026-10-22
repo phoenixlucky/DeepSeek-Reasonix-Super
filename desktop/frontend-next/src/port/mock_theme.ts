@@ -1,5 +1,7 @@
 import { MockNetwork } from "./mock_network";
 import type { ThemeImport, ThemePack } from "./port";
+import clearBlue from "../../../../internal/ext/theme/builtin/official-clear-blue.json";
+import teaGreen from "../../../../internal/ext/theme/builtin/official-tea-green.json";
 
 // Theme packs, and where an extension's view was told to sit.
 export class MockTheme extends MockNetwork {
@@ -11,10 +13,10 @@ export class MockTheme extends MockNetwork {
 
   private removed = new Set<string>();
 
-  // Two packs so the picker has something to switch between; the fixture is
-  // where the mapping gets exercised without a Go process.
+  // Production foundations plus legacy fixtures exercise both token generations.
   async themes(): Promise<ThemePack[]> {
     const packs: ThemePack[] = [
+      ...[clearBlue, teaGreen].map((pack) => ({ ...pack, active: this.activeTheme === pack.id })),
       {
         id: "dusk", name: "Dusk", author: "fixture", removable: true, active: this.activeTheme === "dusk",
         tokens: {

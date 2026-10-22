@@ -46,19 +46,19 @@ func (c *Controller) SwitchWorkspaceBranch(ctx context.Context, name string) (gi
 	if busy {
 		return gitstatus.Info{}, false, ErrTurnRunning
 	}
-	if err := gitstatus.SwitchBranch(ctx, c.workspaceRepo, name); err != nil {
+	if err := gitstatus.SwitchBranch(ctx, c.WorkspaceRepo(), name); err != nil {
 		return gitstatus.Info{}, false, err
 	}
-	info, ok := gitstatus.Summary(ctx, c.workspaceRepo)
+	info, ok := gitstatus.Summary(ctx, c.WorkspaceRepo())
 	return info, ok, nil
 }
 
 // Lease contention must not prevent other panes from admitting work.
 func (c *Controller) acquireBranchWriteLease(ctx context.Context) (func(), error) {
-	if !c.workspaceRepo.Valid() {
+	if !c.WorkspaceRepo().Valid() {
 		return func() {}, nil
 	}
-	lease, err := workspacelease.New(c.workspaceRepo.WorkTree, config.WorkspaceLeaseDir(), nil)
+	lease, err := workspacelease.New(c.WorkspaceRepo().WorkTree, config.WorkspaceLeaseDir(), nil)
 	if err != nil {
 		return nil, err
 	}

@@ -18,7 +18,7 @@ func renameProviderModel(p *ProviderEntry, from, to string) bool {
 	if p.Default == from {
 		p.Default, changed = to, true
 	}
-	for _, list := range []*[]string{&p.Models, &p.VisionModels} {
+	for _, list := range []*[]string{&p.Models, &p.VisionModels, &p.VideoModels} {
 		if renamed, ok := renameInModelList(*list, from, to); ok {
 			*list, changed = renamed, true
 		}

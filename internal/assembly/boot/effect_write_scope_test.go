@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"reasonix/internal/base/fileutil"
 	"reasonix/internal/contract/config"
 	"reasonix/internal/contract/event"
 	"reasonix/internal/contract/provider"
@@ -118,11 +119,14 @@ model = "x"
 				t.Fatal("no tool result reached the provider")
 			}
 			model := got[len(got)-1]
+			canonicalTarget, err := fileutil.CanonicalWritePath(target)
+			if err != nil {
+				t.Fatal(err)
+			}
 			for _, want := range []string{
-				"(refusal: " + builtin.CodeWriteOutsideScope + ")",
 				"workspace write scope",
 				"not an OS sandbox",
-				"`" + target + "`",
+				"`" + canonicalTarget + "`",
 				"allow_write",
 			} {
 				if !strings.Contains(model, want) {

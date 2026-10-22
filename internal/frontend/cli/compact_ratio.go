@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 
@@ -13,8 +14,12 @@ func compactRatioPercentageRequirement() string {
 }
 
 func parseCLICompactRatio(value string) (float64, error) {
-	percent, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	typed := strings.TrimSpace(value)
+	percent, err := strconv.ParseFloat(typed, 64)
 	ratio := percent / 100
+	if exact, ok := new(big.Rat).SetString(typed); err == nil && percent > 0 && percent < 100 && ok {
+		ratio, _ = exact.Quo(exact, big.NewRat(100, 1)).Float64()
+	}
 	if err == nil {
 		err = config.ValidateCompactRatio(ratio)
 	}

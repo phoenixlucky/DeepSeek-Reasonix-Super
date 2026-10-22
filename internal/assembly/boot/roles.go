@@ -26,21 +26,21 @@ import (
 // planner, the guardian and the recovery reviewer each resolve their own model
 // and run behind the same headless gate.
 type roleWiring struct {
-	cfg       *config.Config
-	roots     config.Roots
-	resolver  provider.Resolver // effective: config plus sidecar providers
-	extension provider.Resolver // non-nil only when a sidecar declared providers
-	proxy     netclient.ProxySpec
-	sink      event.Sink
-	gate      *control.SharedHeadlessGate
-	reg       *tool.Registry
-	keep      agent.KeepPolicy
-	hooks     *hook.Runner // each role fires it under a session of its own
+	cfg               *config.Config
+	roots             config.Roots
+	resolver          provider.Resolver // effective: config plus sidecar providers
+	extension         provider.Resolver // non-nil only when a sidecar declared providers
+	proxy             netclient.ProxySpec
+	sink              event.Sink
+	gate              *control.SharedHeadlessGate
+	reg               *tool.Registry
+	keep              agent.KeepPolicy
+	checkTargetAccess tool.TargetAccessCheck
+	hooks             *hook.Runner // each role fires it under a session of its own
 }
 
-// planner wraps the executor in a Coordinator when a distinct planner_model is
-// configured. The planner keeps its own session for cache stability and a
-// read-only tool set; an unresolvable planner degrades to the executor (#4615).
+// planner keeps a separate session and read-only tools for a distinct model or
+// an explicit planner effort. An unresolvable model uses the executor (#4615).
 func (w roleWiring) planner(opts Options, executor *agent.Agent, executorModel, staticContext string, capRuntime *usecap.MCPCapabilityRuntime) (agent.Runner, string, error) {
 	pm := effectivePlannerModel(w.cfg, opts)
 	if pm == "" {
@@ -53,10 +53,10 @@ func (w roleWiring) planner(opts Options, executor *agent.Agent, executorModel, 
 			Text: fmt.Sprintf("planner_model %q is not a configured provider — continuing with the executor alone", pm)})
 		return executor, executorModel, nil
 	}
-	if pe.Model == executorModel {
+	if pe.Model == executorModel && strings.TrimSpace(w.cfg.Agent.RoleEfforts["planner"]) == "" {
 		return executor, executorModel, nil
 	}
-	plannerProv, err := resolveProvider(w.resolver, w.cfg, w.proxy, provider.Selection{Ref: modelRefFromEntry(pe)})
+	plannerProv, err := resolveProvider(w.resolver, w.cfg, w.proxy, provider.Selection{Ref: modelRefFromEntry(pe), Effort: roleEffort(w.cfg, "planner")})
 	if err != nil {
 		return nil, "", fmt.Errorf("planner %q: %w", pm, err)
 	}
@@ -75,6 +75,7 @@ func (w roleWiring) planner(opts Options, executor *agent.Agent, executorModel, 
 	plannerOpts := agent.Options{
 		MaxSteps:                     0,
 		Gate:                         w.gate,
+		CheckTargetAccess:            w.checkTargetAccess,
 		Hooks:                        w.hooks.ForRole("planner"),
 		ModelRef:                     modelRefFromEntry(pe),
 		ContextWindow:                pe.ContextWindow,
@@ -107,14 +108,14 @@ func (w roleWiring) guardian() *guardian.Session {
 		report(w.sink, event.Event{Level: event.LevelWarn, Text: "Guardian was disabled because its model was not found.", Detail: fmt.Sprintf("guardian_model %q not found — guardian disabled", guardianModel)})
 		return nil
 	}
-	pProv, err := resolveProvider(w.resolver, w.cfg, w.proxy, provider.Selection{Ref: modelRefFromEntry(ge)})
+	pProv, err := resolveProvider(w.resolver, w.cfg, w.proxy, provider.Selection{Ref: modelRefFromEntry(ge), Effort: roleEffort(w.cfg, "guardian")})
 	if err != nil {
 		slog.Warn("guardian provider construction failed — guardian disabled", "model", guardianModel, "err", err)
 		report(w.sink, event.Event{Level: event.LevelWarn, Text: "Guardian was disabled because it could not start.", Detail: fmt.Sprintf("guardian construction failed: %v — guardian disabled", err)})
 		return nil
 	}
 	guardianReg := agent.FilterReadOnlyRegistry(w.reg, agent.SubagentMetaTools()...)
-	g := guardian.NewSession(pProv, guardianReg, w.hooks.ForRole("guardian"), guardian.PolicyPrompt(), modelRefFromEntry(ge), w.cfg.Agent.GuardianTemperature, ge.Price, w.sink)
+	g := guardian.NewSession(pProv, guardianReg, w.hooks.ForRole("guardian"), guardian.PolicyPrompt(), modelRefFromEntry(ge), w.cfg.Agent.GuardianTemperature, ge.Price, w.sink, w.checkTargetAccess)
 	report(w.sink, event.Event{Level: event.LevelInfo, Text: fmt.Sprintf("guardian enabled · model=%s", ge.Model)})
 	return g
 }
@@ -138,7 +139,7 @@ func (w roleWiring) recoveryReviewer(mainRef string) recovery.Reviewer {
 		if !ok {
 			return nil
 		}
-		rProv, err := w.extension.Resolve(provider.Selection{Ref: modelRefFromEntry(re)})
+		rProv, err := w.extension.Resolve(provider.Selection{Ref: modelRefFromEntry(re), Effort: w.recoveryEffort()})
 		if err != nil {
 			slog.Warn("recovery reviewer provider construction failed — rule-only recovery", "model", model, "err", err)
 			return nil
@@ -148,6 +149,9 @@ func (w roleWiring) recoveryReviewer(mainRef string) recovery.Reviewer {
 	re, ok := w.cfg.ResolveModel(model)
 	if !ok {
 		return nil
+	}
+	if effort := w.recoveryEffort(); effort != nil {
+		re.Effort = *effort
 	}
 	rProv, err := NewProviderWithProxy(re, w.proxy)
 	if err != nil {
@@ -169,4 +173,19 @@ func (w roleWiring) semanticRouter(sub subagentConfig, exec provider.Provider, e
 		}
 	}
 	return &capability.SemanticRouter{Provider: exec, Sink: w.sink, Model: execRef, Pricing: execPrice, Audit: audit}
+}
+
+func roleEffort(cfg *config.Config, role string) *string {
+	effort := strings.TrimSpace(cfg.Agent.RoleEfforts[role])
+	if effort == "" {
+		return nil
+	}
+	return &effort
+}
+
+func (w roleWiring) recoveryEffort() *string {
+	if strings.TrimSpace(w.cfg.Agent.RecoveryModel) != "" || strings.TrimSpace(w.cfg.Agent.GuardianModel) == "" {
+		return nil
+	}
+	return roleEffort(w.cfg, "guardian")
 }

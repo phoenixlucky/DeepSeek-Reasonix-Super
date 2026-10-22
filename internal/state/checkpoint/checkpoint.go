@@ -15,7 +15,6 @@ package checkpoint
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -82,6 +81,7 @@ type Checkpoint struct {
 	SessionRevision    int64          `json:"sessionRevision,omitempty"`
 	Legacy             bool           `json:"legacy,omitempty"`
 	ExpiredFilePayload bool           `json:"expiredFilePayload,omitempty"`
+	ForkCopied         bool           `json:"forkCopied,omitempty"`
 }
 
 // revisions returns FileRevision views of Files.
@@ -139,7 +139,7 @@ type Store struct {
 	barrier       *MutationBarrier
 	activeWriters []ActiveWriter
 	plans         map[string]preparedPlan
-	lastUndo      *TransactionManifest
+	undo          undoState
 	undoChanged   func()
 	sessionID     string
 	mutationSeq   int64
@@ -147,6 +147,8 @@ type Store struct {
 	blobQuota     int64
 	// protectTurns prevents GC of these turn payloads (active tx / last undo).
 	protectTurns map[int]bool
+	// unreadable reserves turns whose file exists but would not load.
+	unreadable map[int]bool
 }
 
 // New returns a store for the given checkpoint dir and workspace root, loading any
@@ -225,16 +227,6 @@ func (s *Store) activeWriterConflicts() []RewindConflict {
 	return conflicts
 }
 
-// InvalidateUndo clears the last undo slot (new turn / new mutation / new rewind).
-func (s *Store) InvalidateUndo() {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.unlockUndoChange(s.lastUndo)
-	s.lastUndo = nil
-}
-
 func (s *Store) load() {
 	seen := map[int]bool{}
 	loadDir := func(dir string, expired bool) {
@@ -250,12 +242,15 @@ func (s *Store) load() {
 			if _, err := fmt.Sscanf(e.Name(), "turn-%d.json", &turnNum); err != nil || seen[turnNum] {
 				continue
 			}
-			b, err := fileenc.ReadFileUTF8(filepath.Join(dir, e.Name()))
+			path := filepath.Join(dir, e.Name())
+			b, err := fileenc.ReadFileUTF8(path)
 			if err != nil {
+				s.markUnreadable(turnNum, path, err)
 				continue
 			}
 			var c Checkpoint
 			if json.Unmarshal(b, &c) != nil {
+				s.markUnreadable(turnNum, path, nil)
 				continue
 			}
 			if expired {
@@ -282,6 +277,8 @@ func (s *Store) load() {
 					c.CoverageGaps = append(c.CoverageGaps, CoverageGap{Reason: GapLegacyUnverified, Detail: "v1 checkpoint cannot verify later manual edits"})
 				}
 			}
+			// A readable copy of this turn wins over an unreadable one.
+			delete(s.unreadable, turnNum)
 			seen[turnNum] = true
 			s.done = append(s.done, &c)
 		}
@@ -295,9 +292,12 @@ func (s *Store) load() {
 
 // Begin opens a checkpoint for a new user turn, finalizing the previous one. The
 // prompt labels it in the picker; msgIndex is the conversation-rewind boundary.
-func (s *Store) Begin(turn int, prompt string, msgIndex int) {
+func (s *Store) Begin(turn int, prompt string, msgIndex int) error {
 	s.mu.Lock()
-	defer s.unlockUndoChange(s.lastUndo)
+	defer s.unlockUndoChange(s.undoOfferLocked())
+	if err := s.invalidateUndoLocked(); err != nil {
+		return err
+	}
 	if s.cur != nil {
 		s.recomputeCoverageLocked(s.cur)
 		s.done = append(s.done, s.cur)
@@ -312,9 +312,9 @@ func (s *Store) Begin(turn int, prompt string, msgIndex int) {
 		Coverage:      CoverageNone,
 	}
 	s.seen = map[string]bool{}
-	s.lastUndo = nil // new turn invalidates undo
 	s.persistBestEffort(s.cur)
 	s.gcLocked()
+	return nil
 }
 
 // Bounds returns turn → MsgIndex over all checkpoints (persisted + current), so
@@ -472,11 +472,12 @@ func (s *Store) CaptureBefore(path string, opts CaptureBeforeOpts) {
 	s.persistBestEffort(s.cur)
 }
 
-// CaptureAfter records the after fingerprint for a path already in the current
-// (or any) checkpoint that owns it.
-func (s *Store) CaptureAfter(path string, opts CaptureAfterOpts) {
+// CaptureAfter records completed writes; undo must be retired before writing.
+// Recording failures do not change whether the tool executed. A path outside the
+// workspace is a coverage gap already on record, not a failure to report.
+func (s *Store) CaptureAfter(path string, opts CaptureAfterOpts) error {
 	if path == "" {
-		return
+		return nil
 	}
 	pathKey := NormalizeRelPath(s.root, path)
 	fp, gap, err := CapturePath(path, CaptureOptions{
@@ -485,11 +486,16 @@ func (s *Store) CaptureAfter(path string, opts CaptureAfterOpts) {
 	})
 	if gap != nil {
 		s.RecordGap(*gap)
+		if gap.Reason == GapOutsideWorkspace {
+			return nil
+		}
 	}
-	_ = err
+	if err != nil {
+		return err
+	}
 
 	s.mu.Lock()
-	defer s.unlockUndoChange(s.lastUndo)
+	defer s.unlockUndoChange(s.undoOfferLocked())
 	s.mutationSeq = opts.Seq
 	if s.cur != nil {
 		s.cur.LastMutationSeq = opts.Seq
@@ -509,9 +515,7 @@ func (s *Store) CaptureAfter(path string, opts CaptureAfterOpts) {
 		}
 		if updated {
 			s.recomputeCoverageLocked(s.cur)
-			s.persistBestEffort(s.cur)
-			s.lastUndo = nil // mutation invalidates undo
-			return
+			return s.persist(s.cur)
 		}
 	}
 	// Path might only appear in earlier turns; still record after on earliest?
@@ -527,11 +531,10 @@ func (s *Store) CaptureAfter(path string, opts CaptureAfterOpts) {
 			c.Files[j].AfterExisted = &existed
 			c.Files[j].AfterSHA256 = fp.SHA256
 			c.Files[j].AfterMode = fp.Mode
-			s.persistBestEffort(c)
-			s.lastUndo = nil
-			return
+			return s.persist(c)
 		}
 	}
+	return nil
 }
 
 // RecordGap appends a coverage gap to the current checkpoint.
@@ -639,7 +642,7 @@ func (s *Store) persistBestEffort(c *Checkpoint) {
 // gcLocked drops file payloads for old checkpoints beyond retainN / blobQuota.
 // Caller holds s.mu.
 func (s *Store) gcLocked() {
-	if s.blobs == nil || s.retainN <= 0 {
+	if s.blobs == nil || s.retainN <= 0 || s.undo.pending != nil {
 		return
 	}
 	// Collect recoverable checkpoints (have file payloads) oldest first.
@@ -693,7 +696,7 @@ func (s *Store) gcLocked() {
 }
 
 // pruneBlobsLocked performs mark-and-sweep after checkpoint metadata has been
-// persisted. Transaction manifests and the current undo slot also keep their
+// persisted. Transaction manifests and pending/available undo state keep their
 // forward/restore payloads live. Caller holds s.mu.
 func (s *Store) pruneBlobsLocked() {
 	if s.blobs == nil {
@@ -710,8 +713,11 @@ func (s *Store) pruneBlobsLocked() {
 			mark(f.BlobRef)
 		}
 	}
-	if s.lastUndo != nil {
-		for _, target := range s.lastUndo.Targets {
+	for _, tx := range []*TransactionManifest{s.undo.current, s.undo.pending} {
+		if tx == nil {
+			continue
+		}
+		for _, target := range tx.Targets {
 			mark(target.RestoreBlob)
 			mark(target.ForwardBlob)
 		}
@@ -768,7 +774,9 @@ func (s *Store) expirePayloadLocked(c *Checkpoint) error {
 
 // NextTurn returns the turn number a new checkpoint should take: one past the
 // highest existing turn (0 when empty), so a resumed session keeps numbering
-// without colliding with checkpoints loaded from disk.
+// without colliding with checkpoints loaded from disk. Turns whose file exists
+// but would not load count as existing: their snapshot is unrecoverable, and
+// overwriting it with a new turn would destroy the only remaining copy.
 func (s *Store) NextTurn() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -781,7 +789,7 @@ func (s *Store) NextTurn() int {
 	if s.cur != nil && s.cur.Turn >= next {
 		next = s.cur.Turn + 1
 	}
-	return next
+	return max(next, s.unreadableFloor())
 }
 
 // FileState returns the earliest pre-edit state recorded for p across the
@@ -939,100 +947,4 @@ func (s *Store) detectCurrentEncoding(path string) *fileenc.Kind {
 	}
 	enc, _ := fileenc.Detect(b)
 	return &enc
-}
-
-// safePath resolves p against root and rejects anything escaping it — restore
-// must never write outside the workspace, even if a snapshot path is hostile or
-// the project moved since it was taken.
-func safePath(root, p string) (string, error) {
-	abs := p
-	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(root, p)
-	}
-	abs = filepath.Clean(abs)
-	if root != "" {
-		if err := validateWorkspacePath(root, abs); err != nil {
-			return "", err
-		}
-	}
-	return abs, nil
-}
-
-var errSymlinkPath = errors.New("workspace path contains symbolic link")
-
-func workspaceRelative(root, abs string) (string, error) {
-	if root == "" {
-		return filepath.Clean(abs), nil
-	}
-	r := filepath.Clean(root)
-	rel, err := filepath.Rel(r, filepath.Clean(abs))
-	if err != nil || !filepath.IsLocal(rel) {
-		return "", fmt.Errorf("checkpoint path %q escapes workspace %q", abs, root)
-	}
-	return rel, nil
-}
-
-func splitLocalPath(rel string) []string {
-	var parts []string
-	for rel != "." && rel != "" {
-		dir, base := filepath.Split(rel)
-		if base != "" {
-			parts = append([]string{base}, parts...)
-		}
-		rel = filepath.Clean(dir)
-		if rel == string(filepath.Separator) {
-			break
-		}
-	}
-	return parts
-}
-
-func validateWorkspacePath(root, abs string) error {
-	rel, err := workspaceRelative(root, abs)
-	if err != nil {
-		return err
-	}
-	cur := filepath.Clean(root)
-	for _, part := range splitLocalPath(rel) {
-		cur = filepath.Join(cur, part)
-		info, statErr := os.Lstat(cur)
-		if os.IsNotExist(statErr) {
-			return nil
-		}
-		if statErr != nil {
-			return statErr
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%w: %s", errSymlinkPath, cur)
-		}
-	}
-	return nil
-}
-
-func writeNewFile(path string, data []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
-	if err != nil {
-		return err
-	}
-	remove := true
-	defer func() {
-		_ = file.Close()
-		if remove {
-			_ = os.Remove(path)
-		}
-	}()
-	if _, err := file.Write(data); err != nil {
-		return err
-	}
-	if err := file.Sync(); err != nil {
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	remove = false
-	return nil
 }

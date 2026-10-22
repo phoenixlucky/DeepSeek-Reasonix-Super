@@ -16,6 +16,9 @@ export interface TrajRow {
   // Provider-reported completion tokens for a model round. Kept numeric so a
   // performance view never has to parse the abbreviated text drawn on screen.
   out?: number;
+  // Seconds from sending a model round's request to its first output, as the
+  // host measured it; absent when it did not.
+  ttft?: number;
 }
 
 export interface TrajState {
@@ -46,6 +49,7 @@ interface Made {
   dur?: number;
   tool?: string;
   out?: number;
+  ttft?: number;
   // The key this record opens an activity under, settles, or adds to.
   open?: string;
   close?: string;
@@ -117,7 +121,8 @@ function record(ev: WireEvent): Made | null {
       }
       const spent: Span[] =
         sa.action === "discard" ? [{ t: " · discarded" }, { t: " · " }, { b: sa.reason || "unknown" }] : [];
-      return { kind: "model_round", payload: spent, close: sa.id };
+      const ttft = sa.action === "commit" && sa.firstTokenMs ? sa.firstTokenMs / 1000 : undefined;
+      return { kind: "model_round", payload: spent, close: sa.id, ttft };
     }
 
     case "usage": {
@@ -180,7 +185,7 @@ function record(ev: WireEvent): Made | null {
         kind: "protocol_recovery",
         payload: [
           { t: "retry " },
-          { n: `${ev.retryAttempt ?? 0}/${ev.retryMax ?? 0}` },
+          { n: `${ev.retryAttempt ?? 0}/${ev.retryMax ? ev.retryMax : "∞"}` },
           { t: " · scope=" },
           { b: ev.retryScope ?? "stream" },
           ...(ev.retryCause
@@ -295,6 +300,7 @@ export function reduceTraj(
         dur: r.close ? (r.dur ?? at - row.at) : r.grow ? at - row.at : row.dur,
         tool: row.tool ?? r.tool,
         out: (row.out ?? 0) + (r.out ?? 0),
+        ttft: row.ttft ?? r.ttft,
       };
       if (!r.close) return { ...s, rows };
       const open = { ...s.open };
@@ -310,7 +316,7 @@ export function reduceTraj(
   const payload = r.standalone ? [...r.standalone, ...r.payload] : r.payload;
   const rows = [
     ...s.rows,
-    { seq: s.rows.length + 1, at, kind: r.kind, payload, subs: r.subs ?? [], dur: r.dur, tool: r.tool, out: r.out },
+    { seq: s.rows.length + 1, at, kind: r.kind, payload, subs: r.subs ?? [], dur: r.dur, tool: r.tool, out: r.out, ttft: r.ttft },
   ];
   const next: TrajState = { ...s, t0, rows };
   if (r.open) {

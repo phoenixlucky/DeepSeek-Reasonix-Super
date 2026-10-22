@@ -92,7 +92,7 @@ func (h *Host) InstallAndConnectWithLifecycle(lifeCtx, callCtx context.Context, 
 	// Persist schema so the next session registers tools without reconnect UX.
 	_ = SaveCachedSchema(spec.Name, CachedSchema{
 		CacheKey:     SchemaCacheKey(spec),
-		Capabilities: map[string]bool{"tools": len(tools) > 0},
+		Capabilities: h.cachedCapabilities(spec.Name, len(tools) > 0),
 		Instructions: h.serverInstructions(spec.Name),
 		Tools:        cacheableToolsOf(tools),
 	})

@@ -12,7 +12,7 @@ import (
 // With egress bridged, the command's namespace reaches the proxy socket through
 // its loopback port and nothing else: not the host's loopback, not the network.
 func TestBwrapEgressConfinesToTheBridge(t *testing.T) {
-	if !Available() || !EgressSupported() {
+	if !EgressSupported() || !AvailableFor(Spec{Mode: "enforce", Network: true, Egress: fixedRoute{}}) {
 		t.Skip("bubblewrap egress not usable on this host")
 	}
 	cache, err := os.UserCacheDir()

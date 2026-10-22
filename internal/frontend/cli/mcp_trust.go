@@ -26,7 +26,12 @@ var mcpTrustForCLI = func(spec plugin.Spec, digest string) ([]string, error) {
 func mcpTrustCLI(args []string) int {
 	var digest string
 	var rest []string
+	follow := ""
 	for i := 0; i < len(args); i++ {
+		if args[i] == "--follow" || args[i] == "--unfollow" {
+			follow = args[i]
+			continue
+		}
 		if args[i] == "--digest" && i+1 < len(args) {
 			i++
 			digest = strings.TrimSpace(args[i])
@@ -35,7 +40,7 @@ func mcpTrustCLI(args []string) int {
 		rest = append(rest, args[i])
 	}
 	if len(rest) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: reasonix mcp trust <name> [--digest <hex>]")
+		fmt.Fprintln(os.Stderr, "usage: reasonix mcp trust <name> [--digest <hex>] | --follow | --unfollow")
 		return 2
 	}
 	name, workspace := strings.TrimSpace(rest[0]), mcpCLIWorkspaceRoot()
@@ -68,6 +73,9 @@ func mcpTrustCLI(args []string) int {
 	if len(specs) != 1 {
 		fmt.Fprintf(os.Stderr, "could not build MCP specification for %q\n", name)
 		return 1
+	}
+	if follow != "" {
+		return mcpFollowCLI(specs[0], follow == "--follow")
 	}
 	accepted, err := mcpTrustForCLI(specs[0], digest)
 	switch {
@@ -119,4 +127,19 @@ func trustHeldMCPTools(spec plugin.Spec, digest string, in io.Reader, out io.Wri
 		return nil, errors.New("trusting needs a terminal to confirm, or --digest <hex> naming the digest shown above")
 	}
 	return host.AcceptHeldTools(spec.Name, set)
+}
+
+// mcpFollowCLI records whether this server's tool definition changes are taken
+// without asking. Each change is still announced when the server connects.
+func mcpFollowCLI(spec plugin.Spec, follow bool) int {
+	if err := plugin.SetToolPinsFollow(spec, follow); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if follow {
+		fmt.Printf("following MCP server %q: its tool definition changes are taken without asking, and announced; run `reasonix mcp trust %s --unfollow` to ask again\n", spec.Name, spec.Name)
+		return 0
+	}
+	fmt.Printf("no longer following MCP server %q: a changed tool definition is held until you trust it\n", spec.Name)
+	return 0
 }

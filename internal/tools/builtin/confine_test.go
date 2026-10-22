@@ -82,18 +82,16 @@ func TestRebindBashWriteRootsUsesMinimalWriteSurface(t *testing.T) {
 }
 
 func TestReboundBashCannotWriteOutsideClaim(t *testing.T) {
-	if !sandbox.Available() {
+	root := testenv.TempDir(t)
+	spec := sandbox.Spec{Mode: "enforce", WriteRoots: []string{root}}
+	if !sandbox.AvailableFor(spec) {
 		t.Skip("OS sandbox unavailable")
 	}
-	root := testenv.TempDir(t)
 	claim := filepath.Join(root, "claimed")
 	if err := os.MkdirAll(claim, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	rebound, ok := RebindBashWriteRoots(ConfineBash(sandbox.Spec{
-		Mode:       "enforce",
-		WriteRoots: []string{root},
-	}, SessionDataGuard{}), []string{claim})
+	rebound, ok := RebindBashWriteRoots(ConfineBash(spec, SessionDataGuard{}), []string{claim})
 	if !ok {
 		t.Fatal("expected confined bash to be rebound")
 	}
@@ -317,9 +315,6 @@ func TestManagedConfigWriteGatedOnApprover(t *testing.T) {
 }
 
 func TestBashSandboxConfinement(t *testing.T) {
-	if !sandbox.Available() {
-		t.Skip("OS sandbox not available")
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skipf("no home dir: %v", err)
@@ -331,6 +326,9 @@ func TestBashSandboxConfinement(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(work) })
 	t.Chdir(work)
 	spec := sandbox.Spec{Mode: "enforce", WriteRoots: []string{work}, Network: true}
+	if !sandbox.AvailableFor(spec) {
+		t.Skip("OS sandbox not available")
+	}
 	b := ConfineBash(spec, SessionDataGuard{})
 
 	// Writing inside the root works; writing to a sibling under $HOME is denied

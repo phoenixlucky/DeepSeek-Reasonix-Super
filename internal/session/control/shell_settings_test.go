@@ -137,3 +137,32 @@ func TestOneGitBashPerInstall(t *testing.T) {
 		t.Fatal("input slice was rewritten")
 	}
 }
+
+// A launcher that does not run is refused where it was typed, and the refusal
+// leaves the saved settings alone.
+func TestSaveShellSettingsRefusesUnusableLauncherArguments(t *testing.T) {
+	path := seedShellConfig(t)
+	missing := filepath.Join(testenv.TempDir(t), "no-such-wsl")
+	if err := (&Controller{}).SaveShellSettings("bash", missing, "-d", "x", "--", "/bin/bash"); err == nil {
+		t.Fatal("saving arguments for a program that does not exist succeeded")
+	}
+	saved := config.LoadForEdit(path)
+	if saved.Tools.Shell.Path != "" || len(saved.Tools.Shell.Args) != 0 {
+		t.Fatalf("a refused launcher was written anyway: %+v", saved.Tools.Shell)
+	}
+}
+
+func TestSaveShellSettingsWithoutArgumentsClearsSavedOnes(t *testing.T) {
+	path := seedShellConfig(t)
+	cfg := config.LoadForEdit(path)
+	cfg.Tools.Shell.Args = []string{"-d", "x"}
+	if err := cfg.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Controller{}).SaveShellSettings("auto", ""); err != nil {
+		t.Fatal(err)
+	}
+	if saved := config.LoadForEdit(path); len(saved.Tools.Shell.Args) != 0 {
+		t.Fatalf("arguments survived choosing auto: %q", saved.Tools.Shell.Args)
+	}
+}

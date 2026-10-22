@@ -76,8 +76,43 @@ func (m *model) toggleDiffFold() {
 	m.tr.AddNotice("info", i18n.M.DiffFoldDisabled)
 }
 
+// openThemePicker previews each row as the cursor reaches it and puts the
+// original back unless a row is confirmed. Browsing writes nothing: the
+// preference is stored only through setTheme, as typing the name does.
+func (m *model) openThemePicker() {
+	original := termrender.ActiveTheme()
+	restore := func() {
+		termrender.RestoreTheme(original)
+		termrender.ApplyTextareaTheme(&m.composer)
+	}
+	var items []chooseItem
+	for _, c := range termrender.ThemeChoices() {
+		items = append(items, chooseItem{ID: c.ID, Label: c.ID, Desc: c.Description, Active: c.Active})
+	}
+	p := newQuickPicker(i18n.M.ThemeHeader, items, func(it chooseItem) tea.Cmd {
+		restore()
+		m.setTheme(it.ID)
+		return m.commit()
+	})
+	p.onMove = func(it chooseItem) {
+		restore()
+		if termrender.IsThemeMode(it.ID) {
+			termrender.SetThemeMode(it.ID)
+		} else {
+			termrender.SetThemeStyle(it.ID)
+		}
+		termrender.ApplyTextareaTheme(&m.composer)
+	}
+	p.onCancel = restore
+	m.quick = p
+}
+
 func (m *model) setTheme(name string) {
-	if name == "" {
+	switch strings.ToLower(name) {
+	case "":
+		m.openThemePicker()
+		return
+	case "list":
 		m.tr.AddNotice("info", i18n.M.ThemeHeader+"\n"+termrender.DescribeThemes()+"\n"+i18n.M.ThemeHint)
 		return
 	}

@@ -31,7 +31,7 @@ func (p *failedBatchProvider) Name() string { return "boot-failed-batch" }
 func (p *failedBatchProvider) Stream(_ context.Context, req provider.Request) (<-chan provider.Chunk, error) {
 	p.mu.Lock()
 	p.reqs = append(p.reqs, req)
-	summary := len(req.Messages) > 0 && strings.Contains(req.Messages[0].Content, "compacting the earlier part")
+	summary := req.Summary
 	round := p.rounds
 	if !summary {
 		p.rounds++

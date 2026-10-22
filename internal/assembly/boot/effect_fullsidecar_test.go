@@ -45,7 +45,7 @@ func buildFullsidecarPackage(t *testing.T) string {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "build", "-o", binary, ".")
 	cmd.Dir = example
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local", "GOPROXY=off")
+	cmd.Env = goBuildEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build SDK fullsidecar: %v (context: %v, bound %s)\n%s", err, ctx.Err(), fullsidecarBuildTimeout, out)
 	}

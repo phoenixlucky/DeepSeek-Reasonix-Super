@@ -1,9 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SayCard } from "./SayCard";
+import { StudioIcon } from "../StudioIcon";
 import { FOLD_DEFAULTS, setFoldModes } from "../../state/prefs";
+import { boot, STORAGE } from "../../i18n";
+
+beforeEach(() => { localStorage.setItem(STORAGE, "zh"); boot(); });
 
 afterEach(() => {
   cleanup();
@@ -157,4 +161,44 @@ describe("the reply menus", () => {
     expect(regenerate).toHaveBeenCalledOnce();
     expect(list()).toBeNull();
   });
+});
+
+it.each(["light", "dark"])("uses the new BranchAt glyph and prevents repeated clicks in %s", async (theme) => {
+  document.documentElement.dataset.theme = theme;
+  let finish: () => void = () => {};
+  const onBranch = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+  const reply = { onQuote: vi.fn(), canRegenerate: () => false, hasLaterTurns: () => false,
+    onRegenerate: vi.fn(), canBranch: () => true, onBranch };
+  render(<SayCard item={{ t: "say", id: "final", text: "answer", done: true }} reply={reply} />);
+  const button = screen.getByRole("button", { name: "创建对话分支" });
+  const glyph = render(<StudioIcon name="fork" />);
+  expect(button.querySelector("path")?.getAttribute("d")).toBe(glyph.container.querySelector("path")?.getAttribute("d"));
+  expect(document.querySelectorAll('[data-action="reply.branch"]')).toHaveLength(1);
+  expect(button.querySelector("svg")?.getAttribute("stroke")).toBe("currentColor");
+  await userEvent.click(button);
+  await userEvent.click(button);
+  expect(onBranch).toHaveBeenCalledExactlyOnceWith("final");
+  expect(button.hasAttribute("disabled")).toBe(true);
+  finish();
+  await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
+  delete document.documentElement.dataset.theme;
+});
+
+it.each([
+  { pref: "zh", system: "en-US", label: "创建对话分支" },
+  { pref: "en", system: "zh-CN", label: "Create a conversation branch" },
+  { pref: "auto", system: "zh-CN", label: "创建对话分支" },
+  { pref: "auto", system: "en-US", label: "Create a conversation branch" },
+])("keeps the branch label consistent for $pref with system $system", async ({ pref, system, label }) => {
+  vi.spyOn(navigator, "languages", "get").mockReturnValue([system]);
+  localStorage.setItem(STORAGE, pref); boot();
+  const onBranch = vi.fn();
+  const reply = { onQuote: vi.fn(), canRegenerate: () => false, hasLaterTurns: () => false,
+    onRegenerate: vi.fn(), canBranch: () => true, onBranch };
+  render(<SayCard item={{ t: "say", id: "final", text: "answer", done: true }} reply={reply} />);
+  const button = screen.getByRole("button", { name: label });
+  fireEvent.focus(button);
+  expect(screen.getByRole("tooltip").textContent).toBe(label);
+  await userEvent.click(button);
+  expect(onBranch).toHaveBeenCalledExactlyOnceWith("final");
 });

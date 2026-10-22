@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	goruntime "runtime"
 	"strings"
 	"testing"
@@ -121,8 +123,28 @@ func TestTheInstallLayoutFollowsTheStatedApplication(t *testing.T) {
 // in the same shape the other acts take.
 func TestAToastClickAsksTheShellToShowItsWindow(t *testing.T) {
 	var out bytes.Buffer
-	showOnToastClick(&shellOwner{to: &out})()
+	showOnToastClick(&shellOwner{to: &out}, io.Discard)()
 	if got := out.String(); got != "{\"act\":\"show\"}\n" {
 		t.Fatalf("pipe carried %q, want the show act", got)
 	}
 }
+
+// The click is the first link of a chain that crosses two processes; when the
+// window does not come forward, the log says whether the click arrived and
+// whether the shell was reached.
+func TestAToastClickIsWrittenToTheLog(t *testing.T) {
+	var log bytes.Buffer
+	showOnToastClick(&shellOwner{to: &bytes.Buffer{}}, &log)()
+	if !strings.Contains(log.String(), "toast clicked") {
+		t.Fatalf("log = %q, want the click recorded", log.String())
+	}
+	log.Reset()
+	showOnToastClick(&shellOwner{to: failingWriter{}}, &log)()
+	if !strings.Contains(log.String(), "could not reach the shell") {
+		t.Fatalf("log = %q, want the failed ask recorded", log.String())
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("pipe closed") }

@@ -49,7 +49,7 @@ func TestDependentSameBatchEditRefreshesPreviewBeforeExecution(t *testing.T) {
 		{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}},
 	}}
 	var events []event.Event
-	a := New(prov, reg, sessionstore.NewSession(""), Options{}, event.FuncSink(func(e event.Event) {
+	a := New(prov, reg, sessionstore.NewSession(""), Options{CheckTargetAccess: allowTestFileAccess}, event.FuncSink(func(e event.Event) {
 		events = append(events, e)
 	}))
 	if err := a.Run(context.Background(), "advance status twice"); err != nil {

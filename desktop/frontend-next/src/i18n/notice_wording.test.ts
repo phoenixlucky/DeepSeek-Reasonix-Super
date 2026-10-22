@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { EN } from "./en";
 import { NOTICE_TEXT } from "./notices";
 import { NOTICE_VAR_CODES, leftoverDetail, noticeWording } from "./notice_wording";
 
@@ -11,6 +12,9 @@ const PAYLOAD: Record<string, string | undefined> = {
   job_finished: JSON.stringify({ id: "j", label: "build" }),
   job_killed: JSON.stringify({ id: "j", label: "build" }),
   job_failed: JSON.stringify({ id: "j", label: "build" }),
+  job_stalled: JSON.stringify({ id: "j", label: "build", quietSeconds: 900 }),
+  context_composition: JSON.stringify({ total: 561061, at: 419430, active: 400000, parts: [{ name: "tool_output", tokens: 500000 }] }),
+  subagent_waiting: JSON.stringify({ task: "fix the typo", by: "rewrite the docs", whole: true }),
   display_currency: "USD",
   compact_declined: undefined,
   compact_failed: "summary_failed",
@@ -18,6 +22,12 @@ const PAYLOAD: Record<string, string | undefined> = {
 };
 
 describe("notice wording", () => {
+  it.each(Object.entries(NOTICE_TEXT))("%s reads in English too", (code, sentence) => {
+    const english = EN[sentence];
+    expect(english, `${code}: no English for "${sentence}" - an English window would show the Chinese`).toBeTruthy();
+    expect(/[\u4e00-\u9fff]/.test(english), `${code}: the English still holds Chinese`).toBe(false);
+  });
+
   const withSlots = Object.entries(NOTICE_TEXT).filter(([, s]) => placeholders(s).length > 0);
 
   it.each(withSlots)("%s registers a reader for every placeholder it has", (code, sentence) => {
@@ -54,6 +64,9 @@ describe("notice wording", () => {
     ["job_finished", '{"label":"build"}'],
     ["job_killed", '{"id":""}'],
     ["job_failed", '{"id":5}'],
+    ["job_stalled", '{"id":"j"}'],
+    ["job_stalled", '{"id":"j","quietSeconds":"900"}'],
+    ["job_stalled", '{"id":"j","quietSeconds":0}'],
     ["compact_failed", "no_such_reason"],
   ])("%s reads valid JSON of the wrong shape (%s) as no payload", (code, detail) => {
     expect(noticeWording(code, detail)).toBeUndefined();

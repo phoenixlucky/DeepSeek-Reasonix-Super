@@ -222,7 +222,10 @@ func TestMemoryRecallRecordsExplicitZeroBudgetCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = recorder.Close() })
-	recorder.RecordMemoryRecall(event.MemoryRecallAudit{Suppressed: "memory store is empty"})
+	recorder.RecordMemoryRecall(event.MemoryRecallAudit{
+		Suppressed:      "empty-store: memory store is empty",
+		SuppressionCode: "empty-store",
+	})
 	if err := recorder.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -241,8 +244,13 @@ func TestMemoryRecallRecordsExplicitZeroBudgetCounts(t *testing.T) {
 			t.Errorf("%s = %s, want explicit zero", key, raw)
 		}
 	}
-	if len(readRecords(t, path)) != 1 || readRecords(t, path)[0].MemoryRecall.Suppressed != "memory store is empty" {
-		t.Fatal("suppressed recall lost its explanation")
+	if raw := record.MemoryRecall["suppression_code"]; string(raw) != `"empty-store"` {
+		t.Errorf("suppression_code = %s, want the typed code under its own key", raw)
+	}
+	recalled := readRecords(t, path)
+	if len(recalled) != 1 || recalled[0].MemoryRecall.Suppressed != "empty-store: memory store is empty" ||
+		recalled[0].MemoryRecall.SuppressionCode != "empty-store" {
+		t.Fatal("suppressed recall lost its explanation or typed identity")
 	}
 }
 

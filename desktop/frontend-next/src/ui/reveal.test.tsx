@@ -74,4 +74,40 @@ describe("paced streaming text", () => {
     expect(view.container.textContent).toBe("a long burst that arrived while the pane was behind another");
     expect(frames.size).toBe(0);
   });
+
+  // Regenerate, rewind and history restore replace the text with something
+  // shorter. The cursor has to follow it back, or every later growth below the
+  // old length is short-circuited and the reveal silently stops animating.
+  it("paces growth again after the text is replaced with something shorter", () => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let id = 0;
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      frames.set(++id, cb);
+      return id;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (n: number) => frames.delete(n));
+    const drain = () => {
+      act(() => {
+        while (frames.size) {
+          const [next, cb] = frames.entries().next().value as [number, FrameRequestCallback];
+          frames.delete(next);
+          cb(performance.now());
+        }
+      });
+    };
+
+    const view = render(<Probe text="abcdefghij" />);
+    drain();
+    expect(view.container.textContent).toBe("abcdefghij");
+
+    view.rerender(<Probe text="ab" />);
+    expect(view.container.textContent).toBe("ab");
+    drain();
+
+    view.rerender(<Probe text="abcd" />);
+    const requested = frames.size;
+    drain();
+    expect(view.container.textContent).toBe("abcd");
+    expect(requested).toBeGreaterThan(0);
+  });
 });

@@ -139,9 +139,24 @@ func filterRegisteredCredentialEnv(env []string) []string {
 // filter_subprocess_env, preserving existing gh/git/npm workflows by default.
 func ProcessEnv() []string {
 	if !filterSubprocessEnvEnabled.Load() {
-		return filterRegisteredCredentialEnv(os.Environ())
+		return markAgentChild(filterRegisteredCredentialEnv(os.Environ()))
 	}
-	return FilterEnv(os.Environ())
+	return markAgentChild(FilterEnv(os.Environ()))
+}
+
+// AgentChildEnv marks every subprocess the host starts for the agent. Commands
+// that need a person at a terminal refuse when it is set. A child can unset it,
+// so it is friction against accidents and a pty trick, not a boundary.
+const AgentChildEnv = "REASONIX_AGENT_CHILD"
+
+func markAgentChild(env []string) []string {
+	out := env[:0]
+	for _, item := range env {
+		if key, _, _ := strings.Cut(item, "="); key != AgentChildEnv {
+			out = append(out, item)
+		}
+	}
+	return append(out, AgentChildEnv+"=1")
 }
 
 // Redact masks credential-like values for explicit diagnostic, export, and

@@ -19,10 +19,12 @@ function trayAsset(scaleFactor) {
   return { file: path.join(ASSETS, `tray${hit[1]}.png`), pixels: Math.round(16 * hit[0]) };
 }
 
-// Windows rebuilds the tray icon from the 1x bitmap, resizing it to the small
-// icon metric, so the file is loaded as 1x pixels of exactly that size. Other
-// platforms choose among the @Nx files themselves.
+// macOS draws a Template-suffixed pair (black on transparent) in the menu bar's
+// own tint. Windows rebuilds the tray icon from the 1x bitmap, resizing it to
+// the small icon metric, so the file is loaded as 1x pixels of exactly that
+// size. Other platforms choose among the @Nx files themselves.
 function trayImage(nativeImage, scaleFactor) {
+  if (process.platform === "darwin") return nativeImage.createFromPath(path.join(ASSETS, "trayTemplate.png"));
   if (process.platform !== "win32") return nativeImage.createFromPath(path.join(ASSETS, "tray.png"));
   return nativeImage.createFromBuffer(fs.readFileSync(trayAsset(scaleFactor).file));
 }

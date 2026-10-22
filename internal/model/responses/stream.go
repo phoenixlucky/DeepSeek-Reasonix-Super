@@ -45,11 +45,12 @@ type turn struct {
 	responseID      string
 	terminal        bool
 	failed          bool
+	remember        bool
 }
 
 func newTurn(c *client, out chan<- provider.Chunk) *turn {
 	return &turn{
-		c: c, out: out,
+		c: c, out: out, remember: true,
 		calls:         map[string]*streamedCall{},
 		seenText:      map[string]bool{},
 		seenRefusal:   map[string]bool{},
@@ -119,7 +120,7 @@ func (t *turn) applyContent(ctx context.Context, event sseEvent, key string) boo
 // event: it carries its code and message directly and ends the turn.
 func (t *turn) streamError(ctx context.Context, event sseEvent) bool {
 	t.terminal, t.failed = true, true
-	err := error(&provider.StreamPayloadError{Provider: t.c.name, Message: cmp.Or(strings.TrimSpace(event.Message), "stream error"), Code: event.Code})
+	err := error(&provider.StreamPayloadError{Provider: t.c.name, Message: cmp.Or(strings.TrimSpace(event.Message), "stream error"), Code: event.Code.String()})
 	if authErr := authErrorFromResponse(t.c, &sseError{Message: event.Message, Code: event.Code}); authErr != nil {
 		err = authErr
 	}
@@ -311,7 +312,7 @@ func failureError(c *client, responseError *sseError) error {
 	if authErr := authErrorFromResponse(c, responseError); authErr != nil {
 		return authErr
 	}
-	return &provider.StreamPayloadError{Provider: c.name, Message: responseError.Message, Code: responseError.Code}
+	return &provider.StreamPayloadError{Provider: c.name, Message: responseError.Message, Code: responseError.Code.String()}
 }
 
 // reportUsage forwards the turn's accounting. An all-zero usage object still
@@ -357,8 +358,8 @@ func (t *turn) assistant() provider.Message {
 	return message
 }
 
-// finish records the continuation point and closes the turn out.
-func (t *turn) finish(ctx context.Context, requestMessages []provider.Message) {
+// A summary must not replace the main conversation continuation.
+func (t *turn) recordContinuation(requestMessages []provider.Message) {
 	if t.responseID != "" {
 		expected := append(append([]provider.Message(nil), requestMessages...), t.assistant())
 		t.c.mu.Lock()
@@ -370,6 +371,9 @@ func (t *turn) finish(ctx context.Context, requestMessages []provider.Message) {
 	} else {
 		t.c.ResetContext()
 	}
+}
+
+func (t *turn) finish(ctx context.Context) {
 	if t.failed {
 		return
 	}
@@ -383,7 +387,7 @@ func (t *turn) finish(ctx context.Context, requestMessages []provider.Message) {
 	_ = t.send(ctx, provider.Chunk{Type: provider.ChunkDone})
 }
 
-func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<- provider.Chunk, requestMessages []provider.Message, downgrade bool) {
+func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<- provider.Chunk, requestMessages []provider.Message, downgrade, remember bool) {
 	defer resp.Body.Close()
 	defer close(out)
 
@@ -400,6 +404,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 	defer close(watchDone)
 
 	t := newTurn(c, out)
+	t.remember = remember
 	completed := false
 	for scanner.Scan() {
 		select {
@@ -452,7 +457,10 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 	if downgrade && completed && !t.failed {
 		c.disableContinuation()
 	}
-	t.finish(ctx, requestMessages)
+	if remember {
+		t.recordContinuation(requestMessages)
+	}
+	t.finish(ctx)
 }
 
 func sseData(line string) (string, bool) {

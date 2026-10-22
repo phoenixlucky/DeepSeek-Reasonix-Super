@@ -2,12 +2,14 @@ package control
 
 import (
 	"context"
+	"path/filepath"
 	"reasonix/internal/state/sessionstore"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 
+	"reasonix/internal/base/testenv"
 	"reasonix/internal/contract/event"
 	"reasonix/internal/contract/provider"
 	"reasonix/internal/contract/tool"
@@ -152,8 +154,10 @@ func readinessGatedController(t *testing.T, prov provider.Provider) (*Controller
 	done := make(chan event.Event, 4)
 	var mu sync.Mutex
 	var notices []event.Event
+	dir := testenv.TempDir(t)
 	c := New(Options{
 		Runner: ag, Executor: ag,
+		SessionDir: dir, SessionPath: filepath.Join(dir, "session.jsonl"),
 		Sink: event.FuncSink(func(e event.Event) {
 			switch e.Kind {
 			case event.Notice:

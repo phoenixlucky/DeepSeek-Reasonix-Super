@@ -54,6 +54,7 @@ func TestPublishRefusesLocallyWithoutARequest(t *testing.T) {
 		{"no token", "", Submission{Kind: "theme", Name: "dusk", Source: pinnedTree}, ErrSignedOut},
 		{"theme on a branch", "tok", Submission{Kind: "theme", Name: "dusk", Source: "https://github.com/acme/themes/tree/main/dusk"}, ErrUnpublishable},
 		{"plugin repo root", "tok", Submission{Kind: "plugin", Name: "kit", Source: "https://github.com/acme/kit"}, ErrUnpublishable},
+		{"plugin mistyped commit", "tok", Submission{Kind: "plugin", Name: "kit", Source: "https://github.com/o/r/tree/34ba5aaad19f0cb228965c01056b0a86c8ef5dd02"}, ErrInvalidPluginSource},
 		{"skill on a local path", "tok", Submission{Kind: "skill", Name: "s", Source: "/home/me/skill"}, ErrUnpublishable},
 		{"unknown kind", "tok", Submission{Kind: "auto", Name: "s", Source: pinnedTree}, ErrUnpublishable},
 		{"bad name", "tok", Submission{Kind: "theme", Name: "../x", Source: pinnedTree}, ErrRejected},

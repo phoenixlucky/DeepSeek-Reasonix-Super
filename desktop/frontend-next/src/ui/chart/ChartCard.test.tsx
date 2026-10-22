@@ -84,7 +84,7 @@ describe("a chart card", () => {
 
   it("breaks a line at a null instead of bridging it", () => {
     const box = draw(series());
-    expect(box.querySelectorAll(".line path")).toHaveLength(2);
+    expect(box.querySelectorAll(".line path:not(.line-hit)")).toHaveLength(2);
   });
 
   it("shows the data as a real table on request and hides it again", async () => {
@@ -164,5 +164,33 @@ describe("a chart card", () => {
     expect(() => draw(withSpec({ data: { ...SALES.data, rows: [] } }))).not.toThrow();
     cleanup();
     expect(() => draw(withSpec({ data: { ...SALES.data, rows: [["a", 0]] }, marks: [{ type: "pie", x: "month", y: ["revenue"] }] }))).not.toThrow();
+  });
+});
+
+describe("value labels", () => {
+  const bars = (rows: number): ChartSpec => withSpec({
+    data: { columns: [{ name: "k", type: "string" }, { name: "v", type: "number" }], rows: Array.from({ length: rows }, (_, i) => [`c${i}`, i + 1]) },
+    marks: [{ type: "bar", x: "k", y: ["v"] }],
+  });
+  const labels = (box: HTMLElement) => [...box.querySelectorAll(".dl")].map((n) => n.textContent);
+
+  it("writes each value beside its mark while the plot is sparse, and keeps them out of assistive tech", () => {
+    const box = draw(bars(4));
+    expect(labels(box)).toEqual(["1", "2", "3", "4"]);
+    expect(box.querySelector(".dl")?.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("draws none once there are too many marks to read them", () => {
+    expect(labels(draw(bars(30)))).toEqual([]);
+  });
+
+  it("labels a sparse line's points and drops them when they would collide", () => {
+    const line = (rows: number): ChartSpec => withSpec({
+      data: { columns: [{ name: "d", type: "date" }, { name: "v", type: "number" }], rows: Array.from({ length: rows }, (_, i) => [`2024-01-${String(i + 1).padStart(2, "0")}`, i * 10000000 + 1]) },
+      marks: [{ type: "line", x: "d", y: ["v"] }],
+    });
+    expect(labels(draw(line(3))).length).toBe(3);
+    cleanup();
+    expect(labels(draw(line(12))).length).toBeLessThan(12);
   });
 });

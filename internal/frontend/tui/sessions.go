@@ -17,6 +17,50 @@ import (
 
 const pickerRows = 8
 
+// unreadMark leads a picker row whose last turn finished while nobody looked.
+const unreadMark = "●"
+
+// focusState tracks the terminal's own focus report. A terminal that never
+// reports focus leaves it at the zero value, which reads as focused.
+type focusState struct{ blurred, owed bool }
+
+// report takes a focus or blur message. Regaining focus settles a view the
+// blurred terminal could not honestly mark.
+func (f *focusState) report(msg tea.Msg, mark func() tea.Cmd) tea.Cmd {
+	_, gained := msg.(tea.FocusMsg)
+	f.blurred = !gained
+	if !gained || !f.owed {
+		return nil
+	}
+	f.owed = false
+	return mark()
+}
+
+// viewedOnTurnEnd marks the conversation seen only while the terminal has
+// focus; a turn that ends behind another window stays unread until it returns.
+func (m *model) viewedOnTurnEnd() tea.Cmd {
+	if m.focus.blurred {
+		m.focus.owed = true
+		return nil
+	}
+	return m.markViewed()
+}
+
+// viewedAtStart marks the open conversation seen, unless the picker is about
+// to choose another one: the resume that follows marks that one instead.
+func (m *model) viewedAtStart() tea.Cmd {
+	if m.opts.PickSession {
+		return nil
+	}
+	return m.markViewed()
+}
+
+// markViewed tells the kernel the conversation on screen has been seen. A
+// refusal is shown like any other failed call: the mark then stays.
+func (m *model) markViewed() tea.Cmd {
+	return m.call("viewed", m.client.MarkViewed)
+}
+
 // SessionInfo is one saved conversation of this workspace.
 type SessionInfo struct {
 	Name     string    `json:"name"`
@@ -24,6 +68,7 @@ type SessionInfo struct {
 	Title    string    `json:"title"`
 	Turns    int       `json:"turns"`
 	Current  bool      `json:"current"`
+	Unread   bool      `json:"unread"`
 	Modified time.Time `json:"modified"`
 }
 
@@ -33,9 +78,19 @@ func (c *Client) Sessions(ctx context.Context) ([]SessionInfo, error) {
 	return out, err
 }
 
+// MarkViewed clears the unread mark on the conversation this runtime has open.
+func (c *Client) MarkViewed(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, "/sessions/viewed", nil, nil)
+}
+
 // RenameSession sets the title of the saved conversation listed under name.
 func (c *Client) RenameSession(ctx context.Context, name, title string) error {
 	return c.do(ctx, http.MethodPost, "/sessions/rename", map[string]string{"id": name, "title": title}, nil)
+}
+
+// DeleteSession erases the saved conversation listed under name.
+func (c *Client) DeleteSession(ctx context.Context, name string) error {
+	return c.do(ctx, http.MethodPost, "/delete-session", map[string]string{"name": name}, nil)
 }
 
 // Resume binds the runtime to the saved conversation at path.
@@ -49,6 +104,9 @@ type sessionPicker struct {
 	all   []SessionInfo
 	query string
 	sel   int
+	// arming is the path a first Ctrl+D marked for deletion; notice is the last refusal.
+	arming string
+	notice string
 }
 
 type (
@@ -57,6 +115,10 @@ type (
 		err  error
 	}
 	resumedMsg struct{ err error }
+	deletedMsg struct {
+		path string
+		err  error
+	}
 )
 
 func (m *model) openPicker() tea.Cmd {
@@ -123,7 +185,19 @@ func (m *model) pickerKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		return nil, false
 	}
 	items := p.shown()
-	switch k := msg.String(); k {
+	k := msg.String()
+	arming := p.arming
+	p.arming, p.notice = "", ""
+	switch k {
+	case "ctrl+d":
+		if p.sel >= len(items) {
+			break
+		}
+		if s := items[p.sel]; arming != s.Path {
+			p.arming = s.Path
+		} else {
+			return m.deleteSession(s), true
+		}
 	case "esc":
 		m.picker = nil
 	case "up", "ctrl+p":
@@ -145,6 +219,26 @@ func (m *model) pickerKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		}
 	}
 	return nil, true
+}
+
+func (m *model) deleteSession(s SessionInfo) tea.Cmd {
+	return func() tea.Msg { return deletedMsg{path: s.Path, err: m.client.DeleteSession(m.ctx, s.Name)} }
+}
+
+// onDeleted drops the erased row and keeps the picker open for the next one;
+// a refusal stays on the picker, where the user is looking.
+func (m *model) onDeleted(msg deletedMsg) tea.Cmd {
+	p := m.picker
+	if p == nil {
+		return nil
+	}
+	if msg.err != nil {
+		p.notice = fmt.Sprintf(i18n.M.ResumeDeleteFailedFmt, msg.err.Error())
+		return nil
+	}
+	p.all = slices.DeleteFunc(p.all, func(s SessionInfo) bool { return s.Path == msg.path })
+	p.sel = min(p.sel, max(len(p.shown())-1, 0))
+	return nil
 }
 
 func (m *model) pickSession(s SessionInfo) tea.Cmd {
@@ -169,8 +263,9 @@ func (m *model) onResumed(msg resumedMsg) tea.Cmd {
 		return m.commit()
 	}
 	m.resetScreen()
+	view := m.markViewed()
 	title := m.emit(func(int, bool) string { return termrender.Accent("◆ ") + termrender.Bold(i18n.M.ResumedTitle) })
-	return tea.Sequence(title, m.fetchHistory(true), tea.Batch(m.fetchStatus(), m.fetchTodosForRebuild(), m.fetchMeters()))
+	return tea.Sequence(title, view, m.fetchHistory(true), tea.Batch(m.fetchStatus(), m.fetchTodosForRebuild(), m.fetchMeters()))
 }
 
 // resetScreen drops the transcript this screen drew, for a conversation that
@@ -206,13 +301,28 @@ func (m *model) pickerPanel() []string {
 		if s.Current {
 			label += " " + termrender.Dim("(active)")
 		}
-		lines = append(lines, rowLine(i == p.sel, i+1, "", label, s.Current))
+		row := rowLine(i == p.sel, i+1, "", label, s.Current)
+		if s.Unread {
+			row = markedRowLine(i == p.sel, i+1, unreadMark, label, s.Current)
+		}
+		lines = append(lines, row)
 		if !s.Modified.IsZero() {
 			lines = append(lines, termrender.Dim("     "+s.Modified.Local().Format("2006-01-02 15:04")))
 		}
 	}
 	if end < len(items) {
 		lines = append(lines, termrender.Dim("  ↓ more"))
+	}
+	if p.arming != "" {
+		for _, s := range items {
+			if s.Path == p.arming {
+				room := max(width-termrender.VisibleWidth(fmt.Sprintf(i18n.M.ResumeDeleteAskFmt, "")), 1)
+				lines = append(lines, termrender.Accent(clipVisible(fmt.Sprintf(i18n.M.ResumeDeleteAskFmt, clipVisible(sessionLabel(s), room)), width)))
+			}
+		}
+	}
+	if p.notice != "" {
+		lines = append(lines, termrender.Accent(p.notice))
 	}
 	lines = append(lines, termrender.Dim(i18n.M.ResumePickFilter+" · "+i18n.M.ResumePickHint))
 	return panel(lines, m.width, accentEdge)

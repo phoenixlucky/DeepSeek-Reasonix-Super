@@ -43,7 +43,7 @@ func buildMCPAuthorExample(t *testing.T) string {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "build", "-o", binary, "main.go")
 	cmd.Dir = example
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local", "GOPROXY=off")
+	cmd.Env = goBuildEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build MCP author example: %v\n%s", err, out)
 	}

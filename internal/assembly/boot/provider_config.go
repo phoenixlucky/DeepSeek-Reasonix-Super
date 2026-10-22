@@ -77,6 +77,7 @@ func providerConfig(e *config.ProviderEntry, proxy netclient.ProxySpec) provider
 			"proxy_spec":           proxy,
 			"vision":               config.EffectiveVision(e),
 			"vision_detail":        e.VisionDetail,
+			"video_protocol":       videoProtocolOf(e),
 			"web_search":           config.EffectiveWebSearch(e),
 			"mode":                 e.ResponsesMode,
 			// Keep nil as nil so the responses provider can vendor-detect its

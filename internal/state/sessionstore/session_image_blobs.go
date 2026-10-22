@@ -275,7 +275,12 @@ func backfillUnavailableImages(logPath string, msgs []provider.Message) {
 	if len(wanted) == 0 {
 		return
 	}
-	found := checkpointImages(store.SessionPathForEventLog(logPath), wanted)
+	found, err := checkpointImages(store.SessionPathForEventLog(logPath), wanted)
+	if err != nil {
+		// Best effort: a checkpoint that could not be read restores nothing,
+		// and the caller still needs the blob-recovery warning below.
+		slog.Warn("session: could not inspect checkpoint for image payloads", "log", logPath, "err", err)
+	}
 	dir := store.SessionBlobsDirForEventLog(logPath)
 	for key, url := range found {
 		if _, err := writeSessionImageBlob(dir, url); err != nil {
@@ -292,16 +297,28 @@ func backfillUnavailableImages(logPath string, msgs []provider.Message) {
 
 // checkpointImages finds the data URLs in the checkpoint whose keys are wanted.
 // It reads raw bytes rather than decoding messages, so a copy past a torn or
-// foreign line is still found: encoding/json writes a data URL verbatim.
-func checkpointImages(checkpoint string, wanted map[string]bool) map[string]string {
+// foreign line is still found: encoding/json writes a data URL verbatim. A
+// missing checkpoint is not an error — there is nothing to find — but one that
+// exists and cannot be read whole returns an error.
+func checkpointImages(checkpoint string, wanted map[string]bool) (map[string]string, error) {
 	found := map[string]string{}
 	info, err := os.Stat(checkpoint)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > sessionEventReplayMaxBytes {
-		return found
+	if os.IsNotExist(err) {
+		return found, nil
+	}
+	if err != nil {
+		return found, fmt.Errorf("stat checkpoint: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return found, fmt.Errorf("checkpoint is not a regular file")
+	}
+	if info.Size() > sessionEventReplayMaxBytes {
+		return found, fmt.Errorf("checkpoint is %d bytes, past the %d-byte replay ceiling",
+			info.Size(), sessionEventReplayMaxBytes)
 	}
 	b, err := os.ReadFile(checkpoint)
 	if err != nil {
-		return found
+		return found, fmt.Errorf("read checkpoint: %w", err)
 	}
 	marker := []byte(`"data:`)
 	for len(found) < len(wanted) {
@@ -327,20 +344,26 @@ func checkpointImages(checkpoint string, wanted map[string]bool) map[string]stri
 			found[key] = url
 		}
 	}
-	return found
+	return found, nil
 }
 
 // refuseDegradedCheckpointRewrite keeps a transcript missing an image from
 // replacing a checkpoint that still inlines it: that file would then be the
-// only copy, and the rewrite would destroy it.
+// only copy, and the rewrite would destroy it. A checkpoint that cannot be
+// inspected fails closed — the guard cannot rule it out as that only copy.
 func refuseDegradedCheckpointRewrite(path string, msgs []provider.Message) error {
 	wanted := unavailableImageKeys(msgs)
 	if len(wanted) == 0 {
 		return nil
 	}
-	if held := len(checkpointImages(path, wanted)); held > 0 {
+	held, err := checkpointImages(path, wanted)
+	if err != nil {
+		return fmt.Errorf("%w: the checkpoint could not be read, so its images cannot be ruled out; it was left unchanged: %w",
+			ErrSessionImagesUnavailable, err)
+	}
+	if len(held) > 0 {
 		return fmt.Errorf("%w: the checkpoint holds the only copy of %d image(s); it was left unchanged",
-			ErrSessionImagesUnavailable, held)
+			ErrSessionImagesUnavailable, len(held))
 	}
 	return nil
 }

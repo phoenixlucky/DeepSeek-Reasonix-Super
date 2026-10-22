@@ -497,7 +497,7 @@ see `docs/EXTENSION_PROTOCOL.generated.md` for the method index and
   slot has exactly one owner across all installed plugins; a collision fails
   the build with both sources named.
 - `capabilities` gates whole feature families: `interceptors`, `strategies`,
-  `providers`, `ui`, `tools`. Anything the sidecar announces beyond the
+  `providers`, `ui`, `tools`, `session`. Anything the sidecar announces beyond the
   manifest is rejected during the handshake.
 - `tools` declares the model-callable tools the runtime serves; it needs the
   `tools` capability. Each tool has:
@@ -703,6 +703,92 @@ Plugin hooks receive these environment variables:
 - `REASONIX_WORKSPACE_ROOT`
 - `CLAUDE_PROJECT_DIR`
 - `CLAUDE_PLUGIN_ROOT`
+
+## Claude Code mods
+
+A Claude Code mod is a plugin whose `hooks/hooks.json` names one ES module
+(`"modules": ["./register.js"]`) that exports `register(on, options)`.
+Reasonix installs it like any Claude plugin.
+
+The module runs only while **Run Claude Code mods** is on, in Settings or as
+`[mods] enabled = true` in the user file. It is off by default, and a project
+file cannot turn it on.
+
+A mod is **full trust**:
+
+- Its module runs on this machine as you, outside the sandbox.
+- It can read files, start processes and use the network.
+- The install preview says so and lists the module's events and `$` calls from
+  its syntax tree.
+- That listing is an aid, not a guarantee. Code the module imports, and names it
+  builds at run time, are not listed, and the preview shows them as such.
+
+How it runs:
+
+- The host script runs under Studio's own binary in Node mode, or under the
+  `node` on `PATH` for the terminal and `serve`. Node 22 or newer is required,
+  and a `node` inside the open project is never used.
+- `.js .mjs .cjs` modules run everywhere. `.ts .mts .cts` run where the runtime
+  strips types. `.jsx` and `.tsx` do not run.
+- The process is a tighten-only extension runtime. A mod can deny a call or ask
+  the user about it. The host refuses an `allow`, or a rewrite of a permission
+  decision, whatever the process writes.
+- A hook gets `[mods] hook_budget_ms` of its own running time, 10 s by default.
+  A hook stuck in a loop ends the process and the turn goes on without it.
+- The process restarts at the next reload. After three deaths the mod is
+  disabled, and its status says why.
+- Nothing a mod does changes the cached system prompt or the tool list. Its text
+  reaches the model only as data from the mod.
+- While a mod runs, the completion receipt carries the gap `mod_effects_unobserved`:
+  what a full-trust process wrote is outside what the host observes, so a change
+  it made cannot be proven.
+
+Events served:
+
+- `tool.call`: `{ deny }`, argument rewrite, and `{ result }`. A result answers
+  the call in place of the tool: the tool does not run, the model gets a
+  successful result under the host's header naming the mod, and the receipt
+  counts no change.
+- `tool.check`: `deny` and `ask`. An `allow` is ignored. It applies to installed
+  MCP tools as well, and can only tighten.
+- `prompt.submit`: text rewrite, `{ drop }` and `context`, a list of strings or
+  `{ label, text }` blocks. Blocks follow the prompt on the turn's tail under the
+  host's header; they never touch the cached prefix. A block is cut at
+  `[mods] context_bytes` (8192) and a turn keeps `context_blocks` (8).
+- `session.start`, `session.end`, `turn.start`, `command.run`, `ui.press`.
+- `ui.render` for the `AbovePrompt` band.
+
+`$` served:
+
+- `plugin`, `store`, `clock`, `env.get`, `fs`, `process.run`, `http.fetch`.
+- `state`, with `atom`, `read`, `update`, `derive` and `memberOf` imported from
+  `claude-code`.
+- `session.id`, `session.cwd`, `session.root`.
+- `session.messages({ limit })` and `session.usage()`: the last transcript items
+  (credentials redacted, up to `[mods] messages_max`, 200) and the last
+  response's token counts. A mod that calls them is listed in the install
+  preview as reading the session.
+- `prompt.submit(text)`: queues a prompt as the mod's own words, under the host's
+  header, never as yours; `asUser` is not served.
+- It rejects with `mod.submit_rate` over `[mods] submit_per_turn` (3 between two
+  prompts you write), with `mod.submit_too_long` over `[mods] submit_bytes`
+  (8 KiB, 0 for none), and with `mod.submit_refused` while the session has no saved file.
+- A call that needs an answer made while `session.start` runs rejects with
+  `mod.not_ready`: that hook runs before the session is ready.
+- `tool.register/call/list` and `command.register/run/list`. Both register
+  while `session.start` runs.
+- `ui.toast`, `status`, `notice`, `log`, `ask`, `resolve`, `invalidate`.
+
+The turn a queued prompt starts is held to this session's own approvals and
+sandbox like any other turn; that, not the label, is what keeps it safe.
+
+The ceilings above are in the user file only, and `0` removes one.
+
+Anything else is registered and named in the mod's status as unserved; a call to
+an unserved `$` member rejects with the typed code `mod.unsupported`.
+
+`$.ui.ask` is a question from the mod, shown with its name. It can never approve
+a tool call or a permission.
 
 ## Studio HTTP routes
 

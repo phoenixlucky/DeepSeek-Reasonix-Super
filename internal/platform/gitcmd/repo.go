@@ -23,7 +23,39 @@ type Repo struct {
 	GitDir    string `json:"gitDir"`
 	CommonDir string `json:"commonDir"`
 	WorkTree  string `json:"workTree"`
+	// Absent says why a workspace that carries a version-control marker has no
+	// identity; empty for a repository, and for a folder with no marker at all.
+	Absent       Absence `json:"absent,omitempty"`
+	AbsentDetail string  `json:"absentDetail,omitempty"` // what git said, for a person to read; never decides anything
+	// MarkerPath and MarkerDir record the marker the folder carried when the open
+	// failed, so one later retry can confirm it is still the same one.
+	MarkerPath string `json:"markerPath,omitempty"`
+	MarkerDir  bool   `json:"markerDir,omitempty"`
 }
+
+// Absence is why a workspace with a .git marker has no repository identity.
+type Absence string
+
+const (
+	// AbsenceRefused is git answering, and refusing to open the repository:
+	// unsafe ownership, a damaged repository, an inconsistent work tree.
+	AbsenceRefused Absence = "refused"
+	// AbsenceUnavailable is git not answering in time, or not starting at all.
+	AbsenceUnavailable Absence = "unavailable"
+)
+
+// RefusedError is git's own refusal to open a directory. It is an
+// ErrNotRepository, so callers that only ask whether there is a repository keep
+// their answer; Detail is what git printed, kept for display.
+type RefusedError struct {
+	Dir    string
+	Detail string
+}
+
+func (e *RefusedError) Error() string {
+	return fmt.Sprintf("%s: %s: %s", ErrNotRepository, e.Dir, e.Detail)
+}
+func (e *RefusedError) Unwrap() error { return ErrNotRepository }
 
 // Open resolves the repository whose work tree contains dir. A directory
 // outside any work tree, bare repositories included, is ErrNotRepository.
@@ -32,13 +64,12 @@ func Open(ctx context.Context, dir string) (Repo, error) {
 	if err != nil {
 		return Repo{}, err
 	}
-	out, err := Command(ctx, abs, "rev-parse", "--absolute-git-dir", "--git-common-dir", "--show-toplevel").Output()
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		return Repo{}, fmt.Errorf("%w: %s", ErrNotRepository, abs)
-	}
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return Repo{}, err
+	}
+	out, err := Command(ctx, abs, "rev-parse", "--absolute-git-dir", "--git-common-dir", "--show-toplevel").Output()
+	if err != nil {
+		return Repo{}, openFailure(ctx, abs, err)
 	}
 	lines := strings.Split(strings.TrimRight(string(out), "\r\n"), "\n")
 	if len(lines) != 3 {
@@ -60,6 +91,20 @@ func Open(ctx context.Context, dir string) (Repo, error) {
 		return Repo{}, fmt.Errorf("%w: %s: %w", ErrNotRepository, abs, err)
 	}
 	return repo, nil
+}
+
+// openFailure says why asking git failed. A git that exited non-zero refused
+// the folder, unless the context ended first: then the process was stopped by
+// the deadline, said nothing about the folder, and the answer is the context's.
+func openFailure(ctx context.Context, abs string, err error) error {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return &RefusedError{Dir: abs, Detail: firstLine(exit.Stderr)}
+	}
+	return err
 }
 
 // Verify checks a Repo recorded earlier against the files as they stand: the
@@ -162,4 +207,36 @@ func (r Repo) CommandWithConfig(ctx context.Context, extraConfig []string, args 
 // explicit GIT_DIR is never swapped for a nested or implicit-bare one.
 func (r Repo) env() []string {
 	return []string{"GIT_DIR=" + r.GitDir, "GIT_COMMON_DIR=" + r.CommonDir, "GIT_WORK_TREE=" + r.WorkTree}
+}
+
+// firstLine is the first printable line git wrote, bounded: it is shown to a
+// person, so it is cut to a short readable length.
+func firstLine(raw []byte) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(string(raw)), "\n")
+	line = strings.Map(func(r rune) rune {
+		if r < ' ' || r == 0x7f {
+			return -1
+		}
+		return r
+	}, line)
+	if len(line) > 160 {
+		line = line[:160]
+	}
+	return line
+}
+
+// AbsenceOf says why opening a workspace that carries a marker failed: git
+// refused it, or git did not answer. A nil error is no absence.
+func AbsenceOf(err error) (Absence, string) {
+	if err == nil {
+		return "", ""
+	}
+	var refused *RefusedError
+	if errors.As(err, &refused) {
+		return AbsenceRefused, refused.Detail
+	}
+	if errors.Is(err, ErrNotRepository) {
+		return AbsenceRefused, ""
+	}
+	return AbsenceUnavailable, ""
 }

@@ -37,7 +37,7 @@ it("offers the same read beside the add-model field and merges into the list kee
   draw({ checkProvider });
   await userEvent.click(screen.getByRole("checkbox", { name: "选用 beta" }));
   await userEvent.click(inline());
-  expect(checkProvider).toHaveBeenCalledWith("relay");
+  expect(checkProvider).toHaveBeenCalledWith("relay", { baseUrl: "https://relay.example.com/v1", apiKey: "", kind: "openai" });
   await screen.findByText("gamma");
   expect(screen.getByRole("checkbox", { name: "选用 alpha" }).getAttribute("aria-checked")).toBe("true");
   expect(screen.getByRole("checkbox", { name: "选用 beta" }).getAttribute("aria-checked")).toBe("false");
@@ -71,12 +71,12 @@ it("keeps a typed model id addable after a failed read", async () => {
   expect((await screen.findByRole("checkbox", { name: "选用 relay-private-1" })).getAttribute("aria-checked")).toBe("true");
 });
 
-it("probes with the typed key and address from the add field too", async () => {
-  const probeProvider = vi.fn(async (_url: string, _key: string) => ({ ok: true, models: ["alpha", "delta"] }));
-  draw({ probeProvider: probeProvider as unknown as Port["probeProvider"] });
+it("reads with the typed key and address from the add field too", async () => {
+  const checkProvider = vi.fn(async () => ({ ok: true, models: ["alpha", "delta"] }));
+  draw({ checkProvider });
   await userEvent.type(screen.getByPlaceholderText("········"), "sk-new");
   await userEvent.click(inline());
-  await waitFor(() => expect(probeProvider).toHaveBeenCalledWith("https://relay.example.com/v1", "sk-new"));
+  await waitFor(() => expect(checkProvider).toHaveBeenCalledWith("relay", { baseUrl: "https://relay.example.com/v1", apiKey: "sk-new", kind: "openai" }));
   await screen.findByText("delta");
 });
 
@@ -89,4 +89,15 @@ it("holds both entries while a read runs", async () => {
   expect(reading).toHaveLength(2);
   expect(reading.every((b) => (b as HTMLButtonElement).disabled)).toBe(true);
   release({ ok: true, models: ["alpha"] });
+});
+
+it("tests the address and key being typed, not only the saved ones", async () => {
+  const checkProvider = vi.fn(async () => ({ ok: true, models: ["alpha"] }));
+  draw({ checkProvider });
+  const address = screen.getByRole("textbox", { name: "接口地址" });
+  await userEvent.clear(address);
+  await userEvent.type(address, "https://new.example.com/v1");
+  await userEvent.type(screen.getByLabelText(/API Key/), "typed-key-123");
+  await userEvent.click(inline());
+  expect(checkProvider).toHaveBeenCalledWith("relay", { baseUrl: "https://new.example.com/v1", apiKey: "typed-key-123", kind: "openai" });
 });

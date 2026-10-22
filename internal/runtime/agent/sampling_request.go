@@ -28,7 +28,11 @@ type samplingRequest struct {
 }
 
 func (a *Agent) streamProviderRequest(ctx context.Context, req provider.Request) (<-chan provider.Chunk, error) {
-	return a.svc.prov.Stream(ctx, req)
+	ch, err := a.svc.prov.Stream(ctx, req)
+	if err == nil {
+		a.window().rememberSummaryPrefix(req)
+	}
+	return ch, err
 }
 
 func (a *Agent) handleSamplingError(
@@ -43,7 +47,7 @@ func (a *Agent) handleSamplingError(
 	if provider.IsStreamInterrupted(result.err) && attempt < maxSamplingAttempts {
 		streamSink.Discard()
 		reason := provider.StreamInterruptReason(result.err)
-		a.emitStreamAttempt(attemptID, event.StreamAttemptDiscard, attempt, reason, result.err)
+		a.emitStreamAttempt(attemptID, event.StreamAttemptDiscard, attempt, reason, result.err, 0)
 		delay := streamRetryDelay(attempt)
 		a.svc.sink.Emit(event.Event{
 			Kind: event.Retrying, RetryAttempt: attempt, RetryMax: maxStreamRecoveries,
@@ -57,7 +61,7 @@ func (a *Agent) handleSamplingError(
 	}
 	if attempt < maxSamplingAttempts && a.window().recoverContextOverflow(ctx, frozen, result.err) {
 		streamSink.Discard()
-		a.emitStreamAttempt(attemptID, event.StreamAttemptDiscard, attempt, "context overflow", result.err)
+		a.emitStreamAttempt(attemptID, event.StreamAttemptDiscard, attempt, "context overflow", result.err, 0)
 		return true, streamedTurn{}
 	}
 	// Exhausted retries or non-retryable error: leave the last speculative UI
@@ -147,6 +151,10 @@ func (a *Agent) buildSamplingRequest(ctx context.Context, trigger string) (sampl
 	// Host-owned and set after the extension ruling: the payload it rewrites
 	// has no mode, and a replaced request must not drop the session's choice.
 	req.Mode = a.sess.mode.get()
+	// The same rule for the session's switched depth; an unset one leaves any override an extension set.
+	if level := a.sess.effort.get(); level != "" {
+		req.EffortOverride = level
+	}
 	sent := usageAnchor{
 		visible:           a.window().visibleRequestShape(prepared.Messages),
 		projectionVersion: prepared.ProjectionVersion,
@@ -204,6 +212,16 @@ func freezeProviderRequest(req provider.Request) provider.Request {
 		out.ResponseFormat = &rf
 	}
 	return out
+}
+
+// withHeaderRetries makes a request report its connection retries to the sink
+// and, when the user set one, apply their retry limit.
+func withHeaderRetries(ctx context.Context, sink event.Sink, limit int) context.Context {
+	ctx = provider.WithRetryNotify(ctx, headerRetryNotice(sink))
+	if limit != 0 {
+		ctx = provider.WithRetryLimit(ctx, limit)
+	}
+	return ctx
 }
 
 // headerRetryNotice turns a connection+header backoff into the Retrying event a

@@ -73,10 +73,13 @@ const ev = async (x) => {
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 await send("Runtime.enable"); await send("Page.enable");
-await send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+await send("Emulation.setDeviceMetricsOverride", { width: Number(process.argv[3] || 1440), height: Number(process.argv[4] || 1000), deviceScaleFactor: 1, mobile: false });
 await send("Page.navigate", { url }); await wait(2500);
 await ev(`localStorage.setItem("rx-lang","en")`);
-await send("Page.navigate", { url }); await wait(5000);
+await send("Page.navigate", { url });
+// The opening plays for about ten seconds in a profile that has not seen it, and the
+// settings button is not there until it ends: wait on the control, not on a duration.
+for (let i = 0; i < 60 && !(await ev(`!!document.querySelector('[data-action="chrome.settings"]')`)); i++) await wait(500);
 await ev(SETTINGS_OPEN); await wait(1500);
 const panels = await ev(SETTINGS_COUNT);
 if (!panels) throw new Error("settings did not open; the sweep would prove nothing");
@@ -130,5 +133,5 @@ for (let p = 0; p < panels; p++) {
   }
 }
 await send("Fetch.disable");
-console.log(`\npanels ${panels}; writes refused ${tried}; failed a judgement ${bad}; silent ${quiet}`);
+console.log(`\nviewport ${process.argv[3] || 1440}x${process.argv[4] || 1000}; panels ${panels}; writes refused ${tried}; failed a judgement ${bad}; silent ${quiet}`);
 ws.close();

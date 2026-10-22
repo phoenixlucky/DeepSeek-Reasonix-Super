@@ -110,6 +110,11 @@ type CompletionReportAudit struct {
 	// ClaimsUnbacked is how many of them the ledger did not support.
 	ClaimsVerified int
 	ClaimsUnbacked int
+	// OriginRecorded counts the external results the host kept the text of this
+	// turn, and OriginMatched the calls (not read-only) whose arguments carried
+	// that text verbatim. Counts only: they measure a signal, nothing acts on it.
+	OriginRecorded int
+	OriginMatched  int
 }
 
 // CompletionReportAuditSink is an optional sink capability; implementations
@@ -182,7 +187,8 @@ type MemoryRecallAudit struct {
 	Omitted         int
 	OmittedByLimit  int
 	OmittedByBudget int
-	Suppressed      string // reason recall stayed silent; "" when hits were injected
+	Suppressed      string // why recall stayed silent, as "<code>: <sentence>"; "" when hits were injected
+	SuppressionCode string // the typed code Suppressed begins with; consumers match this, never the prose
 	// Shadow is the Retrieval V2 ranking (telemetry only, never served).
 	Shadow []MemoryRecallHit
 }

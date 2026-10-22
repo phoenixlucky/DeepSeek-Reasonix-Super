@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"errors"
 	"testing"
 
 	"reasonix/internal/contract/config"
@@ -80,5 +81,17 @@ func TestResolveHostAdHocDefaultsPort(t *testing.T) {
 	}
 	if h.User != "user" {
 		t.Fatalf("user = %q", h.User)
+	}
+}
+
+// A machine that is not reached over ssh has no address to dial; resolving it
+// must say so instead of failing later on an empty hostname.
+func TestResolveHostRefusesAMachineThatIsNotSSH(t *testing.T) {
+	cfg := config.Default()
+	if err := cfg.UpsertRemoteHost(config.RemoteHostEntry{Name: "dev", Kind: "wsl", Distro: "Ubuntu"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveHost(cfg, "dev", nil); !errors.Is(err, ErrNotSSHHost) {
+		t.Fatalf("err = %v, want ErrNotSSHHost", err)
 	}
 }

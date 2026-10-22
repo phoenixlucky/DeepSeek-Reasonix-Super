@@ -9,8 +9,9 @@ import (
 
 func (h *Hub) moveWorkspace(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Path      string `json:"path"`
-		Direction int    `json:"direction"`
+		Path      string  `json:"path"`
+		Direction int     `json:"direction"`
+		Before    *string `json:"before"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		badBody(w)
@@ -21,11 +22,16 @@ func (h *Hub) moveWorkspace(w http.ResponseWriter, r *http.Request) {
 		missingField(w, "path")
 		return
 	}
-	if body.Direction != -1 && body.Direction != 1 {
+	var err error
+	if body.Before != nil {
+		// A drop names its place; a step names a direction. Not both.
+		err = placeWorkspace(r.Context(), dir, strings.TrimSpace(*body.Before))
+	} else if body.Direction != -1 && body.Direction != 1 {
 		badValue(w, "direction", "-1", "1")
 		return
+	} else {
+		err = moveWorkspace(r.Context(), dir, body.Direction)
 	}
-	err := moveWorkspace(r.Context(), dir, body.Direction)
 	if errors.Is(err, errWorkspaceNotRemembered) {
 		notFound(w, "workspace", dir)
 		return

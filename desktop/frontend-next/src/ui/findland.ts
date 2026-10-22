@@ -51,10 +51,15 @@ export function useFindLanding(
  *  could: a row can be taller than the view, so its top is not enough. Rows
  *  above it may still mount and move it, so it holds for a few frames. */
 function reveal(row: HTMLElement, root: HTMLElement, needle: string, nth: number, mine: () => boolean, tries = 8): boolean {
-  if (!needle || !mine()) return false;
+  if (!needle || !mine() || !row.isConnected) return false;
   landingBox(row);
   const range = currentRange(row, needle, nth);
-  if (!range) return false;
+  if (!range) {
+    const lazy = [...row.querySelectorAll<HTMLDetailsElement>("details[data-lazy]:not([open])")];
+    for (const fold of lazy) fold.open = true;
+    if (lazy.length > 0 && tries > 0) requestAnimationFrame(() => reveal(row, root, needle, nth, mine, tries - 1));
+    return false;
+  }
   for (let fold = range.startContainer.parentElement?.closest("details:not([open])"); fold && row.contains(fold);
     fold = fold.parentElement?.closest("details:not([open])")) {
     (fold as HTMLDetailsElement).open = true;
@@ -104,6 +109,7 @@ export function useFindPaint(
       if (frame) return;
       frame = requestAnimationFrame(() => {
         frame = 0;
+        if (!flow.current?.isConnected) return;
         paintFind(flow.current, query, current === null ? null : { id: current, nth });
       });
     };

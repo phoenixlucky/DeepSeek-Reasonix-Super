@@ -189,7 +189,7 @@ func hookRuntimeWarnings(pkg pluginpkg.Package, workspaceRoot string) []string {
 	}
 	options := hook.RuntimeOptions{}
 	if cfg, _ := config.LoadForRootReadOnly(workspaceRoot); cfg != nil {
-		options = hook.RuntimeOptionsForShell(cfg.Tools.Shell.Prefer, cfg.Tools.Shell.Path)
+		options = hook.RuntimeOptionsForShell(cfg.Tools.Shell.Prefer, cfg.Tools.Shell.Path, cfg.Tools.Shell.Args...)
 	}
 	var out []string
 	for _, issue := range hook.CheckPackageRuntime(pkg, options) {

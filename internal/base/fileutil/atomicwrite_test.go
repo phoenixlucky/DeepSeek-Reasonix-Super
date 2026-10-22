@@ -505,3 +505,38 @@ func TestValidatedWriteRechecksBeforeEveryRenameAttempt(t *testing.T) {
 		t.Fatalf("directory holds %d entries, want only the state file (temp removed)", len(entries))
 	}
 }
+
+func TestAtomicCreateWithoutHardLinkSupport(t *testing.T) {
+	if runtime.GOOS != "windows" && runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("no native no-replace rename")
+	}
+	previous := createLink
+	calls := 0
+	createLink = func(string, string) error { calls++; return errors.ErrUnsupported }
+	t.Cleanup(func() { createLink = previous })
+	path := filepath.Join(testenv.TempDir(t), "new.txt")
+	if err := AtomicCreateFile(path, []byte("complete"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "complete" || calls != 0 {
+		t.Fatalf("file=%q error=%v link calls=%d", got, err, calls)
+	}
+}
+
+func TestAtomicCreateDoesNotReplaceConcurrentFile(t *testing.T) {
+	previous := createRenameNoReplace
+	createRenameNoReplace = func(oldPath, newPath string) error {
+		if err := os.WriteFile(newPath, []byte("concurrent"), 0o600); err != nil {
+			return err
+		}
+		return os.ErrExist
+	}
+	t.Cleanup(func() { createRenameNoReplace = previous })
+	path := filepath.Join(testenv.TempDir(t), "new.txt")
+	if err := AtomicCreateFile(path, []byte("replacement"), 0o600); err == nil {
+		t.Fatal("concurrent target was replaced")
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "concurrent" {
+		t.Fatalf("concurrent file changed: %q error=%v", got, err)
+	}
+}

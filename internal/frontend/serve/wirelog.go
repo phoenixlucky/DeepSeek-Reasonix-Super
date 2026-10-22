@@ -47,7 +47,8 @@ var wireLogKinds = map[string]bool{
 	// What serialising writers across sessions actually cost this one. Nothing
 	// else in the log carries it: the notice only fires past the grace, and it
 	// carries a sentence rather than a number.
-	"workspace_lease": true,
+	"workspace_lease":   true,
+	"extension_surface": true, "extension_status": true,
 }
 
 // wireLogSkipped names the kinds deliberately left out, so every kind is
@@ -60,7 +61,7 @@ var wireLogSkipped = map[string]bool{
 	"reasoning": true, "text": true, "phase": true,
 	"tool_progress": true, "compaction_progress": true,
 	// Live surfaces a reopened window re-reads from the host rather than replays.
-	"mcp_surface_ready": true, "extension_surface": true, "extension_status": true,
+	"mcp_surface_ready": true,
 	"workspace_changed": true, "turn_phase": true, "inbox_changed": true,
 	// Content-free invalidation: a reopened window reads /adjudications, and
 	// replaying the notice would tell it to re-read something it just read.
@@ -70,6 +71,9 @@ var wireLogSkipped = map[string]bool{
 	"rewind_changed": true,
 	// The agent's tabs are read from the session that owns them.
 	"browser_tabs_changed": true,
+	// A takeover only stops a pending question's countdown; a reopened window is
+	// told what is left by the pending ask itself, not by a replayed frame.
+	"ask_engaged": true,
 }
 
 // codeTrajectoryUnreadable refuses a read that could not establish coverage.
@@ -113,6 +117,10 @@ type trajectoryView struct {
 // no longer exists. The last retained line is readable from the log anyway.
 type wireLogMeta struct {
 	Truncated bool `json:"truncated"`
+	// SurfacesDropped is set when an extension surface frame was among those
+	// refused, which is what makes a reopened window's surface list incomplete.
+	// A record from before it existed leaves it unset: nothing is known then.
+	SurfacesDropped bool `json:"surfacesDropped,omitempty"`
 }
 
 type wireLog struct {
@@ -121,6 +129,8 @@ type wireLog struct {
 	// after the first refused one is refused too; keyed by path because /resume
 	// and /new move the writer to another log.
 	witnessed string
+	// The log a refused surface frame has been recorded against.
+	surfaceWitnessed string
 }
 
 // attachWireLog mirrors qualifying broadcast frames to the current session's
@@ -164,6 +174,15 @@ func (w *wireLog) write(sessionPath string, frame []byte) {
 	if head.NonPersistable {
 		return
 	}
+	surface := false
+	if head.Kind == "extension_surface" || head.Kind == "extension_status" {
+		var ok bool
+		frame, ok = surfaceMarker(frame)
+		if !ok {
+			return
+		}
+		surface = true
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	// Reopened per write rather than held: a retained handle blocks the session
@@ -178,7 +197,7 @@ func (w *wireLog) write(sessionPath string, frame []byte) {
 	// is on disk stays a prefix of what happened. The prefix is only honest if
 	// it says so, which is what the witness is for.
 	if st, err := f.Stat(); err == nil && st.Size() > wireLogMaxBytes {
-		w.witness(sessionPath)
+		w.witness(sessionPath, surface)
 		return
 	}
 	_, _ = f.Write(append(frame, '\n'))
@@ -187,12 +206,17 @@ func (w *wireLog) write(sessionPath string, frame []byte) {
 // witness records that the cap refused a frame. Written on the refusal and not
 // on the crossing, so a log over the cap with no witness is a session that
 // stopped before the next frame arrived rather than one that dropped it.
-func (w *wireLog) witness(sessionPath string) {
+func (w *wireLog) witness(sessionPath string, surface bool) {
 	path := store.SessionWireLogMeta(sessionPath)
-	if path == "" || w.witnessed == path {
+	if path == "" || (w.witnessed == path && (!surface || w.surfaceWitnessed == path)) {
 		return
 	}
-	body, err := json.Marshal(wireLogMeta{Truncated: true})
+	// Merged with what an earlier process wrote: a restarted writer must not
+	// forget that a surface was already refused.
+	meta, _ := readWireLogMeta(path)
+	meta.Truncated = true
+	meta.SurfacesDropped = meta.SurfacesDropped || surface
+	body, err := json.Marshal(meta)
 	if err != nil {
 		return
 	}
@@ -200,24 +224,32 @@ func (w *wireLog) witness(sessionPath string) {
 		return
 	}
 	w.witnessed = path
+	if meta.SurfacesDropped {
+		w.surfaceWitnessed = path
+	}
 }
 
 // truncationWitnessed reads the log's refusal record. Missing is the ordinary
 // answer and means no frame was refused; anything else is unreadable, and an
 // unreadable witness may not be reported as an intact log.
 func truncationWitnessed(path string) (bool, error) {
+	meta, err := readWireLogMeta(path)
+	return meta.Truncated, err
+}
+
+func readWireLogMeta(path string) (wireLogMeta, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
+		return wireLogMeta{}, nil
 	}
 	if err != nil {
-		return false, err
+		return wireLogMeta{}, err
 	}
 	var meta wireLogMeta
 	if err := json.Unmarshal(data, &meta); err != nil {
-		return false, err
+		return wireLogMeta{}, err
 	}
-	return meta.Truncated, nil
+	return meta, nil
 }
 
 // trajectory answers with the persisted frames and what they cover. A read that

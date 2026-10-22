@@ -4,6 +4,8 @@ export interface SpeedSummary {
   output: number;
   modelSeconds: number;
   average: number;
+  /** Seconds until the latest measured round's first output; 0 when none was. */
+  firstToken: number;
 }
 
 /** Derive only claims the trajectory can support. Durable event replay keeps
@@ -19,7 +21,9 @@ export function speedOf(rows: TrajRow[]): SpeedSummary {
   const timedOutput = timed.reduce((sum, row) => sum + (row.out ?? 0), 0);
   const modelSeconds = timed.reduce((sum, row) => sum + (row.dur ?? 0), 0);
   const candidate = timedOutput > 0 && modelSeconds > 0 ? timedOutput / modelSeconds : 0;
+  const firstToken = [...rounds].reverse().find((row) => (row.ttft ?? 0) > 0)?.ttft ?? 0;
   return {
+    firstToken,
     output,
     modelSeconds,
     average: candidate > 0 && candidate <= 1000 ? candidate : 0,

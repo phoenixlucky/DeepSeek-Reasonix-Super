@@ -11,7 +11,11 @@ import (
 // scaffold, where each optional field carries an explanatory comment.
 func renderProviderEntryAnnotated(b *strings.Builder, p ProviderEntry) {
 	fmt.Fprintf(b, "name        = %q\n", p.Name)
-	fmt.Fprintf(b, "kind        = %q\n", p.Kind)
+	if p.Kind == "gemini" {
+		fmt.Fprintf(b, "kind        = %q   # experimental: built from Google's documentation, not yet run against the real endpoint\n", p.Kind)
+	} else {
+		fmt.Fprintf(b, "kind        = %q\n", p.Kind)
+	}
 	fmt.Fprintf(b, "base_url    = %q\n", p.BaseURL)
 	if p.ChatURL != "" {
 		fmt.Fprintf(b, "chat_url    = %q   # legacy OpenAI chat endpoint override\n", p.ChatURL)
@@ -55,6 +59,9 @@ func renderProviderEntryAnnotated(b *strings.Builder, p ProviderEntry) {
 	}
 	if p.BalanceURL != "" {
 		fmt.Fprintf(b, "balance_url = %q   # optional; wallet-balance endpoint shown in the status bar\n", p.BalanceURL)
+		if p.BalanceFormat != "" {
+			fmt.Fprintf(b, "balance_format = %q   # how that endpoint answers: deepseek | moonshot | openrouter; required unless the host is a vendor's own\n", p.BalanceFormat)
+		}
 	}
 	renderProviderEntryAnnotatedTuning(b, p)
 }
@@ -99,6 +106,12 @@ func renderProviderEntryAnnotatedTuning(b *strings.Builder, p ProviderEntry) {
 	}
 	if p.VisionModels != nil {
 		fmt.Fprintf(b, "vision_models = %s   # models in this provider that accept image input\n", renderStringArray(p.VisionModels))
+	}
+	if p.VideoModels != nil {
+		fmt.Fprintf(b, "video_models = %s   # models in this provider that read a video file natively\n", renderStringArray(p.VideoModels))
+	}
+	if p.VideoProtocol != "" {
+		fmt.Fprintf(b, "video_protocol = %q   # inline_data_url|moonshot_file|gemini_inline|gemini_files: how a video file reaches those models\n", p.VideoProtocol)
 	}
 	if p.VisionDetail != "" {
 		fmt.Fprintf(b, "vision_detail = %q   # openai image detail hint: low|high (DeepSeek also original); empty = auto\n", p.VisionDetail)
@@ -171,6 +184,9 @@ func renderProviderEntryPlain(b *strings.Builder, p ProviderEntry) {
 	}
 	if p.BalanceURL != "" {
 		fmt.Fprintf(b, "balance_url = %q\n", p.BalanceURL)
+		if p.BalanceFormat != "" {
+			fmt.Fprintf(b, "balance_format = %q\n", p.BalanceFormat)
+		}
 	}
 	renderProviderEntryPlainTuning(b, p)
 }
@@ -209,6 +225,12 @@ func renderProviderEntryPlainTuning(b *strings.Builder, p ProviderEntry) {
 	}
 	if p.VisionModels != nil {
 		fmt.Fprintf(b, "vision_models = %s\n", renderStringArray(p.VisionModels))
+	}
+	if p.VideoModels != nil {
+		fmt.Fprintf(b, "video_models = %s\n", renderStringArray(p.VideoModels))
+	}
+	if p.VideoProtocol != "" {
+		fmt.Fprintf(b, "video_protocol = %q\n", p.VideoProtocol)
 	}
 	if p.VisionDetail != "" {
 		fmt.Fprintf(b, "vision_detail = %q\n", p.VisionDetail)

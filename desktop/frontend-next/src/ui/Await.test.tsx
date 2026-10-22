@@ -52,6 +52,10 @@ describe("retryPhase", () => {
 });
 
 describe("the retry line", () => {
+  it("shows no count to run out of when the user removed the retry limit", () => {
+    expect(line(retry({ attempt: 12, max: 0, delayMs: 500 }), "en", 0)).toContain("next retry (12/∞) in");
+  });
+
   it("says what it waits for and when that counts as no answer", () => {
     const text = line(retry({ cause: "timeout", timeoutSecs: 300, delayMs: 500 }), "en", 114_400);
     expect(text).toBe("The server did not answer in time · Retry 1/10 · waiting for the server to answer 113.9 s (300 s counts as no answer)");

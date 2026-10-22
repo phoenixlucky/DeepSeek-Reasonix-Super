@@ -2,7 +2,7 @@ import type { Item } from "../../state/session";
 import { seconds } from "../../i18n/format";
 import { shortArgs } from "../args";
 import { t } from "../../i18n";
-import { delegateStatus, delegateStatusLabel } from "../delegation";
+import { delegateStatus, delegateStatusLabel, ranLabel, ranShort } from "../delegation";
 
 import { agentsIn } from "./derive";
 import { Grp, Row } from "./kit";
@@ -43,8 +43,10 @@ export function Agents({ tasks, onOpen }: { tasks: Task[]; onOpen?: (taskId: str
               {agentName(x)}
               {(x.tool.profile?.count ?? 1) > 1 && <b className="mult">×{x.tool.profile?.count}</b>}
             </span>
+            {x.tool.profile?.label && <span className="lbl" title={x.tool.profile.label}>{x.tool.profile.label}</span>}
+            {ranLabel(x.tool.profile) && <span className="ran" title={ranLabel(x.tool.profile)}>{ranShort(x.tool.profile)}</span>}
             <span className="rt">
-              {status === "done" && x.tool.durationMs ? seconds(x.tool.durationMs, 0) : delegateStatusLabel(status)}
+              {status === "done" && x.tool.durationMs ? `${delegateStatusLabel(status)} · ${seconds(x.tool.durationMs, 0)}` : delegateStatusLabel(status)}
             </span>
             {onOpen && (
               <button

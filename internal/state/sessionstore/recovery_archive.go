@@ -134,6 +134,9 @@ func recoveryArchiveLineage(sessionPath string, except []string) ([]string, erro
 	if err != nil {
 		return nil, err
 	}
+	if err := unreadableSidecarErr(listed); err != nil {
+		return nil, fmt.Errorf("list recovery lineage for %s: %w", filepath.Base(abs), err)
+	}
 	byID := make(map[string]SessionOrderInfo, len(listed))
 	for _, info := range listed {
 		byID[BranchID(info.Path)] = info
@@ -152,6 +155,21 @@ func recoveryArchiveLineage(sessionPath string, except []string) ([]string, erro
 	}
 	sort.Strings(paths)
 	return paths, nil
+}
+
+// unreadableSidecarErr reports every listing row whose branch-meta sidecar
+// could not be read. ListSessionOrder keeps such a row so one broken sibling
+// cannot hide the rest of a folder, but its columns are then zero values, and a
+// zero Recovered is indistinguishable from "not a recovery copy of this
+// conversation", so the archive lineage walk must refuse the transaction.
+func unreadableSidecarErr(listed []SessionOrderInfo) error {
+	var errs []error
+	for _, info := range listed {
+		if _, _, err := LoadBranchMeta(info.Path); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func recoveryArchiveRoot(info SessionOrderInfo, byID map[string]SessionOrderInfo) string {

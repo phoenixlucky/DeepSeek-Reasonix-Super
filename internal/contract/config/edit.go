@@ -981,13 +981,10 @@ func RemovePluginFromEffectiveSourceForRoot(root, name string) (PluginEntry, boo
 // of a now-shadowed source.
 func mcpConfigSourcePathsForRoot(root string) []string {
 	resolvedRoot := resolveRoot(root)
-	projectTOML := ProjectConfigPath(resolvedRoot)
-	projectMCPJSON := mcpJSONFile
-	if resolvedRoot != "." {
-		projectMCPJSON = filepath.Join(resolvedRoot, mcpJSONFile)
-	}
+	projectMCPJSON := filepath.Join(resolvedRoot, mcpJSONFile)
 	paths := append([]string{}, processRoots().userConfigCandidatePaths()...)
-	paths = append(paths, projectTOML, projectMCPJSON)
+	paths = append(paths, ProjectConfigPaths(resolvedRoot)...)
+	paths = append(paths, projectMCPJSON)
 	if legacy := legacyConfigPath(); strings.TrimSpace(legacy) != "" {
 		paths = append(paths, legacy)
 	}

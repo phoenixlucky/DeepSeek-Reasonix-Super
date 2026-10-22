@@ -2,6 +2,7 @@ package feedback
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"regexp"
 	"strings"
@@ -21,7 +22,7 @@ var receiptPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,40}$`)
 // a second reply on a report whose first is still in flight is ErrDuplicate.
 // What this machine remembers is updated so the thread reads right before the
 // next list; what was shown is only ever recorded by MarkSeen.
-func (s *Service) Reply(ctx context.Context, receipt, body string) (ReplyReceipt, error) {
+func (s *Service) Reply(ctx context.Context, receipt, body string, images ...Image) (ReplyReceipt, error) {
 	receipt = strings.TrimSpace(receipt)
 	if !receiptPattern.MatchString(receipt) {
 		return ReplyReceipt{}, invalid(FieldReceipt, ReasonBadValue)
@@ -33,6 +34,10 @@ func (s *Service) Reply(ctx context.Context, receipt, body string) (ReplyReceipt
 	redacted := crashreport.Redact(body, 4*s.limits.ReplyBytes)
 	if len(redacted) > s.limits.ReplyBytes {
 		return ReplyReceipt{}, invalid(FieldBody, ReasonTooLong)
+	}
+	attachments, err := s.replyAttachments(images)
+	if err != nil {
+		return ReplyReceipt{}, err
 	}
 	st, err := s.store.load()
 	if err != nil {
@@ -49,7 +54,7 @@ func (s *Service) Reply(ctx context.Context, receipt, body string) (ReplyReceipt
 		return ReplyReceipt{}, ErrDuplicate
 	}
 	defer s.replying.Delete(it.Receipt)
-	got, err := s.postReply(ctx, st.InstallID, st.InstallToken, it.Receipt, redacted)
+	got, err := s.postReply(ctx, st.InstallID, st.InstallToken, it.Receipt, redacted, attachments...)
 	if errors.Is(err, ErrBadToken) {
 		if rerr := s.store.update(func(st *state) error { st.retire(); return nil }); rerr != nil {
 			return ReplyReceipt{}, rerr
@@ -204,4 +209,18 @@ func cleanText(s string) string {
 func isBidiControl(r rune) bool {
 	return r == 0x061C || r == 0x200E || r == 0x200F || r == 0x2028 || r == 0x2029 ||
 		r >= 0x202A && r <= 0x202E || r >= 0x2066 && r <= 0x2069 || r >= 0xE0000 && r <= 0xE007F
+}
+
+// replyAttachments runs a reply's images through the same gate as a report's:
+// limits, PNG or JPEG by content, and re-encoded from pixels so no metadata leaves.
+func (s *Service) replyAttachments(images []Image) ([]wireAttachment, error) {
+	imgs, err := Normalize(images, s.limits)
+	if err != nil {
+		return nil, err
+	}
+	var out []wireAttachment
+	for _, a := range imgs {
+		out = append(out, wireAttachment{Name: a.Name, ContentType: a.ContentType, DataBase64: base64.StdEncoding.EncodeToString(a.Data)})
+	}
+	return out, nil
 }

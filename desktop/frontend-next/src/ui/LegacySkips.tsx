@@ -9,6 +9,7 @@ const REASON: Record<LegacySkipReason, string> = {
   permission: "没有读取权限",
   corrupt: "文件已损坏",
   copy_failed: "复制到新位置时失败",
+  no_project: "没有记录它属于哪个项目，所以没有导入",
 };
 
 export function LegacySkips({ skipped }: { skipped: LegacySkip[] }) {

@@ -14,11 +14,19 @@ import (
 	"reasonix/internal/ext/pluginspec"
 )
 
-var mcpAuthorizeForCLI = plugin.AuthorizeHTTPMCP
+var (
+	mcpAuthorizeForCLI = plugin.AuthorizeHTTPMCP
+	mcpOpenForCLI      = openMCPAuthorizationURL
+)
 
 func mcpAuthCLI(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: reasonix mcp auth <name>")
+		fmt.Fprintln(os.Stderr, "usage: reasonix mcp auth <name> [--upgrade]")
+		return 2
+	}
+	upgrade := len(args) == 2 && args[1] == "--upgrade"
+	if len(args) > 2 || (len(args) == 2 && !upgrade) {
+		fmt.Fprintln(os.Stderr, "usage: reasonix mcp auth <name> [--upgrade]")
 		return 2
 	}
 	name, workspace := strings.TrimSpace(args[0]), mcpCLIWorkspaceRoot()
@@ -56,9 +64,24 @@ func mcpAuthCLI(args []string) int {
 		fmt.Fprintf(os.Stderr, "could not build MCP authorization specification for %q\n", name)
 		return 1
 	}
+	spec := specs[0]
+	spec.OAuthScopeUpgrade = upgrade
+	asked := plugin.PendingScopeUpgrade(spec.StateDir)
+	if upgrade && len(asked) == 0 {
+		fmt.Fprintf(os.Stderr, "MCP server %q has not asked for more access\n", name)
+		return 1
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	if err := mcpAuthorizeForCLI(ctx, specs[0], openMCPAuthorizationURL); err != nil {
+	announce := func(rawURL string) error {
+		if upgrade {
+			fmt.Printf("opening %s in your browser to grant %q more access: %s (names sent by the server); close it if you do not want that\n", plugin.AuthorizationHost(rawURL), name, strings.Join(asked, " "))
+			return mcpOpenForCLI(rawURL)
+		}
+		fmt.Printf("opening %s in your browser to sign in to %q; close it if you do not recognise that site\n", plugin.AuthorizationHost(rawURL), name)
+		return mcpOpenForCLI(rawURL)
+	}
+	if err := mcpAuthorizeForCLI(ctx, spec, announce); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}

@@ -4,6 +4,8 @@ package acp
 import (
 	"context"
 	"encoding/json"
+
+	"reasonix/internal/session/control"
 )
 
 // Goal lifecycle vendor methods. Resume re-enters a retained Goal with its
@@ -106,4 +108,11 @@ func (s *service) goalChanged(sess *acpSession) SessionGoalResult {
 
 func (t *statusTelemetry) clearGoalOverride() {
 	t.mutate(func(t *statusTelemetry) { t.goalOverride = "" })
+}
+
+func runningGoal(c acpController) string {
+	if c.GoalStatus() == control.GoalStatusRunning {
+		return c.Goal()
+	}
+	return ""
 }

@@ -219,6 +219,8 @@ func TestAgentReservesParentWriteBeforePreToolUse(t *testing.T) {
 		Hooks:              hooks,
 		WriteScheduler:     sched,
 		WriteWorkspaceRoot: root,
+
+		CheckTargetAccess: allowTestFileAccess,
 	}, event.Discard)
 
 	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{

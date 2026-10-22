@@ -13,7 +13,7 @@ import (
 // isSummarizerRequest tells the compaction summarizer's own call apart from the
 // agent's. Only the agent's requests carry the projection under test.
 func isSummarizerRequest(req provider.Request) bool {
-	return len(req.Messages) > 0 && strings.Contains(req.Messages[0].Content, "compacting the earlier part")
+	return req.Summary
 }
 
 func countUserTag(req provider.Request, tag string) int {
@@ -52,7 +52,7 @@ recent_keep = 2
 name = "test-model"
 kind = "boot-superseded-effect"
 model = "x"
-context_window = 32000
+context_window = 32500
 `)
 	approveWorkspaceAt(t, home, dir)
 

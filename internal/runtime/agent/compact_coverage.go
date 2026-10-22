@@ -23,6 +23,9 @@ type foldCoverage struct {
 	Failures   []string // commands the fold saw fail
 	MissingMut []string
 	MissingFai []string
+	// Unseen is the changes the summarizer was never shown: input shortened to
+	// fit its window leaves them out, so the digest cannot name them.
+	Unseen []string
 }
 
 // Required is how many facts the digest had to carry.
@@ -39,7 +42,17 @@ func (c foldCoverage) LostAChange() bool { return len(c.MissingMut) > 0 }
 // LostEveryChange reports a digest that carried none of the fold's changes.
 // That is not a quality judgment needing a threshold — it is a broken digest.
 func (c foldCoverage) LostEveryChange() bool {
-	return len(c.Mutations) > 0 && len(c.MissingMut) == len(c.Mutations)
+	shown, lost := 0, 0
+	for _, p := range c.Mutations {
+		if slices.Contains(c.Unseen, p) {
+			continue
+		}
+		shown++
+		if slices.Contains(c.MissingMut, p) {
+			lost++
+		}
+	}
+	return shown > 0 && lost == shown
 }
 
 // Reason names what went missing, for the receipt and the retry instruction.
@@ -73,7 +86,7 @@ func foldFacts(region []provider.Message, facts func(string) evidence.ToolFacts)
 			continue
 		}
 		failed := isErrorMessage(m)
-		rec := evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.Arguments), !failed, facts(call.Name))
+		rec := evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.ExecutionArguments()), !failed, facts(call.Name))
 		if !failed && rec.Mutation && len(rec.Paths) > 0 {
 			for _, p := range rec.Paths {
 				if p = strings.TrimSpace(p); p != "" && !seenMut[p] {
@@ -106,6 +119,20 @@ func measureFoldCoverage(region []provider.Message, facts func(string) evidence.
 	for _, c := range cov.Failures {
 		if !strings.Contains(haystack, strings.ToLower(c)) {
 			cov.MissingFai = append(cov.MissingFai, c)
+		}
+	}
+	return cov
+}
+
+// measureShownCoverage is measureFoldCoverage for a digest written from input
+// shorter than the fold: a change absent from the input is unseen, not
+// forgotten, and the backstop restores it.
+func measureShownCoverage(region, shown []provider.Message, facts func(string) evidence.ToolFacts, digest string) foldCoverage {
+	cov := measureFoldCoverage(region, facts, digest)
+	seen := foldFacts(shown, facts).Mutations
+	for _, p := range cov.Mutations {
+		if !slices.Contains(seen, p) {
+			cov.Unseen = append(cov.Unseen, p)
 		}
 	}
 	return cov

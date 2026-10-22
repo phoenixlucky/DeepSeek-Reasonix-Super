@@ -54,6 +54,13 @@ export function DisplayCurrency({ port, onChanged }: { port: AgentPort; onChange
               ))}
             </div>
           </div>
+          {state.mode !== "auto" && state.unconverted.length > 0 && (
+            <div className="why">
+              {t("这些模型的价格不在官方价目表里，无法换算成所选币种，费用只能按原币种显示：{models}。到「服务商」编辑该模型，点「恢复官方价」即可。", {
+                models: state.unconverted.map((u) => t("{model}（{currency}）", { model: u.model, currency: u.currency })).join(t("、")),
+              })}
+            </div>
+          )}
           {error && <div className="why">{error}</div>}
         </div>
       )}

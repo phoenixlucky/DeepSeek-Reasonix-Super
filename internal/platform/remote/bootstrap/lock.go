@@ -16,7 +16,7 @@ const (
 )
 
 type serveLock struct {
-	fs    *sftpfs.FS
+	fs    sftpfs.Files
 	paths StatePaths
 	owner string
 }
@@ -26,7 +26,7 @@ type serveLock struct {
 // locate/install phase stays outside the lock. A crashed owner's directory is
 // reclaimed only after a minute; the guarded health check itself is bounded to
 // 20 seconds, so a live owner cannot legitimately age past that threshold.
-func acquireServeLock(ctx context.Context, fs *sftpfs.FS, paths StatePaths, clock func() time.Time) (*serveLock, error) {
+func acquireServeLock(ctx context.Context, fs sftpfs.Files, paths StatePaths, clock func() time.Time) (*serveLock, error) {
 	if err := fs.MkdirAll(ctx, paths.Dir); err != nil {
 		return nil, err
 	}

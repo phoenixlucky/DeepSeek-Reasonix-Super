@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"reasonix/internal/contract/agentcomposition"
 	"reasonix/internal/contract/provider"
 	"reasonix/internal/contract/tool"
 	"reasonix/internal/ext/command"
@@ -15,8 +16,11 @@ import (
 	"reasonix/internal/ext/extension/sidecar"
 	"reasonix/internal/ext/extension/uihub"
 	"reasonix/internal/ext/hook"
+	"reasonix/internal/ext/modhost"
 	"reasonix/internal/ext/plugin"
+	"reasonix/internal/ext/pluginpkg"
 	"reasonix/internal/ext/skill"
+	"reasonix/internal/platform/computer"
 	"reasonix/internal/session/control"
 )
 
@@ -28,9 +32,10 @@ import (
 // package is installed, and its Close is chained into the controller's
 // cleanup so sidecars die with their controller generation.
 type BuildResult struct {
-	Controller *control.Controller
-	Snapshot   *extension.RuntimeSnapshot
-	Runtime    *extension.RuntimeSet
+	ComputerDriver *computer.Driver
+	Controller     *control.Controller
+	Snapshot       *extension.RuntimeSnapshot
+	Runtime        *extension.RuntimeSet
 	// Owner is the session-lineage lifecycle owner. Independent builds receive
 	// independent owners; RebuildFrom reuses the previous owner so only that
 	// lineage's old generation drains.
@@ -162,12 +167,22 @@ var startExtensionPackages = sidecar.StartPackagesWithPlan
 // preflightExtensionRuntimes starts enabled runtime packages before model
 // resolution. Required failures are fatal; optional failures warn. With
 // prev+plan, only Added/Reloaded start and Unchanged are adopted.
-func preflightExtensionRuntimes(ctx context.Context, home string, ext extensionBoot, prev *sidecar.Manager, plan *extension.RuntimePlan) (*sidecar.Manager, error) {
+func preflightExtensionRuntimes(ctx context.Context, home string, ext extensionBoot, prev *sidecar.Manager, plan *extension.RuntimePlan, bindings ...*agentcomposition.Binding) (*sidecar.Manager, error) {
 	if strings.TrimSpace(home) == "" {
 		return nil, nil
 	}
-	packages, loadWarnings := sidecar.LoadRuntimePackages(home)
-	if len(packages) == 0 {
+	ensureModHost()
+	packages, loadWarnings := sidecar.LoadRuntimePackagesFor(home, ext.session.WorkspaceRoot)
+	var binding *agentcomposition.Binding
+	if len(bindings) > 0 {
+		binding = bindings[0]
+	}
+	var selectErr error
+	packages, selectErr = compositionPackages(home, packages, binding)
+	if selectErr != nil {
+		return nil, selectErr
+	}
+	if len(packages) == 0 && !binding.Live() {
 		// No v2 runtime packages: surface the installed-state warnings exactly
 		// as the in-assembly StartPackages call did, and take the untouched
 		// pre-sidecar path (no processes, no Manager).
@@ -183,16 +198,28 @@ func preflightExtensionRuntimes(ctx context.Context, home string, ext extensionB
 	if ext.ui != nil {
 		ui = ext.ui
 	}
-	mgr, warnings, err := startExtensionPackages(ctx, home, ext.session, ui, prev, plan)
+	var mgr *sidecar.Manager
+	var warnings []string
+	var err error
+	if binding.Live() {
+		mgr, warnings, err = sidecar.StartLivePackages(ctx, home, packages, ext.session, ui, func(current []pluginpkg.InstalledPackage) ([]pluginpkg.InstalledPackage, error) {
+			return liveCompositionPackages(current, binding)
+		})
+	} else if binding != nil {
+		mgr, warnings, err = sidecar.StartResolvedPackages(ctx, packages, ext.session, ui)
+	} else {
+		mgr, warnings, err = startExtensionPackages(ctx, home, ext.session, ui, prev, plan)
+	}
 	for _, warning := range warnings {
 		ext.warn(warning)
 	}
+	reconcileMods(mgr)
 	if err != nil {
 		// A required runtime failed: the Manager already shut down whatever
 		// started. The call site treats *RequiredStartError as fatal.
 		return nil, err
 	}
-	if len(mgr.Clients()) == 0 {
+	if len(mgr.Clients()) == 0 && len(mgr.DeferredPackages()) == 0 && !binding.Live() {
 		// Every package was optional and failed: retire the empty Manager and
 		// take the pre-sidecar path with warnings already surfaced.
 		_ = mgr.Close()
@@ -250,7 +277,7 @@ func assembleLegacySnapshot(ctx context.Context, in legacyAssembly, generation u
 	// and replacements, then broadcasts system_prompt.build with the final
 	// prompt so observers see exactly what froze.
 	var postFreeze func(snap *extension.RuntimeSnapshot)
-	if mgr != nil && len(mgr.Clients()) > 0 {
+	if mgr != nil && (len(mgr.Clients()) > 0 || mgr.OnDemand()) {
 		managed := mgr
 		bindExtensionUI(ext.ui, managed, ext.warn)
 		sidecarContribs := managed.Contributions()
@@ -307,7 +334,7 @@ func assembleLegacySnapshot(ctx context.Context, in legacyAssembly, generation u
 		}
 		required := requiredRuntimeSet(managed)
 		clients := sidecarClientResolver(managed)
-		dispatchOpts := dispatch.Options{Warn: ext.warn, SidecarDown: ext.onSidecarDown}
+		dispatchOpts := dispatch.Options{Warn: ext.warn, SidecarDown: ext.onSidecarDown, TightenOnly: tightenOnlyRuntimeSet(managed), Mods: modRuntimeSet(managed)}
 		// system_prompt.build strategy: the slot's owner rules on the
 		// composed prompt before the snapshot freezes. Skipped on no-op plans
 		// so CacheHash stays stable across rebuilds.
@@ -374,6 +401,28 @@ func resolveReplacementClaims(groups ...[]extension.Contribution) (map[extension
 
 // requiredRuntimeSet marks every started sidecar whose manifest declared the
 // runtime required:true, the dispatcher's required-class input.
+func tightenOnlyRuntimeSet(mgr *sidecar.Manager) map[string]bool {
+	out := map[string]bool{}
+	for _, client := range mgr.Clients() {
+		if client.TightenOnly() {
+			out[client.PluginID()] = true
+		}
+	}
+	return out
+}
+
+// modRuntimeSet names the live runtimes that are Claude Code mods, by the mod
+// registry's own record rather than by anything the runtime says.
+func modRuntimeSet(mgr *sidecar.Manager) map[string]bool {
+	out := map[string]bool{}
+	for _, client := range mgr.Clients() {
+		if modhost.Default.Known(client.PluginID()) {
+			out[client.PluginID()] = true
+		}
+	}
+	return out
+}
+
 func requiredRuntimeSet(mgr *sidecar.Manager) map[string]bool {
 	clients := mgr.Clients()
 	out := make(map[string]bool, len(clients))

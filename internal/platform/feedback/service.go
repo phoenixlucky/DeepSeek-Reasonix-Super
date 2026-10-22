@@ -35,6 +35,9 @@ type Config struct {
 	// Backoff sets retry waits; a transient submit response uses the first wait.
 	// Nil takes the default, an empty non-nil slice disables retrying.
 	Backoff []time.Duration
+	// Assert mints the signed-in account's proof for one link call and returns
+	// ErrAccountRequired when nobody is signed in. Nil leaves linking unavailable.
+	Assert func(context.Context) (string, error)
 }
 
 // Service is the one client every frontend drives.
@@ -44,6 +47,7 @@ type Service struct {
 	store   *store
 	backoff []time.Duration
 	limits  Limits
+	assert  func(context.Context) (string, error)
 	// replying holds the receipts whose reply is on its way.
 	replying sync.Map
 }
@@ -77,7 +81,7 @@ func New(cfg Config) (*Service, error) {
 	if backoff == nil {
 		backoff = []time.Duration{400 * time.Millisecond, 1500 * time.Millisecond}
 	}
-	return &Service{base: base, http: hc, store: newStore(cfg.Home), backoff: backoff, limits: DefaultLimits}, nil
+	return &Service{base: base, http: hc, store: newStore(cfg.Home), backoff: backoff, limits: DefaultLimits, assert: cfg.Assert}, nil
 }
 
 func (s *Service) Limits() Limits { return s.limits }
@@ -235,14 +239,23 @@ func (s *Service) ListMine(ctx context.Context) (Mine, error) {
 		return Mine{}, err
 	}
 	profile := readProfile(resp.Profile)
-	if err := s.store.update(func(st *state) error { st.remember(resp.Items...); st.Profile = profile; return nil }); err != nil {
+	siblings := s.siblingItems(ctx, st)
+	var promotion *Promotion
+	if err := s.store.update(func(st *state) error {
+		st.remember(append(resp.Items, siblings...)...)
+		st.Profile = profile
+		promotion = st.noteLevel(profile)
+		return nil
+	}); err != nil {
 		return Mine{}, err
 	}
 	st, err = s.store.load()
 	if err != nil {
 		return Mine{}, err
 	}
-	return st.mine(false), nil
+	out := st.mine(false)
+	out.Promotion = promotion
+	return out, nil
 }
 
 // readProfile is the standing the service stated, or nil when it stated none or

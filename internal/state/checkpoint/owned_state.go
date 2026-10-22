@@ -94,7 +94,7 @@ func (s *Store) finishOwnedUndo(undo, original *TransactionManifest, applier Con
 
 	s.cleanupCommittedBackups(undo.Targets)
 
-	// Mark original as undone; clear lastUndo.
+	// Mark original as undone; retire the undo offer.
 	s.mu.Lock()
 	original.State = TxUndone
 	original.UpdatedAt = time.Now()
@@ -105,9 +105,8 @@ func (s *Store) finishOwnedUndo(undo, original *TransactionManifest, applier Con
 		slog.Warn("checkpoint: persist original transaction as undone", "err", err)
 	}
 	s.mu.Lock()
-	previous := s.lastUndo
-	s.lastUndo = nil
-	s.unlockUndoChange(previous)
+	s.undo.current = nil
+	s.mu.Unlock()
 
 	result.OK = true
 	result.UndoAvailable = false
@@ -154,9 +153,8 @@ func (s *Store) finishOwnedRewind(tx *TransactionManifest, applier ConversationA
 	}
 	s.cleanupCommittedBackups(tx.Targets)
 	s.mu.Lock()
-	previous := s.lastUndo
-	s.lastUndo = tx
-	s.unlockUndoChange(previous)
+	s.undo.current = tx
+	s.mu.Unlock()
 
 	result.OK = true
 	result.UndoAvailable = true

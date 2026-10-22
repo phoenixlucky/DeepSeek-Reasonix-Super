@@ -29,7 +29,15 @@ import (
 // (never the reverse), so using remote.ExecResult here introduces no cycle.
 type Conn interface {
 	Exec(ctx context.Context, cmd string) (remote.ExecResult, error)
-	SFTP() (*sftpfs.FS, error)
+	Files() (sftpfs.Files, error)
+}
+
+// Detacher is a connection whose commands end every process they started when
+// they return. Such a machine launches the kernel through ExecDetached, which
+// starts it under something that outlives the call, so the kernel lives as long
+// as that does.
+type Detacher interface {
+	ExecDetached(ctx context.Context, cmd string) (remote.ExecResult, error)
 }
 
 // Install strategies.
@@ -116,7 +124,7 @@ type Result struct {
 // EnsureServe returns a running serve for (host, workspace), starting one if
 // needed. It is also the reconnect path: an existing live process is reused.
 func EnsureServe(ctx context.Context, conn Conn, opts Options) (Result, error) {
-	fs, err := conn.SFTP()
+	fs, err := conn.Files()
 	if err != nil {
 		return Result{}, err
 	}
@@ -177,7 +185,7 @@ func EnsureServe(ctx context.Context, conn Conn, opts Options) (Result, error) {
 }
 
 // launchServe starts a detached serve under the held lock and records it.
-func launchServe(ctx context.Context, conn Conn, target remoteOS, fs *sftpfs.FS, paths StatePaths, opts Options, bin, version, workspace string) (Result, error) {
+func launchServe(ctx context.Context, conn Conn, target remoteOS, fs sftpfs.Files, paths StatePaths, opts Options, bin, version, workspace string) (Result, error) {
 	// 5. Generate token, write it 0600, and launch detached serve.
 	token, err := generateToken()
 	if err != nil {
@@ -196,7 +204,23 @@ func launchServe(ctx context.Context, conn Conn, target remoteOS, fs *sftpfs.FS,
 		}
 	}
 	opts.progress("launch", "")
-	launchRes, err := conn.Exec(ctx, target.Launch(LaunchSpec{Bin: bin, Workspace: workspace, BrokerAddr: opts.Broker.Addr}, paths))
+	spec := LaunchSpec{Bin: bin, Workspace: workspace, BrokerAddr: opts.Broker.Addr}
+	if scriptPath, script := target.LaunchScript(spec, paths); scriptPath != "" {
+		if err := fs.WriteFileAtomic(ctx, scriptPath, script, 0o600); err != nil {
+			cleanupFailedLaunch(conn, target, fs, paths, 0)
+			return Result{}, fmt.Errorf("bootstrap: write launch script: %w", err)
+		}
+		defer func() {
+			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = fs.Remove(cleanup, scriptPath, false)
+		}()
+	}
+	launch := conn.Exec
+	if d, ok := conn.(Detacher); ok {
+		launch = d.ExecDetached
+	}
+	launchRes, err := launch(ctx, target.Launch(spec, paths))
 	if err != nil {
 		cleanupFailedLaunch(conn, target, fs, paths, 0)
 		return Result{}, fmt.Errorf("bootstrap: launch: %w", err)
@@ -245,7 +269,7 @@ func launchServe(ctx context.Context, conn Conn, target remoteOS, fs *sftpfs.FS,
 
 // Status reads the recorded state and reports whether the process is alive.
 func Status(ctx context.Context, conn Conn, workspace string) (ServeState, bool, error) {
-	fs, err := conn.SFTP()
+	fs, err := conn.Files()
 	if err != nil {
 		return ServeState{}, false, err
 	}
@@ -265,7 +289,7 @@ func Status(ctx context.Context, conn Conn, workspace string) (ServeState, bool,
 
 // Stop terminates the recorded process and removes its state files.
 func Stop(ctx context.Context, conn Conn, workspace string) error {
-	fs, err := conn.SFTP()
+	fs, err := conn.Files()
 	if err != nil {
 		return err
 	}
@@ -299,7 +323,7 @@ func RepointBroker(ctx context.Context, conn Conn, workspace string, broker Brok
 	if !broker.configured() {
 		return nil
 	}
-	fs, err := conn.SFTP()
+	fs, err := conn.Files()
 	if err != nil {
 		return err
 	}
@@ -321,7 +345,7 @@ func RepointBroker(ctx context.Context, conn Conn, workspace string, broker Brok
 
 // Logs writes up to n tail lines of the serve log to w.
 func Logs(ctx context.Context, conn Conn, workspace string, n int, w io.Writer) error {
-	fs, err := conn.SFTP()
+	fs, err := conn.Files()
 	if err != nil {
 		return err
 	}
@@ -342,7 +366,7 @@ func Logs(ctx context.Context, conn Conn, workspace string, n int, w io.Writer) 
 // tryReuse decides what a recorded (or published) serve means for this connect.
 // ok reuses it; neither ok nor err declines it, and the caller replaces it. A
 // non-nil err is a live serve that must be neither reused nor replaced.
-func tryReuse(ctx context.Context, conn Conn, target remoteOS, fs *sftpfs.FS, paths StatePaths, minVersion string, broker Broker, held bool, clock func() time.Time, workspace ...string) (ServeState, string, bool, error) {
+func tryReuse(ctx context.Context, conn Conn, target remoteOS, fs sftpfs.Files, paths StatePaths, minVersion string, broker Broker, held bool, clock func() time.Time, workspace ...string) (ServeState, string, bool, error) {
 	st, err := readState(ctx, fs, paths.StateJSON)
 	if err == nil && !recordIsLive(ctx, conn, target, paths, st) {
 		err = errors.New("bootstrap: recorded serve is not running")
@@ -399,7 +423,7 @@ func tryReuse(ctx context.Context, conn Conn, target remoteOS, fs *sftpfs.FS, pa
 // one file replaced whole, so no read can pair one connect's token with
 // another's port; the directory is kept private for the moment the temporary
 // file exists.
-func writeBroker(ctx context.Context, fs *sftpfs.FS, paths StatePaths, broker Broker) error {
+func writeBroker(ctx context.Context, fs sftpfs.Files, paths StatePaths, broker Broker) error {
 	_ = fs.Chmod(ctx, paths.Dir, 0o700)
 	body := []byte(broker.Addr + "\n" + broker.Token + "\n")
 	if err := fs.WriteFileAtomic(ctx, paths.BrokerEndpoint, body, 0o600); err != nil {
@@ -411,7 +435,7 @@ func writeBroker(ctx context.Context, fs *sftpfs.FS, paths StatePaths, broker Br
 // rebind points the recorded serve at broker under the serve lock, so it cannot
 // overwrite a record another client is replacing. held says the caller already
 // owns the lock. It re-reads the record and gives up if the pid moved.
-func rebind(ctx context.Context, fs *sftpfs.FS, paths StatePaths, st ServeState, broker Broker, held bool, clock func() time.Time) (ServeState, bool) {
+func rebind(ctx context.Context, fs sftpfs.Files, paths StatePaths, st ServeState, broker Broker, held bool, clock func() time.Time) (ServeState, bool) {
 	if !held {
 		lock, err := acquireServeLock(ctx, fs, paths, clock)
 		if err != nil {
@@ -438,7 +462,7 @@ func rebind(ctx context.Context, fs *sftpfs.FS, paths StatePaths, st ServeState,
 
 // retireReplaced stops the recorded serve only after reuse permits replacement.
 // An attachment refusal must return before this path can signal a live serve.
-func retireReplaced(ctx context.Context, conn Conn, target remoteOS, fs *sftpfs.FS, paths StatePaths) {
+func retireReplaced(ctx context.Context, conn Conn, target remoteOS, fs sftpfs.Files, paths StatePaths) {
 	st, err := readState(ctx, fs, paths.StateJSON)
 	if err != nil || st.PID <= 0 {
 		return
@@ -462,7 +486,7 @@ func pidIsServe(ctx context.Context, conn Conn, target remoteOS, pid int, paths 
 	return strings.TrimSpace(string(res.Stdout)) == "1"
 }
 
-func readState(ctx context.Context, fs *sftpfs.FS, path string) (ServeState, error) {
+func readState(ctx context.Context, fs sftpfs.Files, path string) (ServeState, error) {
 	data, _, _, err := fs.ReadFile(ctx, path, 1<<20)
 	if err != nil {
 		return ServeState{}, err
@@ -470,7 +494,7 @@ func readState(ctx context.Context, fs *sftpfs.FS, path string) (ServeState, err
 	return UnmarshalState(data)
 }
 
-func readToken(ctx context.Context, fs *sftpfs.FS, path string) (string, error) {
+func readToken(ctx context.Context, fs sftpfs.Files, path string) (string, error) {
 	data, _, _, err := fs.ReadFile(ctx, path, 64<<10)
 	if err != nil {
 		return "", err
@@ -482,7 +506,7 @@ func readToken(ctx context.Context, fs *sftpfs.FS, path string) (string, error) 
 	return tok, nil
 }
 
-func pollPortFile(ctx context.Context, fs *sftpfs.FS, portFile string, clock func() time.Time) (string, error) {
+func pollPortFile(ctx context.Context, fs sftpfs.Files, portFile string, clock func() time.Time) (string, error) {
 	deadline := clock().Add(20 * time.Second)
 	for {
 		data, _, _, err := fs.ReadFile(ctx, portFile, 128)
@@ -512,7 +536,7 @@ func validServeAddr(addr string) bool {
 	return err == nil && port > 0 && port <= 65535
 }
 
-func readPIDFile(ctx context.Context, fs *sftpfs.FS, pidFile string) (int, error) {
+func readPIDFile(ctx context.Context, fs sftpfs.Files, pidFile string) (int, error) {
 	data, _, _, err := fs.ReadFile(ctx, pidFile, 64)
 	if err != nil {
 		return 0, err
@@ -524,7 +548,7 @@ func readPIDFile(ctx context.Context, fs *sftpfs.FS, pidFile string) (int, error
 	return pid, nil
 }
 
-func cleanupFailedLaunch(conn Conn, target remoteOS, fs *sftpfs.FS, paths StatePaths, pid int) {
+func cleanupFailedLaunch(conn Conn, target remoteOS, fs sftpfs.Files, paths StatePaths, pid int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
 	defer cancel()
 	if pid <= 0 {
@@ -540,7 +564,7 @@ func cleanupFailedLaunch(conn Conn, target remoteOS, fs *sftpfs.FS, paths StateP
 // because the two callers that clear it had a copy each: the broker token was
 // added to what a launch writes and to neither of them, so a failed launch left
 // this machine's provider credential on the remote.
-func removeServeState(ctx context.Context, fs *sftpfs.FS, paths StatePaths) {
+func removeServeState(ctx context.Context, fs sftpfs.Files, paths StatePaths) {
 	for _, p := range []string{
 		paths.StateJSON, paths.TokenFile, paths.BrokerTokenFile, paths.BrokerEndpoint, paths.PortFile, paths.PidFile,
 	} {

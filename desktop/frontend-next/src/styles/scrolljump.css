@@ -1,0 +1,15 @@
+.scrolljump { position: sticky; bottom: 0; z-index: 4; height: 0; pointer-events: none; }
+.scrolljump > div { position: absolute; right: 14px; bottom: 12px; display: grid; gap: 6px; pointer-events: auto; }
+.railhost ~ .scrolljump > div { right: 45px; }
+.scrolljump button {
+  display: grid; place-items: center; width: 28px; height: 28px; padding: 0; cursor: pointer;
+  border: 1px solid var(--hair); border-radius: 8px; background: color-mix(in srgb, var(--surface) 93%, transparent); color: var(--muted);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 2px 8px -3px rgba(0, 0, 0, .18);
+  animation: card var(--t-card) var(--ease-out) both;
+}
+.scrolljump button:hover { color: var(--text); background: var(--surface); border-color: var(--border); }
+.scrolljump button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.scrolljump svg { width: 14px; height: 14px; }
+.scrolljump button[data-value="up"] svg { rotate: 180deg; }
+@media (prefers-reduced-motion: reduce) { .scrolljump button { animation: none; } }

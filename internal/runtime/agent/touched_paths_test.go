@@ -91,7 +91,7 @@ func callOnce(a *Agent, name, args string) {
 
 func TestCompletedReadAndWriteCallsFeedTheObserver(t *testing.T) {
 	obs := &recordedPaths{}
-	a := touchedAgent(t, obs, Options{},
+	a := touchedAgent(t, obs, Options{CheckTargetAccess: allowTestFileAccess},
 		readingTool{pathTool{name: "read_file", readOnly: true, read: "/ws/a.go"}},
 		writingTool{pathTool{name: "edit_file", writes: []string{"/ws/b.go", "/ws/c.go"}}},
 	)
@@ -168,7 +168,7 @@ func TestParallelToolCallsAllFeedTheObserver(t *testing.T) {
 		{toolCallChunk("1", "read_file", `{}`), toolCallChunk("2", "grep", `{}`), {Type: provider.ChunkDone}},
 		{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}},
 	}}
-	a := New(prov, reg, sessionstore.NewSession("sys"), Options{}, event.Discard)
+	a := New(prov, reg, sessionstore.NewSession("sys"), Options{CheckTargetAccess: allowTestFileAccess}, event.Discard)
 	a.SetPathObserver(obs)
 	if err := a.Run(context.Background(), "go"); err != nil {
 		t.Fatal(err)
@@ -255,7 +255,9 @@ func TestRewrittenCallFeedsExecutedArgumentsLiveAndOriginalOnesOnReplay(t *testi
 	}}
 	d := newExtDispatcher(client, true, nil, extension.PointToolBefore)
 	obs := &recordedPaths{}
-	a := touchedAgent(t, obs, Options{Extensions: d}, argPathTool{pathTool{name: "read_file", readOnly: true}})
+	a := touchedAgent(t, obs, Options{Extensions: d,
+		CheckTargetAccess: allowTestFileAccess,
+	}, argPathTool{pathTool{name: "read_file", readOnly: true}})
 
 	callOnce(a, "read_file", `{"path":"/original.go"}`)
 	if got, want := obs.seen(), []string{"/substituted.go"}; !reflect.DeepEqual(got, want) {
@@ -323,7 +325,7 @@ func TestCallThroughAProxyFeedsLiveAndReplaysAsItsTarget(t *testing.T) {
 	obs := &recordedPaths{}
 	target := argPathTool{pathTool{name: "grep", readOnly: true}}
 	proxy := proxyTool{pathTool: pathTool{name: "use_capability", readOnly: true}, target: target}
-	a := touchedAgent(t, obs, Options{}, proxy, target)
+	a := touchedAgent(t, obs, Options{CheckTargetAccess: allowTestFileAccess}, proxy, target)
 	wrapped := `{"action":"call","capability_id":"tool:grep","arguments":{"path":"/ws/a.go"}}`
 
 	callOnce(a, "use_capability", wrapped)

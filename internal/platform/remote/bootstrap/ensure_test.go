@@ -37,7 +37,7 @@ func (f *fakeConn) Exec(_ context.Context, cmd string) (remote.ExecResult, error
 	return f.handler(cmd)
 }
 
-func (f *fakeConn) SFTP() (*sftpfs.FS, error) {
+func (f *fakeConn) Files() (sftpfs.Files, error) {
 	if f.sftpErr != nil {
 		return nil, f.sftpErr
 	}
@@ -740,5 +740,54 @@ func TestRepointBrokerRewritesOnlyAServeThatFollowsItsFile(t *testing.T) {
 		if strings.TrimSpace(string(got)) != want {
 			t.Fatalf("follows=%v: address file = %q, want %q", follows, got, want)
 		}
+	}
+}
+
+// detachConn is a machine that ends what a command started when the command
+// returns: the launch must go through ExecDetached, never plain Exec.
+type detachConn struct {
+	*fakeConn
+	t        *testing.T
+	detached []string
+}
+
+func (d *detachConn) Exec(ctx context.Context, cmd string) (remote.ExecResult, error) {
+	if strings.Contains(cmd, "nohup") {
+		d.t.Errorf("the launch went through Exec: %s", cmd)
+	}
+	return d.fakeConn.Exec(ctx, cmd)
+}
+
+func (d *detachConn) ExecDetached(ctx context.Context, cmd string) (remote.ExecResult, error) {
+	d.detached = append(d.detached, cmd)
+	return d.fakeConn.Exec(ctx, cmd)
+}
+
+func TestEnsureServeLaunchesThroughTheDetachedPathWhenTheMachineAsksForIt(t *testing.T) {
+	skipOnWindows(t)
+	root := testenv.TempDir(t)
+	var portFile string
+	inner := newFakeConn(t, root, func(cmd string) (remote.ExecResult, error) {
+		switch {
+		case strings.Contains(cmd, "uname"):
+			return ok("Linux x86_64\n")
+		case strings.Contains(cmd, "command -v reasonix"):
+			return ok("bin /usr/bin/reasonix\nver reasonix v9.9.0\n" + allFlagsYes())
+		case strings.Contains(cmd, "nohup"):
+			_ = os.WriteFile(portFile, []byte("127.0.0.1:44321\n"), 0o600)
+			return ok("54321\n")
+		case strings.Contains(cmd, "ps -p 54321"):
+			return ok("1\n")
+		}
+		return ok("")
+	})
+	portFile = pathsFor(root, root).PortFile
+	conn := &detachConn{fakeConn: inner, t: t}
+	res, err := EnsureServe(context.Background(), conn, Options{Workspace: "~", MinVersion: "1.0.0", Clock: time.Now})
+	if err != nil {
+		t.Fatalf("EnsureServe: %v", err)
+	}
+	if res.State.PID != 54321 || len(conn.detached) != 1 || !strings.Contains(conn.detached[0], "nohup") {
+		t.Fatalf("pid = %d, detached = %v", res.State.PID, conn.detached)
 	}
 }

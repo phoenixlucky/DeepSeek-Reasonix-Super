@@ -4,6 +4,7 @@ import (
 	"reasonix/internal/contract/ablation"
 	"reasonix/internal/contract/agentpreset"
 	"reasonix/internal/contract/tool"
+	"reasonix/internal/ext/plugin"
 	"reasonix/internal/runtime/bestof"
 	"reasonix/internal/tools/advisor"
 	"reasonix/internal/tools/builtin"
@@ -72,6 +73,7 @@ func HostControlToolNames() []string {
 		"update_goal",
 		"todo_write",
 		"complete_step",
+		"setting",
 	}
 }
 
@@ -168,8 +170,9 @@ func applyUnifiedProviderToolSurface(reg *tool.Registry, goalTurnsUnreachable bo
 			allow = append(allow, name)
 		}
 	}
-	// advise, best_of_n and run_script are registered only when config asks, at boot.
-	for _, name := range []string{advisor.Name, bestof.Name, script.Name} {
+	// advise, best_of_n, run_script, the peer tools and read_mcp_resource are
+	// registered only when config asks, at boot; present_files follows the same rule.
+	for _, name := range []string{advisor.Name, bestof.Name, script.Name, "list_peers", "send_peer_message", "dispatch_to_project", "view_image", "present_files", plugin.ResourceReadToolName} {
 		if _, ok := reg.Get(name); ok {
 			allow = append(allow, name)
 		}

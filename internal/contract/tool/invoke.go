@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
+	"strings"
 )
 
 // Invoker runs a tool call on behalf of a tool that is itself running, through
@@ -43,4 +45,24 @@ func MarkNested(ctx context.Context) context.Context {
 func IsNested(ctx context.Context) bool {
 	nested, _ := ctx.Value(nestedKey{}).(bool)
 	return nested
+}
+
+// NestedCallID is the id a nested call runs under: its caller's id, a dot, and
+// its 1-based sequence within that caller. A recorded nested call carries no
+// other mark of its caller, so readers of a recording recognise it by this id.
+func NestedCallID(parentID string, seq int) string {
+	return parentID + "." + strconv.Itoa(seq)
+}
+
+// IsNestedCallOf reports whether id is a NestedCallID made under parentID.
+func IsNestedCallOf(id, parentID string) bool {
+	if parentID == "" {
+		return false
+	}
+	seq, ok := strings.CutPrefix(id, parentID+".")
+	if !ok {
+		return false
+	}
+	n, err := strconv.Atoi(seq)
+	return err == nil && n > 0 && strconv.Itoa(n) == seq
 }

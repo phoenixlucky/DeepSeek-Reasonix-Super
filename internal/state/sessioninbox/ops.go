@@ -1,6 +1,7 @@
 package sessioninbox
 
 import (
+	"fmt"
 	"strings"
 	"time"
 )
@@ -181,8 +182,15 @@ func (s *Store) MoveItem(id string, toIndex int) error {
 	return nil
 }
 
-// SetPaused toggles the recovery/inspection pause flag.
-func (s *Store) SetPaused(paused bool) error {
+// Pause holds the queue, naming why. A queue already paused keeps the cause that
+// paused it first, except that the person's own pause takes the cause over: it
+// is the one a standing consent never overrides, whatever came before it.
+func (s *Store) Pause(code PauseCode) error { return s.setPaused(true, code) }
+
+// Resume lifts the pause and the recovery mark that came with it.
+func (s *Store) Resume() error { return s.setPaused(false, "") }
+
+func (s *Store) setPaused(paused bool, code PauseCode) error {
 	if s == nil {
 		return ErrClosed
 	}
@@ -196,11 +204,12 @@ func (s *Store) SetPaused(paused bool) error {
 	if err := s.mutableLocked(); err != nil {
 		return err
 	}
-	if s.man.Paused == paused {
+	if s.man.Paused == paused && (!paused || code != PauseUser || s.man.PauseCode == PauseUser) {
 		return nil
 	}
 	next := s.man.clone()
 	next.Paused = paused
+	next.PauseCode = code
 	if !paused {
 		next.Recovered = false
 		next.RecoveredN = 0
@@ -252,6 +261,16 @@ func (s *Store) SetStateCoded(id string, state InboxState, code BlockCode, block
 // ClaimItem atomically transitions one queued item to running. It is the
 // durable admission boundary for both asynchronous and synchronous frontends.
 func (s *Store) ClaimItem(id string) error {
+	return s.claimItem(id, false)
+}
+
+// ClaimItemOverPause is ClaimItem for an item the person has just let in: it is
+// claimed although the queue is paused, and the pause stays.
+func (s *Store) ClaimItemOverPause(id string) error {
+	return s.claimItem(id, true)
+}
+
+func (s *Store) claimItem(id string, overPause bool) error {
 	if s == nil {
 		return ErrClosed
 	}
@@ -266,7 +285,7 @@ func (s *Store) ClaimItem(id string) error {
 	if err := s.mutableLocked(); err != nil {
 		return err
 	}
-	if s.man.Paused {
+	if s.man.Paused && !overPause {
 		return ErrPaused
 	}
 	next := s.man.clone()
@@ -397,22 +416,29 @@ func (s *Store) RetryItem(id string) error {
 }
 
 // NextQueued returns the first FIFO queued follow-up (or rejected steer kept as
-// follow-up) when the inbox is not paused.
-func (s *Store) NextQueued() (InboxItemMeta, bool) {
+// follow-up) when the inbox is not paused. The bool reports whether that work
+// was found; a non-nil error reports that the queue could not be read at all,
+// which a caller must never treat as an empty queue.
+func (s *Store) NextQueued() (InboxItemMeta, bool, error) {
 	if s == nil {
-		return InboxItemMeta{}, false
+		return InboxItemMeta{}, false, ErrClosed
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if release, err := s.beginDiskTransactionLocked(); err == nil {
 		release()
+	} else if rerr := s.readManifestWithoutTransaction(); rerr != nil {
+		// The lock is unavailable (another process holds it, or it cannot be
+		// created) and the published snapshot is unreadable as well. That is not
+		// evidence of an empty queue, so the failure is surfaced instead.
+		return InboxItemMeta{}, false, fmt.Errorf("sessioninbox: read queue: %w (transaction: %w)", rerr, err)
 	}
 	if s.man == nil || s.man.Paused || s.readonly {
-		return InboxItemMeta{}, false
+		return InboxItemMeta{}, false, nil
 	}
 	for _, it := range s.man.Items {
 		if it.State == StateQueued && it.Intent == IntentFollowup {
-			return it, true
+			return it, true, nil
 		}
 		// Rejected steers that remain intent=steer but queued are still follow-ups
 		// for the dispatcher after ConvertIntent; only followup intent is admitted.
@@ -420,10 +446,10 @@ func (s *Store) NextQueued() (InboxItemMeta, bool) {
 	// Also admit steer-intent items that are still queued (user wants them as turns).
 	for _, it := range s.man.Items {
 		if it.State == StateQueued {
-			return it, true
+			return it, true, nil
 		}
 	}
-	return InboxItemMeta{}, false
+	return InboxItemMeta{}, false, nil
 }
 
 // Pause marks paused=true without requiring a mutation check beyond schema.
@@ -446,6 +472,7 @@ func (s *Store) ForcePause(reasonRecovered bool, n int) error {
 	}
 	next := s.man.clone()
 	next.Paused = true
+	next.PauseCode = PauseRecovered
 	if reasonRecovered {
 		next.Recovered = true
 		if n > 0 {

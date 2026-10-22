@@ -43,6 +43,7 @@ model = "x"
 	}
 	defer ctrl.Close()
 
+	sentAt := time.Now().UnixMilli()
 	ctrl.Send("think, then answer")
 	var done event.Event
 	select {
@@ -64,6 +65,21 @@ model = "x"
 	}
 	if done.WorkDurationMs != kept {
 		t.Fatalf("the live frame says %d ms but the session kept %d ms", done.WorkDurationMs, kept)
+	}
+	if done.WorkStartedAt < sentAt || done.WorkStartedAt > sentAt+int64(time.Minute/time.Millisecond) {
+		t.Fatalf("TurnDone.WorkStartedAt = %d, want the moment the turn began, not before %d", done.WorkStartedAt, sentAt)
+	}
+	var landed int64
+	for _, m := range ctrl.History() {
+		if m.Role == provider.RoleUser && !m.HostAuthored {
+			landed = m.CreatedAt
+		}
+	}
+	if landed == 0 || landed < done.WorkStartedAt || landed-done.WorkStartedAt > 5000 {
+		t.Fatalf("the user message landed at %d but the frame says the turn began at %d", landed, done.WorkStartedAt)
+	}
+	if got := eventwire.ToWire(done).WorkStartedAt; got != done.WorkStartedAt {
+		t.Fatalf("the wire frame says %d, want %d", got, done.WorkStartedAt)
 	}
 	if got := eventwire.ToWire(done).WorkDurationMs; got != done.WorkDurationMs {
 		t.Fatalf("the wire frame says %d ms, want %d", got, done.WorkDurationMs)

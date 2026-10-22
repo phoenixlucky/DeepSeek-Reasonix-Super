@@ -80,6 +80,14 @@ Each skill's body is loaded when that skill is invoked.
 | `requires` | Ready capabilities required for model invocation, e.g. `mcp-server:github`. See the MCP requirements example below. |
 | `paths` | File globs that gate when the model is shown the skill. See [Activating a skill by file](#activating-a-skill-by-file). |
 
+For MCP `allowed-tools`, explicit `mcp-tool:<server>/<raw-tool>` and
+`mcp-server:<server>` IDs work before connection. Callable `mcp__...` names
+and wildcards need a known host binding; their spelling alone cannot establish
+the original identity.
+
+Tool-specific IDs use the server's original tool name, before prefix stripping,
+normalization or shortening.
+
 Unknown legacy keys are ignored. The `delivery` and `authority` namespaces
 have explicit validation rules:
 

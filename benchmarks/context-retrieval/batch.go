@@ -41,6 +41,10 @@ type batchManifest struct {
 	Arms          []string `json:"arms"`
 	PlannedRuns   int      `json:"planned_runs"`
 	CompletedRuns int      `json:"completed_runs"`
+	// FailedRuns counts the planned runs that ended before a transcript existed.
+	// They are rows in results.jsonl, never part of CompletedRuns, and the field
+	// is absent when there were none so an intact batch is unchanged.
+	FailedRuns int `json:"failed_runs,omitempty"`
 	// Usage totals are absent when nothing reported any: an unmeasured cost must
 	// not read as a measured zero. UsageReportedRuns stays, because zero there
 	// is a fact about the batch.
@@ -98,9 +102,15 @@ func sortedKeys(set map[string]bool) []string {
 // last, so its digests are of what is already on disk.
 func writeBatchManifest(root string, info batchInfo, all []contextMetrics) error {
 	ids, arms := map[string]bool{}, map[string]bool{}
-	var prompt, completion, cacheHit, cacheMiss, requests, reported int
+	var prompt, completion, cacheHit, cacheMiss, requests, reported, failed int
 	estimated := false
 	for _, m := range all {
+		// A failed run has no task, arm or evidence to contribute: it is counted
+		// as a failure below and is not part of what the batch measured.
+		if m.Failed {
+			failed++
+			continue
+		}
 		ids[m.Task] = true
 		arms[m.Arm] = true
 		if m.UsageReportedRequests > 0 {
@@ -125,7 +135,7 @@ func writeBatchManifest(root string, info batchInfo, all []contextMetrics) error
 		GitCommit:  commit, GitDirty: dirty,
 		Model: model, Window: fixtureWindow, Generations: fixtureGenerations,
 		TaskIDs: sortedKeys(ids), Arms: sortedKeys(arms),
-		PlannedRuns: info.Planned, CompletedRuns: len(all),
+		PlannedRuns: info.Planned, CompletedRuns: len(all) - failed, FailedRuns: failed,
 		UsageReportedRuns: reported, UsageReportedRequests: requests,
 		PromptTokens: prompt, CompletionTokens: completion,
 		CacheHitTokens: cacheHit, CacheMissTokens: cacheMiss, UsageEstimated: estimated,

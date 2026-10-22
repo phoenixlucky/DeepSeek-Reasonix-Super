@@ -2,10 +2,13 @@ package control
 
 import (
 	"context"
+	"reasonix/internal/base/workspacefile"
 	"reasonix/internal/state/sessionstore"
 
+	"reasonix/internal/contract/agentcomposition"
 	"reasonix/internal/contract/config"
 	"reasonix/internal/contract/event"
+	"reasonix/internal/contract/pricing"
 	"reasonix/internal/contract/provider"
 	"reasonix/internal/ext/command"
 	"reasonix/internal/ext/hook"
@@ -13,12 +16,18 @@ import (
 	"reasonix/internal/ext/skill"
 	"reasonix/internal/model/billing"
 	"reasonix/internal/platform/browser"
+	"reasonix/internal/platform/gitcmd"
+	"reasonix/internal/platform/gitpush"
+	"reasonix/internal/platform/gitrepos"
 	"reasonix/internal/platform/gitstatus"
 	"reasonix/internal/runtime/agent"
+	"reasonix/internal/runtime/delegation"
 	"reasonix/internal/safety/evidence"
+	"reasonix/internal/state/agentpreset"
 	"reasonix/internal/state/checkpoint"
 	"reasonix/internal/state/memory"
 	"reasonix/internal/tools/jobs"
+	"reasonix/internal/tools/websearch"
 )
 
 // This file defines the driving port: the typed, segregated interface surface
@@ -84,7 +93,7 @@ type Approvals interface {
 	// ResolveRecovery answers an Auto Guard card: continue|continue_task|revise. Revise
 	// refuses the mutation and steers feedback.
 	ResolveRecovery(id string, action agent.RecoveryAction, feedback string) error
-	AnswerQuestion(id string, answers []event.AskAnswer)
+	AnswerQuestion(id string, answers []event.AskAnswer) error
 	Ask(ctx context.Context, questions []event.AskQuestion) ([]event.AskAnswer, error)
 	ReplayPendingPrompts()
 	ReplayPendingPromptsWith(sinkFactory func() event.Sink)
@@ -97,6 +106,12 @@ type Approvals interface {
 	Bypass() bool
 	SetBypass(on bool)
 	SetMode(plan, autoApproveTools bool)
+}
+
+// QuestionInteraction carries live gestures from HTTP question cards. ACP's
+// permission request/response protocol carries no intermediate interaction.
+type QuestionInteraction interface {
+	EngageQuestion(id string) bool
 }
 
 // FolderTrust is the person's decision about the workspace folder and the
@@ -181,8 +196,8 @@ type MemoryControl interface {
 	SaveDoc(path, body string) (string, error)
 	SaveMemory(m memory.Memory) (string, error)
 	ForgetMemory(name string) error
-	QueueMemory(note string)
-	MemoryRevisions(ref string) []memory.Memory
+	QueueMemory(note string, delivered ...memory.Memory)
+	MemoryRevisions(ref string) ([]memory.Memory, error)
 	RestoreMemory(ref string, revision int) (memory.Memory, error)
 	RestoreArchivedMemory(archivePath string) (memory.Memory, error)
 	LastMemoryRecall() memory.RecallResult
@@ -218,6 +233,12 @@ type Skills interface {
 	CreateSkill(name string, scope skill.Scope, content string) (string, error)
 	UpdateSkill(name string, scope skill.Scope, content string) error
 	DeleteSkill(name string, scope skill.Scope) error
+	// RemoveSkill deletes the skill the person was shown, named by scope and path;
+	// a package's skill or a built-in is refused (ErrSkillNotRemovable).
+	RemoveSkill(name string, scope skill.Scope, path string) error
+	// SkillRemoval says what RemoveSkill would delete for sk and whether it is a
+	// folder; ok is false for a skill that cannot be removed.
+	SkillRemoval(sk skill.Skill) (target string, folder, ok bool)
 }
 
 // Hooks covers the session's lifecycle hooks: the live runner, what is
@@ -265,30 +286,58 @@ type RuntimeSettings interface {
 	SaveNetworkSettings(in NetworkSettings, password string, clearPassword bool) error
 	DiagnoseNetwork(ctx context.Context) []NetworkProbe
 	ShellSettings() ShellSettings
-	SaveShellSettings(prefer, path string) error
+	SaveShellSettings(prefer, path string, args ...string) error
 	PermissionRules() PermissionRules
 	SavePermissionRules(in PermissionLists) error
 	RevokeSessionGrant(rule string) int
 	RevokeRememberedProjectRule(rule string) error
 	WorkspaceRoots() (WorkspaceRoots, error)
+	ReadableExtraRoots() ([]string, error)
+	WorkspacePreviewInfo(context.Context, workspacefile.Ref) (workspacefile.Info, error)
+	WorkspacePreviewContent(context.Context, workspacefile.Ref) ([]byte, workspacefile.Info, error)
 	AddWorkspaceRoot(dir string) (string, error)
 	RemoveWorkspaceRoot(dir string) error
 	SandboxSettings() SandboxSettings
 	SaveSandboxSettings(in SandboxSettings) error
 	BrowserToolsSettings() BrowserToolsSettings
 	SaveBrowserToolsSettings(enabled bool) error
+	SubagentClaimsSettings() SubagentClaimsSettings
+	SaveSubagentClaimsSettings(optimistic bool) error
+	SubagentSteerSettings() SubagentSteerSettings
+	SaveSubagentSteerSettings(maxBytes, perMinute int) error
+	WriteLeaseSettings() WriteLeaseSettings
+	SaveWriteLeaseSettings(optimistic *bool, maxWaitMinutes *int) error
+	PlanApprovalSettings() PlanApprovalSettings
+	SavePlanApprovalSettings(auto bool) error
+	DefaultModeSettings() DefaultModeSettings
+	SaveDefaultModeSettings(plan bool) error
+	ToolSettings() ToolSettings
+	SaveToolDisabled(name string, disabled bool) error
 	CompactionSettings() CompactionSettings
 	SaveCompactionSettings(softLimitTokens int) error
 	DisplayCurrencySettings() DisplayCurrencySettings
 	SaveDisplayCurrency(mode string) error
 	ChangedFilesSettings() ChangedFilesSettings
 	SaveChangedFilesSettings(show bool) error
+	FeedbackLevelNotices() FeedbackLevelNoticeSettings
+	SaveFeedbackLevelNotices(enabled bool) error
+	ObservabilitySettings() ObservabilitySettings
+	SaveObservabilitySettings(patch ObservabilityPatch) (ObservabilitySettings, error)
 	FoldWorkSettings() FoldWorkSettings
 	SaveFoldWorkSettings(fold bool) error
+	TurnNarrationSettings() TurnNarrationSettings
+	SaveTurnNarrationSettings(level string) error
+	PersonaSettings() PersonaSettings
+	SavePersonaSettings(in config.PersonaConfig) error
+	WebAccessSettings() WebAccessSettings
+	SaveWebAccessSettings(patch WebAccessPatch) (WebAccessSettings, error)
+	ProbeSearxng(ctx context.Context) (websearch.SearxngProbe, error)
 	ProgressWatchSettings() ProgressWatchSettings
 	SaveProgressWatchSettings(in ProgressWatchSettings) error
 	AskTimeoutSettings() AskTimeoutSettings
 	SaveAskTimeoutSettings(seconds int) error
+	SessionRefSettings() SessionRefSettings
+	SaveSessionRefSettings(tokens int) error
 	AutoArchiveSettings() AutoArchiveSettings
 	SaveAutoArchiveSettings(in AutoArchiveSettings) error
 	ArchiveInactiveSessions() int
@@ -319,6 +368,7 @@ type Extensions interface {
 // that can show what changed.
 type MCPTrust interface {
 	AcceptMCPHeldTools(name, digest string) (int, error)
+	SetMCPFollowToolChanges(name string, follow bool) (int, error)
 }
 
 // Capabilities is the whole pluggable surface, for a frontend that drives all
@@ -335,11 +385,13 @@ type Capabilities interface {
 
 // Status covers read-only run/usage/billing telemetry and task list state.
 type Status interface {
+	TurnInFlight() bool
 	ContextSnapshot() (int, int)
 	ContextBreakdown() agent.ContextBreakdown
 	ContextMaintenanceSnapshot() agent.ContextMaintenanceSnapshot
 	LastUsage() *provider.Usage
 	Balance(ctx context.Context) billing.Reading
+	Tariff() (pricing.Tariff, bool)
 	Jobs() []jobs.View
 	Todos() []evidence.TodoItem
 	BrowserTabs() []browser.TabInfo
@@ -349,9 +401,56 @@ type Status interface {
 	BrowserClose(ctx context.Context, tabID string) error
 }
 
+// MCPSignIn signs in to an MCP server that needs OAuth. The frontend supplies
+// how a browser opens; the controller decides whether it may, after the user has
+// seen which host they are sent to. An editor integration has no browser of its
+// own to offer, so only the full session port carries it.
+type MCPSignIn interface {
+	AuthorizeMCPServer(ctx context.Context, name string, open func(url string) error) (MCPSignInResult, error)
+	UpgradeMCPServerAccess(ctx context.Context, name string, open func(url string) error) (MCPSignInResult, error)
+}
+
 // BackgroundJobs stops work a session left running outside any turn.
 type BackgroundJobs interface {
 	CancelJob(id string) bool
+	JobPeek(id string, max int) (jobs.Peek, bool)
+}
+
+// ToolCallStopper ends one running tool call and leaves its turn going.
+type ToolCallStopper interface {
+	CancelToolCall(id string) bool
+}
+
+// PeerMail is messages between sessions: who can be written to, sending, what
+// other sessions sent and the user has not decided, and the decision.
+type PeerMail interface {
+	PeersEnabled() bool
+	Peers() []PeerView
+	PeerThreads() []PeerThread
+	SendPeerMessage(to, text string) (PeerReceipt, error)
+	HeldPeerMessages() []PeerHeld
+	ResolvePeerMessage(id string, approve bool) error
+	ResolvePeerMessageRemembering(id string, approve bool, remember PeerRemember) error
+	PeersSettings() PeersSettings
+	SavePeersSettings(patch PeersPatch) (PeersSettings, error)
+}
+
+// SubagentView reads the sub-agent runs of the session: the ones it spawned,
+// running or finished, and any one run's conversation.
+type SubagentView interface {
+	SubagentRuns() ([]delegation.RunInfo, error)
+	SubagentTranscript(ref string, after, limit int) (delegation.RunTranscript, error)
+	// SteerSubagent sends the person's guidance to a running sub-agent; see the
+	// delegation errors for what is refused and why.
+	SteerSubagent(ref, text string) error
+}
+
+// Mods is Claude Code mods: which are installed and what became of each, and the
+// user's switch and budget for running them.
+type Mods interface {
+	Mods() []ModStatus
+	ModsSettings() ModsSettings
+	SaveModsSettings(patch ModsPatch) (ModsSettings, error)
 }
 
 // DiffRendering reports the session's diff-rendering choices, resolved once at
@@ -391,6 +490,7 @@ type Input interface {
 	// text for a spelling.
 	StoredAttachments(text string) []event.Attachment
 	CompletionData(lang string) CompletionData
+	CompletionDataFor(lang, line string, cursor int) CompletionData
 	ImageInputEnabled() bool
 	DroppedRef(path string) (token, displayPath string, err error)
 	RefinePrompt(ctx context.Context, draft string) (string, error)
@@ -412,7 +512,7 @@ type Settings interface {
 type Provenance interface {
 	SubmitHTTPFrom(input, format string, via *provider.Via) Admission
 	ApproveFrom(id string, allow, session, persist bool, via *provider.Via)
-	AnswerQuestionFrom(id string, answers []event.AskAnswer, via *provider.Via)
+	AnswerQuestionFrom(id string, answers []event.AskAnswer, via *provider.Via) error
 }
 
 // LocalShell is a `!` command typed on the machine the kernel runs on. Only
@@ -422,22 +522,48 @@ type LocalShell interface {
 }
 
 // Commits proposes a commit message for the staged changes and records a local
-// commit once the person has confirmed the text. It never stages, pushes or
-// rewrites history. It also moves the workspace between local git branches —
+// commit once the person has confirmed the text. It stages or unstages only what
+// the person names, and pushes only the confirmed branch to the upstream it already
+// has, from a trusted workspace; it never forces or rewrites history. It also moves the workspace between local git branches —
 // a workspace write like a commit, refused typed while a turn runs.
 type Commits interface {
-	ProposeCommit(ctx context.Context) (CommitProposal, error)
+	ProposeCommit(ctx context.Context, repo string) (CommitProposal, error)
+	GitRepos(ctx context.Context) (gitrepos.Result, error)
+	RepoFor(ctx context.Context, dir string) (gitcmd.Repo, error)
 	CommitStaged(ctx context.Context, req CommitRequest) (CommitResult, error)
+	StageChanges(ctx context.Context, req StageRequest) error
+	DiscardChange(ctx context.Context, req DiscardRequest) error
+	GitPushPreview(ctx context.Context, repo string) (gitpush.Plan, error)
+	GitPush(ctx context.Context, req PushRequest) (gitpush.Result, error)
 	SwitchWorkspaceBranch(ctx context.Context, name string) (gitstatus.Info, bool, error)
+}
+
+// SideSessions is a read-only question asked beside the session and discarded
+// with it: its own conversation, never the main transcript, billed to the
+// session. Only the full port names it; an editor has no panel to ask from.
+type SideSessions interface {
+	OpenSide() (string, error)
+	AskSide(ctx context.Context, id, question string, quotes []string) (string, error)
+	CloseSide(id string)
 }
 
 // SessionAPI is the full driving port — the composition of every sub-port, for
 // a frontend that drives all of it: the TUI does, and the HTTP server all but
 // one. A leaner frontend names EditorAPI instead.
+type SurfaceHistory interface {
+	NativeSurfaces() bool
+	ExtensionSurfaces() []event.ExtensionSurfacePayload
+}
+
 type SessionAPI interface {
+	AgentCompositions
+	AgentPresetManagement
+	SurfaceActions
+	SurfaceHistory
 	Lifecycle
 	TurnControl
 	Approvals
+	QuestionInteraction
 	FolderTrust
 	PlanDecisions
 	Goals
@@ -451,10 +577,17 @@ type SessionAPI interface {
 	Inbox
 	Provenance
 	BackgroundJobs
+	ToolCallStopper
+	SubagentView
+	PeerMail
+	Mods
+	Schedules
+	MCPSignIn
 	LocalShell
 	DiffRendering
 	Feedback
 	Commits
+	SideSessions
 }
 
 // EditorAPI is what an editor integration drives over ACP: turns, approvals and
@@ -463,6 +596,7 @@ type SessionAPI interface {
 // point — an editor authors no skill, edits no hook, saves no sandbox rule, and files no
 // feedback: the report form belongs to the surfaces that own a screen for it.
 type EditorAPI interface {
+	AgentCompositions
 	Lifecycle
 	TurnControl
 	Approvals
@@ -472,6 +606,18 @@ type EditorAPI interface {
 	Extensions
 	Goals
 	SessionPersistence
+}
+
+type AgentCompositions interface {
+	AgentPresets() (agentpreset.Catalog, error)
+	SelectAgentComposition(context.Context, string) error
+	CompositionBinding() *agentcomposition.Binding
+}
+
+type AgentPresetManagement interface {
+	SaveAgentPreset(agentcomposition.Definition, string) (agentcomposition.Version, error)
+	DeleteAgentPreset(string, string) error
+	SetDefaultAgentPreset(string, bool) error
 }
 
 // Compile-time proof that the concrete controller satisfies each sub-port and
@@ -485,6 +631,12 @@ var (
 	_ FolderTrust        = (*Controller)(nil)
 	_ Goals              = (*Controller)(nil)
 	_ BackgroundJobs     = (*Controller)(nil)
+	_ ToolCallStopper    = (*Controller)(nil)
+	_ SubagentView       = (*Controller)(nil)
+	_ PeerMail           = (*Controller)(nil)
+	_ Mods               = (*Controller)(nil)
+	_ Schedules          = (*Controller)(nil)
+	_ MCPSignIn          = (*Controller)(nil)
 	_ SessionHistory     = (*Controller)(nil)
 	_ MemoryControl      = (*Controller)(nil)
 	_ SlashDispatch      = (*Controller)(nil)

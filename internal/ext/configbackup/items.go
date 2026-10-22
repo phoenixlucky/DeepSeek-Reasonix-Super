@@ -79,6 +79,7 @@ type desktopLook struct {
 	ConversationWidth    string   `toml:"conversation_width"`
 	Zoom                 float64  `toml:"zoom"`
 	ReadSize             float64  `toml:"read_size"`
+	TextSize             float64  `toml:"text_size"`
 	FontUI               string   `toml:"font_ui"`
 	FontMono             string   `toml:"font_mono"`
 	WallpaperOpacity     float64  `toml:"wallpaper_opacity"`
@@ -92,7 +93,7 @@ func lookOf(cfg *config.Config) interfaceSettings {
 		TerminalTheme: d.TerminalTheme, CloseBehavior: d.CloseBehavior, Tray: d.Tray,
 		DisplayMode: d.DisplayMode, StatusBarStyle: d.StatusBarStyle, StatusBarItems: d.StatusBarItems,
 		ReasoningDisplayMode: d.ReasoningDisplayMode, ConversationWidth: d.ConversationWidth,
-		Zoom: a.Zoom, ReadSize: a.ReadSize, FontUI: a.FontUI, FontMono: a.FontMono,
+		Zoom: a.Zoom, ReadSize: a.ReadSize, TextSize: a.TextSize, FontUI: a.FontUI, FontMono: a.FontMono,
 		WallpaperOpacity: a.Wallpaper.Opacity, WallpaperDim: a.Wallpaper.Dim,
 	}}
 }
@@ -105,7 +106,7 @@ func (s interfaceSettings) applyTo(cfg *config.Config) {
 	d.DisplayMode, d.StatusBarStyle, d.StatusBarItems = l.DisplayMode, l.StatusBarStyle, l.StatusBarItems
 	d.ReasoningDisplayMode, d.ConversationWidth = l.ReasoningDisplayMode, l.ConversationWidth
 	a := &d.Appearance
-	a.Zoom, a.ReadSize, a.FontUI, a.FontMono = l.Zoom, l.ReadSize, l.FontUI, l.FontMono
+	a.Zoom, a.ReadSize, a.TextSize, a.FontUI, a.FontMono = l.Zoom, l.ReadSize, l.TextSize, l.FontUI, l.FontMono
 	if a.Wallpaper.File != "" {
 		a.Wallpaper.Opacity, a.Wallpaper.Dim = l.WallpaperOpacity, l.WallpaperDim
 	}
@@ -193,7 +194,34 @@ func holdsLocal(restored, have config.PluginEntry) bool {
 		(slices.Equal(have.Args, restored.Args) || slices.Equal(secrets.RedactArgs(have.Args), restored.Args))
 }
 
+// Hook IDs include the JSON field set; adding fields without omitempty changes
+// existing identities even when their values are empty.
 func hookName(event string, h hook.HookConfig) string {
+	raw, _ := json.Marshal(h)
+	sum := sha256.Sum256(append([]byte(event+"\x00"), raw...))
+	return event + "#" + hex.EncodeToString(sum[:6])
+}
+
+func restoreIdentity(it Item) string {
+	if it.Kind == KindHook {
+		var d hookData
+		if json.Unmarshal(it.Data, &d) == nil {
+			return itemID(KindHook, nativeHookName(d.Event, d.Hook))
+		}
+	}
+	return it.ID
+}
+
+// hook.Save retains native editor fields; env and context-file restoration
+// are unsupported, so those fields must not create additional native copies.
+func nativeHookName(event string, h hook.HookConfig) string {
+	h = hook.NormalizeConfig(h)
+	h.Env, h.ContextFile = nil, ""
+	return hookName(event, h)
+}
+
+// Secret placeholders keep the scope used by existing backups.
+func hookSecretScope(event string, h hook.HookConfig) string {
 	sum := sha256.Sum256([]byte(event + "\x00" + h.Match + "\x00" + h.Command))
 	return event + "#" + hex.EncodeToString(sum[:6])
 }

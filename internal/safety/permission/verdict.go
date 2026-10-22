@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"reasonix/internal/base/textutil"
 )
 
 // Refusal codes a Gate attaches to a call it refused. The code is the identity
@@ -101,6 +103,9 @@ func (g *Gate) Verdict(ctx context.Context, toolName string, args json.RawMessag
 	case Ask:
 		return g.ask(ctx, toolName, args, ruleReason)
 	default:
+		if label := OriginFrom(ctx); label != "" && !readOnly && g.Policy.AskOnOrigin && g.Policy.allowedOnlyByMode(toolName, readOnly, args) {
+			return g.ConfirmOrigin(ctx, toolName, args, label)
+		}
 		return Verdict{Allow: true}, nil
 	}
 }
@@ -157,6 +162,68 @@ func (g *Gate) denial(ruleReason string) Verdict {
 	default:
 		return Verdict{Reason: postureRefusal, Code: RefusalUnattended}
 	}
+}
+
+// ConfirmTool names the approval a stricter party opens on a call the policy
+// allowed. It is a fresh decision: a person answers it, never a posture such as
+// YOLO or auto, and the answer covers this one call.
+const ConfirmTool = "mod_check"
+
+// Confirm puts a call the policy allowed to the user anyway, on behalf of who
+// (a Claude Code mod that may only tighten). It cannot loosen anything: the
+// verdict is Allow only when a person approved, and a gate with nobody to ask
+// refuses.
+func (g *Gate) Confirm(ctx context.Context, toolName string, args json.RawMessage, who string) (Verdict, error) {
+	if g.Approver == nil {
+		return Verdict{Reason: who + " asked for approval of this call and nobody can give it, so it was refused.", Code: RefusalUnattended}, nil
+	}
+	subject := who + " asks you to approve: " + toolName + " " + Subject(args)
+	allow, _, reason, err := g.approve(ctx, ConfirmTool, subject, args, who+" requires approval for this call")
+	if err != nil {
+		return Verdict{Reason: "approval aborted"}, err
+	}
+	if !allow {
+		v := Verdict{Reason: "the user declined this tool call — do not retry it; ask how they would like to proceed or choose another approach.", Code: RefusalDeclined}
+		if reason != "" {
+			v.Reason = reason
+		}
+		return v, nil
+	}
+	return Verdict{Allow: true}, nil
+}
+
+// OriginConfirmTool names the approval opened on a call that repeats text from an
+// external result. Like ConfirmTool it is a fresh decision: a person answers it,
+// never a posture such as YOLO or auto, and the answer covers this one call.
+const OriginConfirmTool = "origin_check"
+
+// ConfirmOrigin puts a call the policy allowed to the user because its arguments
+// carry text from origin (for example "web:example.com"). A gate with nobody to
+// ask refuses; the verdict is Allow only when a person approved.
+func (g *Gate) ConfirmOrigin(ctx context.Context, toolName string, args json.RawMessage, origin string) (Verdict, error) {
+	if g.Approver == nil {
+		return Verdict{Reason: "this call repeats text from " + origin + ", the session is set to ask about that, and nobody can answer, so it was refused.", Code: RefusalUnattended}, nil
+	}
+	// The call text is the model's own: shown on one line with controls removed, so
+	// it cannot pass for another line of the card or hide behind an escape.
+	call, cleaned := textutil.ScrubLaunch(toolName + " " + Subject(args))
+	subject := "text from " + origin + " reached this call: " + call
+	why := "this call repeats text from " + origin
+	if cleaned {
+		why += "; line breaks or control characters in the call are hidden here"
+	}
+	allow, _, reason, err := g.approve(ctx, OriginConfirmTool, subject, args, why)
+	if err != nil {
+		return Verdict{Reason: "approval aborted"}, err
+	}
+	if !allow {
+		v := Verdict{Reason: "the user declined this tool call — do not retry it; ask how they would like to proceed or choose another approach.", Code: RefusalDeclined}
+		if reason != "" {
+			v.Reason = reason
+		}
+		return v, nil
+	}
+	return Verdict{Allow: true}, nil
 }
 
 // Checker is any gate a tool call is put to.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"reasonix/internal/contract/surfacespec"
 	"reasonix/internal/state/sessioninbox"
 )
 
@@ -29,7 +30,7 @@ func (c *Controller) RunInboxTurn(ctx context.Context, id string) error {
 	}
 	if block != "" {
 		_ = st.SetState(id, sessioninbox.StateBlocked, block)
-		_ = st.SetPaused(true)
+		_ = st.Pause(sessioninbox.PauseReferenceBlocked)
 		return fmt.Errorf("%w: %s", sessioninbox.ErrInvalidState, block)
 	}
 	return c.runSynchronousTurn(ctx, func() error {
@@ -58,6 +59,9 @@ func (c *Controller) prepareInboxRun(env sessioninbox.PromptEnvelope, origin ses
 	}
 	display := firstNonEmptyStr(env.DisplayText, submit)
 	raw := firstNonEmptyStr(env.RawText, submit)
+	if env.Extra[surfacespec.ActionMessageName] != "" {
+		raw = submit
+	}
 	requests := controlInvocationsFromInbox(env)
 	if len(requests) == 0 {
 		return func(ctx context.Context) error {

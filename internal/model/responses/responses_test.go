@@ -88,6 +88,17 @@ func TestDeepSeekEffortUsesResponsesReasoningShape(t *testing.T) {
 	}
 }
 
+func TestADeclaredEffortReachesAnyResponsesGatewayAsReasoningEffort(t *testing.T) {
+	for _, level := range []string{"low", "high", "max"} {
+		client := New(Config{Name: "custom-opencode-ai", BaseURL: "https://opencode.ai/inference/go/v1", Model: "deepseek-v4.1-flash", Effort: level}).(*client)
+		body, _, _ := client.buildRequestBody(provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}})
+		reasoning, _ := body["reasoning"].(map[string]any)
+		if got, _ := reasoning["effort"].(string); got != level {
+			t.Errorf("effort %q serialized as %q", level, got)
+		}
+	}
+}
+
 func TestRequestSerializesExplicitMaxOutputTokens(t *testing.T) {
 	client := New(Config{Name: "responses", BaseURL: "https://example.com", Model: "model"}).(*client)
 	body, _, _ := client.buildRequestBody(provider.Request{

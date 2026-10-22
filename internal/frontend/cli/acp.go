@@ -2,12 +2,14 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"reasonix/internal/base/i18n"
 	"reasonix/internal/contract/ablation"
 	"reasonix/internal/contract/config"
+	"reasonix/internal/contract/provider"
 	"reasonix/internal/contract/surface"
 	"reasonix/internal/contract/tool"
 	"reasonix/internal/ext/extension/providerext"
@@ -39,6 +42,7 @@ func acpCommand(args []string, version string) int {
 	plannerFlag := fs.String("planner", "auto", "planner policy: auto | off")
 	networkFlag := fs.String("sandbox-network", "auto", "sandbox network policy: auto | on | off")
 	bashFlag := fs.String("sandbox-bash", "auto", "bash sandbox policy: auto | enforce")
+	permissionFlag := fs.String("permission-mode", "", "tool approval posture the session starts in and clients cannot raise: read-only | dontAsk | manual | ask | auto | acceptEdits | bypassPermissions (default: unset, clients choose)")
 	workspaceOnly := fs.Bool("workspace-only", false, "ignore configured extra write roots and confine writes to the session cwd")
 	if code, ok := parseCommandFlags(fs, args); !ok {
 		return code
@@ -73,10 +77,23 @@ func acpCommand(args []string, version string) int {
 		return 2
 	}
 
+	var posture cliPermissionMode
+	if strings.TrimSpace(*permissionFlag) != "" {
+		posture, err = parsePermissionMode(*permissionFlag)
+		if err == nil && posture.plan {
+			err = errors.New("--permission-mode plan requires an interactive session")
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+			return 2
+		}
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
 	factory := &acpFactory{
+		postureCeiling: posture.approval, permissionAllow: posture.allow,
 		model: *model, profile: profile, plannerOff: plannerMode == "off",
 		networkOverride: networkOverride, workspaceOnly: *workspaceOnly,
 		bashOverride: bashMode, requireSandbox: bashMode == "enforce",
@@ -94,6 +111,8 @@ func acpCommand(args []string, version string) int {
 // desktop, and serve assembly while still adding the host-supplied MCP servers
 // for this session only.
 type acpFactory struct {
+	postureCeiling   string
+	permissionAllow  []string
 	model            string
 	profile          string
 	plannerOff       bool
@@ -103,6 +122,9 @@ type acpFactory struct {
 	requireSandbox   bool
 	sandboxAvailable func() bool
 }
+
+// PostureCeiling implements acp.PostureCeiling.
+func (f *acpFactory) PostureCeiling() string { return f.postureCeiling }
 
 func (f *acpFactory) SessionDir() string {
 	return config.SessionDir()
@@ -159,11 +181,15 @@ func (f *acpFactory) sessionBootOptions(p acp.SessionParams) (boot.Options, erro
 	if root != "" && !filepath.IsAbs(root) {
 		return boot.Options{}, fmt.Errorf("session cwd must be an absolute path: %s", root)
 	}
+	if f.workspaceOnly && len(p.AdditionalDirs) > 0 {
+		return boot.Options{}, acp.ErrAdditionalDirectoriesDisabled
+	}
 	bashOverride := ""
 	if f.bashOverride == "enforce" {
 		bashOverride = "enforce"
 	}
 	return boot.Options{
+		AgentComposition: p.AgentComposition, Composition: p.Composition,
 		Model:                    firstNonEmpty(p.Model, f.model),
 		TokenMode:                firstNonEmpty(p.RuntimeProfile, f.profile),
 		AgentPreset:              boot.NormalizeAgentPreset(firstNonEmpty(p.RuntimeProfile, f.profile)),
@@ -174,6 +200,7 @@ func (f *acpFactory) sessionBootOptions(p acp.SessionParams) (boot.Options, erro
 		Stderr:                   os.Stderr,
 		WorkspaceRoot:            root,
 		ExtraPlugins:             p.MCPServers,
+		AdditionalDirs:           p.AdditionalDirs,
 		CleanupPendingReconciler: acp.ReconcileCleanupPending,
 		OnSessionRecovered:       p.OnSessionRecovered,
 		FileOverlay:              p.FileOverlay,
@@ -182,6 +209,8 @@ func (f *acpFactory) sessionBootOptions(p acp.SessionParams) (boot.Options, erro
 		SandboxNetworkOverride:   f.networkOverride,
 		SandboxBashOverride:      bashOverride,
 		WorkspaceOnly:            f.workspaceOnly,
+		NewConversation:          p.NewConversation,
+		PermissionAllow:          f.permissionAllow,
 	}, nil
 }
 
@@ -194,6 +223,12 @@ func (f *acpFactory) SessionRuntimeState(_ context.Context, p acp.SessionRuntime
 	writeRoots := cfg.WriteRootsForRoot(p.Cwd)
 	if f.workspaceOnly {
 		writeRoots = []string{p.Cwd}
+	} else {
+		for _, dir := range p.AdditionalDirs {
+			if !slices.Contains(writeRoots, dir) {
+				writeRoots = append(writeRoots, dir)
+			}
+		}
 	}
 	networkEnabled := cfg.Sandbox.Network
 	if f.networkOverride != nil {
@@ -293,7 +328,7 @@ func (f *acpFactory) SessionConfigState(_ context.Context, p acp.SessionConfigSt
 		return acp.SessionConfigState{}, err
 	}
 	if strings.TrimSpace(ref) == "" {
-		return acp.SessionConfigState{}, fmt.Errorf("no default_model configured")
+		return acp.SessionConfigState{}, fmt.Errorf("%w: no default_model configured", provider.ErrNoProvider)
 	}
 	// Plugin-namespaced refs belong to extension sidecars: they never resolve
 	// through the config catalog, so their configured/current handling keys off
@@ -304,7 +339,7 @@ func (f *acpFactory) SessionConfigState(_ context.Context, p acp.SessionConfigSt
 		return acp.SessionConfigState{}, fmt.Errorf("unknown model %q", ref)
 	}
 	if ok && !entry.Configured() {
-		return acp.SessionConfigState{}, fmt.Errorf("model %q is not configured", ref)
+		return acp.SessionConfigState{}, fmt.Errorf("model %q %w", ref, provider.ErrKeyMissing)
 	}
 	currentModel := ref
 	entryDescription := ""
@@ -438,7 +473,7 @@ func acpRuntimeProfile(value string) string {
 }
 
 func acpBuiltinTools(cfg *config.Config, cwd string, writeRoots []string) []tool.Tool {
-	bashSpec := sandbox.Spec{Mode: cfg.BashMode(), WriteRoots: writeRoots, Pins: sandbox.PinWriteRoots(writeRoots), Network: cfg.Sandbox.Network}
+	bashSpec := sandbox.GrantSpec(sandbox.Spec{Mode: cfg.BashMode(), WriteRoots: writeRoots, Pins: sandbox.PinWriteRoots(writeRoots), Network: cfg.Sandbox.Network}, cfg.Roots().SandboxDir())
 	ws := builtin.Workspace{
 		Dir:          cwd,
 		WriteRoots:   writeRoots,

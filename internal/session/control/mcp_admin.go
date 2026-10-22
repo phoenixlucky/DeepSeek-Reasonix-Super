@@ -159,6 +159,9 @@ type MCPServerState struct {
 	// Held lists the tools this session's connection withheld because their
 	// definition is not the one the user approved for the server.
 	Held []plugin.HeldTool
+	// FollowsToolChanges is the user's standing choice to take this server's
+	// definition changes without being asked.
+	FollowsToolChanges bool
 }
 
 // ConfiguredMCPServers lists every configured server with its resolved
@@ -190,7 +193,9 @@ func (c *Controller) ConfiguredMCPServers() []MCPServerState {
 			Changed:    store.ServerChanged(p, c.workspaceRoot),
 			AlwaysLoad: cfg.MCPAlwaysLoad(p), InSchema: inSchema[p.Name],
 		}
-		state.Description, state.Tools, state.Stale = mcpCachedFacts(c.mcpSpec(p))
+		spec := c.mcpSpec(p)
+		state.Description, state.Tools, state.Stale = mcpCachedFacts(spec)
+		state.FollowsToolChanges = plugin.ToolPinsFollow(spec)
 		if host := c.mcp.hostRef(); host != nil {
 			state.Held, _ = host.HeldTools(p.Name)
 		}

@@ -226,7 +226,11 @@ func TestRestoreMemoryQueuesAuditedRevisionForNextTurn(t *testing.T) {
 	if restored.Revision != 3 || restored.Body != "main-v2" {
 		t.Fatalf("restored = %+v", restored)
 	}
-	if revisions := c.MemoryRevisions(first.Memory.ID); len(revisions) < 2 {
+	revisions, err := c.MemoryRevisions(first.Memory.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(revisions) < 2 {
 		t.Fatalf("revision history = %+v", revisions)
 	}
 	composed := c.Compose("continue")

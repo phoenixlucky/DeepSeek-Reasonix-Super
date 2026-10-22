@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"reasonix/internal/contract/event"
 	"reasonix/internal/contract/provider"
+	"reasonix/internal/state/sessionstore"
 )
 
 // Summary input construction is internal to a summary transaction. The normal
@@ -16,6 +18,11 @@ import (
 const (
 	summaryOutputReserve = summaryOutputMaxTokens // room reserved for the digest output
 	minSummarySpanTokens = 4000                   // below this a fold is too small to summarize usefully
+	// summaryInputCeilingTokens caps one summarizer request however large the
+	// configured window is. The window is a declared figure and the input an
+	// estimate; a request sized to the whole of a million-token window has no
+	// room for either being off, and a rejected request costs the digest.
+	summaryInputCeilingTokens = 400_000
 )
 
 const (
@@ -25,7 +32,7 @@ const (
 
 // foldSummary is what compaction reports about turning a fold into a digest.
 // It is populated even when the call fails, so telemetry still records how
-// large the attempt was and that exactly one call was used.
+// large the attempt was and what its bounded retries cost.
 type foldSummary struct {
 	Text       string
 	Mode       string
@@ -35,6 +42,8 @@ type foldSummary struct {
 	Spans      int
 	// Coverage is what this digest kept of the facts its fold produced.
 	Coverage foldCoverage
+	// Input is what the summarizer was shown; nil means the whole fold.
+	Input []provider.Message
 	// CoverageBackstopped marks a digest the host had to complete itself.
 	CoverageBackstopped bool
 }
@@ -72,12 +81,17 @@ func (a *contextWindow) summaryInputBudget(instructions string) int {
 	if budget < minSummarySpanTokens {
 		return 0
 	}
-	return budget
+	return min(budget, summaryInputCeilingTokens)
 }
 
-// foldToSummary turns a fold region into one digest with at most one provider
-// request. Oversized input is shortened deterministically for the summarizer
-// only; multi-span merge and application-layer retries are gone.
+// summaryRejectionScales are the shares of the refused input a summary request is
+// retried at when the provider rejects it as larger than its context. The budget is
+// an estimate, and a refused request costs nothing, so the digest is not given up
+// until three smaller inputs have been refused too.
+var summaryRejectionScales = []float64{0.7, 0.5, 0.35}
+
+// foldToSummary turns one deterministically bounded input into a digest.
+// Summary retries keep this fold, never splitting or merging model outputs.
 func (a *contextWindow) foldToSummary(ctx context.Context, fold []provider.Message, instructions string) (foldSummary, error) {
 	res := foldSummary{Mode: CompactionModeSummarized, Spans: 1, FoldTokens: a.summaryInputTokens(fold)}
 	budget := a.summaryInputBudget(instructions)
@@ -86,6 +100,27 @@ func (a *contextWindow) foldToSummary(ctx context.Context, fold []provider.Messa
 		// Manual /compact on an unconfigured provider still works this way.
 		return a.singleCallSummary(ctx, res, fold, instructions)
 	}
+	attempt, err := a.foldAtBudget(ctx, res, fold, instructions, budget)
+	if err == nil || !provider.IsContextOverflow(err) {
+		return attempt, err
+	}
+	refused := attempt.FoldTokens
+	for _, scale := range summaryRejectionScales {
+		target := int(float64(refused) * scale)
+		if target < minSummarySpanTokens {
+			break
+		}
+		a.svc.sink.Emit(event.Event{Kind: event.CompactionProgress})
+		attempt, err = a.foldAtBudget(ctx, res, fold, instructions, target)
+		if err == nil || !provider.IsContextOverflow(err) {
+			return attempt, err
+		}
+	}
+	return attempt, fmt.Errorf("%w: the provider refused the summary request at every size tried: %w", errSummaryInputTooLarge, err)
+}
+
+// foldAtBudget shortens the fold to fit budget and asks for its summary once.
+func (a *contextWindow) foldAtBudget(ctx context.Context, res foldSummary, fold []provider.Message, instructions string, budget int) (foldSummary, error) {
 	input := fold
 	if res.FoldTokens > budget {
 		input = a.shortenFoldForSummary(fold)
@@ -102,6 +137,7 @@ func (a *contextWindow) foldToSummary(ctx context.Context, fold []provider.Messa
 	if res.FoldTokens > budget {
 		return res, fmt.Errorf("%w after shortening (%d > %d)", errSummaryInputTooLarge, res.FoldTokens, budget)
 	}
+	res.Input = input
 	return a.singleCallSummary(ctx, res, input, instructions)
 }
 
@@ -118,7 +154,11 @@ func (a *contextWindow) foldOrDegrade(ctx context.Context, trigger string, mustF
 	spend := compactionSpendFrom(ctx)
 	res, err := a.foldToSummary(ctx, fold, instructions)
 	if err == nil {
-		res.Coverage = measureFoldCoverage(fold, a.toolFactsFor, res.Text)
+		shown := res.Input
+		if shown == nil {
+			shown = fold
+		}
+		res.Coverage = measureShownCoverage(fold, shown, a.toolFactsFor, res.Text)
 		if err = rejectDigestThatCarriedNothing(res, mustFree); err == nil {
 			res = backstopFoldCoverage(res)
 		}
@@ -137,11 +177,61 @@ func (a *contextWindow) foldOrDegrade(ctx context.Context, trigger string, mustF
 	return res, tele, nil
 }
 
+const (
+	// What the placeholder digest holds of the user's own words: each turn is
+	// shortened to at most mechanicalUserTurnChars, and the whole list to about
+	// mechanicalUserTotalChars, so a long session cannot make the stand-in as
+	// large as the thing it replaces.
+	mechanicalUserTurnChars  = 240
+	mechanicalUserTotalChars = 16000
+	mechanicalUserMinChars   = 60
+)
+
 // mechanicalFoldDigest stands in for a digest the summarizer could not produce.
-// Saying the summary is missing is what stops the model reading the gap as
-// "nothing was there" and inventing what the folded turns contained.
-func mechanicalFoldDigest(n int) string {
-	return fmt.Sprintf("%d earlier message(s) were folded here to free context, but the automatic summary was unavailable. Ask the user if you need details from before this point.", n)
+// Saying the summary is missing stops the model reading the gap as "nothing was
+// there". The user's words are the part nothing else holds, so they ride along,
+// shortened and in order; assistant and tool content stays in the transcript.
+func mechanicalFoldDigest(fold []provider.Message) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d earlier message(s) were folded here to free context, but the automatic summary was unavailable. Ask the user if you need details from before this point.", len(fold))
+	var said []string
+	for _, m := range fold {
+		if m.Role != provider.RoleUser || m.LocalOnly || isCompactionSummary(m) {
+			continue
+		}
+		if text := sessionstore.UserMessageText(m); text != "" {
+			said = append(said, text)
+		}
+	}
+	if len(said) == 0 {
+		return b.String()
+	}
+	each := min(mechanicalUserTurnChars, max(mechanicalUserMinChars, mechanicalUserTotalChars/len(said)))
+	b.WriteString("\n\nWhat the user said in the folded part, shortened, oldest first:")
+	used := 0
+	for i, text := range said {
+		line := shortenForDigest(text, each)
+		if used+len(line) > mechanicalUserTotalChars {
+			fmt.Fprintf(&b, "\n- [%d more earlier messages of the user are not listed]", len(said)-i)
+			break
+		}
+		used += len(line)
+		b.WriteString("\n- " + line)
+	}
+	return b.String()
+}
+
+// shortenForDigest collapses whitespace and cuts at a rune boundary.
+func shortenForDigest(s string, limit int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) <= limit {
+		return s
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }
 
 // degradeFoldSummary turns a summarizer failure into a mechanical fold only
@@ -155,7 +245,7 @@ func (a *contextWindow) degradeFoldSummary(res foldSummary, mustFree bool, fold 
 	a.svc.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
 		Text:   "Context was compacted without a generated summary.",
 		Detail: fmt.Sprintf("compaction summary unavailable (%v); folded mechanically", cause)})
-	res.Text = mechanicalFoldDigest(len(fold))
+	res.Text = mechanicalFoldDigest(fold)
 	res.Mode = CompactionModeDegraded
 	// Measured here too: without it a fold that lost everything reports the
 	// same coverage as one that lost nothing.

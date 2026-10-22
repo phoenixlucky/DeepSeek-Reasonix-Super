@@ -2,9 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { t } from "../i18n";
 import { reason } from "../i18n/kernel";
 import type { AgentPort, BackupCatalog, BackupCategory, BackupEntry } from "../port/port";
-import { BackupRestore, CATEGORY_LABEL } from "./BackupRestore";
+import { accountBackupSource, BackupRestore, CATEGORY_LABEL } from "./BackupRestore";
 
-const CATEGORY_NOTE: Record<BackupCategory, string> = {
+export const CATEGORY_NOTE: Record<BackupCategory, string> = {
   settings: "供应商、默认模型、预设与界面外观；不含审批模式、权限和沙箱",
   extensions: "插件只记录来源与版本，恢复时仍走插件安装确认",
   memory: "用户级指令文件与全局记忆",
@@ -183,7 +183,7 @@ function BackupInput({ port }: { port: AgentPort }) {
         </ul>
       )}
 
-      {restoring && <BackupRestore key={restoring.id} port={port} backup={restoring} onClose={() => setRestoring(null)} />}
+      {restoring && <BackupRestore key={restoring.id} port={port} source={accountBackupSource(port, restoring)} onClose={() => setRestoring(null)} />}
     </div>
   );
 }

@@ -12,6 +12,7 @@ import (
 // offers, an invocation, and a published form's values.
 func (s *Server) registerExtensionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /extensions/actions", s.extensionActions)
+	mux.HandleFunc("GET /extensions/surfaces", s.extensionSurfaces)
 	mux.HandleFunc("POST /extensions/action", s.invokeExtensionAction)
 	mux.HandleFunc("POST /extensions/submit", s.submitExtensionForm)
 }

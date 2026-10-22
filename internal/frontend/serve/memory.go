@@ -46,25 +46,39 @@ func (s *Server) memories(w http.ResponseWriter, r *http.Request) {
 	for _, hit := range recall.Hits {
 		used[hit.Memory.Name] = strings.TrimSpace(hit.Reason)
 	}
-	raw := set.Store.ListAll()
+	raw, err := set.Store.ListAll()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	now := time.Now()
 	out := make([]memoryEntry, 0, len(raw))
 	for _, m := range raw {
 		reason, hit := used[m.Name]
+		path, err := set.Store.Path(string(memory.NormalizeFactScope(string(m.Scope))) + "/" + m.Name + ".md")
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
 		out = append(out, memoryEntry{
 			Name: m.Name, Title: m.Title, Description: m.Description, Body: m.Body,
 			Type: string(m.Type), Scope: string(m.Scope),
 			Activation: string(memory.ResolveActivation(m)),
-			Path:       set.Store.Path(m.Name), Revision: m.Revision,
+			Path:       path, Revision: m.Revision,
 			CreatedAt: stamp(m.CreatedAt), UpdatedAt: stamp(m.UpdatedAt),
 			Expired:      !m.ExpiresAt.IsZero() && m.ExpiresAt.Before(now),
 			UsedLastTurn: hit, Why: reason,
 		})
 	}
+	indexPath, err := set.Store.Path("MEMORY")
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, map[string]any{
 		"memories":    out,
 		"recallQuery": recall.Query,
-		"indexPath":   set.Store.Path("MEMORY"),
+		"indexPath":   indexPath,
 	})
 }
 
@@ -126,7 +140,12 @@ func (s *Server) saveMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	current, found := memory.Memory{}, false
-	for _, m := range set.Store.ListAll() {
+	facts, err := set.Store.ListAll()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	for _, m := range facts {
 		if m.Name == name {
 			current, found = m, true
 			break
@@ -164,7 +183,12 @@ func (s *Server) memoryRevisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := []memoryEntry{}
-	for _, m := range s.ctl().MemoryRevisions(name) {
+	revisions, err := s.ctl().MemoryRevisions(name)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	for _, m := range revisions {
 		out = append(out, memoryEntry{
 			Name: m.Name, Title: m.Title, Description: m.Description, Body: m.Body,
 			Type: string(m.Type), Scope: string(m.Scope), Activation: string(memory.ResolveActivation(m)),

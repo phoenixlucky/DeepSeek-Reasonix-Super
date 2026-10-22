@@ -31,6 +31,7 @@ type streamedTurn struct {
 	text               string
 	reasoning          string
 	thoughtMs          int64 // see thoughtClock
+	firstTokenMs       int64 // see thoughtClock; 0 = not measured
 	signature          string
 	reasoningID        string
 	reasoningStatus    string
@@ -269,13 +270,14 @@ func (a *Agent) runToolLoop(ctx context.Context, state *turnRuntime) error {
 		// guidance (with a prefix), not a new task. One cache miss per
 		// steer is unavoidable — the model must see the new instruction.
 		if text, entry, ok := a.consumeSteer(); ok {
-			a.sess.conversation.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(sessionstore.MidTurnSteerMessage(text, entry.host)), Via: entry.via})
-			a.svc.sink.Emit(event.Event{Kind: event.Steer, Text: text, ItemID: entry.itemID, Via: entry.via, HostAuthored: entry.host})
+			a.landSteer(text, entry)
 		} else if entry.itemID != "" {
 			// Loader failed after dequeue: durable entry stays for inspection
 			// (unapplied path marks uncertain + pause via the notice sink).
 			a.recordUnappliedSteer("(body load failed)", entry.host, entry.itemID)
 		}
+		a.appendTurnTailNotices()
+
 		schemas := a.svc.tools.ProviderSchemas(ctx)
 		a.sess.lastProviderSchemas = schemas
 		prefixShape := a.capturePrefixShape(schemas)
@@ -315,7 +317,7 @@ func (a *Agent) runToolLoop(ctx context.Context, state *turnRuntime) error {
 		// cut in half must reach neither history nor execution, and why it did
 		// not is the host's to state, not the model's to infer.
 		boundary := classifyResponseBoundary(usage, calls)
-		calls = boundary.committed
+		calls = a.prepareCallBatch(boundary.committed)
 		if msg, ok := finishReasonMessage(usage); ok {
 			a.svc.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg, Detail: boundary.noticeDetail()})
 		}
@@ -324,7 +326,6 @@ func (a *Agent) runToolLoop(ctx context.Context, state *turnRuntime) error {
 		// Keep reasoning_content on the assistant turn for display and session
 		// archive. Most OpenAI-compatible backends do not replay it; providers
 		// with an explicit round-trip contract retain the raw provider text.
-		calls = a.withPreviewFileDiffs(ctx, calls)
 		workMs, committed := state.workDurationMs(), a.callsToCommit(streamed, calls)
 		a.sess.conversation.Add(provider.Message{
 			Role:               provider.RoleAssistant,
@@ -342,7 +343,7 @@ func (a *Agent) runToolLoop(ctx context.Context, state *turnRuntime) error {
 		if len(committed) == 0 {
 			state.answeredMs = workMs
 		}
-		if cont, perr := a.settlePerseveration(state, streamed); !cont {
+		if cont, perr := a.settlePerseveration(ctx, state, streamed); !cont {
 			return perr
 		} else if streamed.perseverationAborted {
 			continue
@@ -375,7 +376,7 @@ func (a *Agent) runToolLoop(ctx context.Context, state *turnRuntime) error {
 	// Only reached when a positive maxSteps guard is configured. The work so far
 	// is already in the session, so the user can just send another message to pick
 	// up where it left off.
-	return a.gracePause(state)
+	return a.gracePause(ctx, state)
 }
 
 // settleRewritesBeforeSampling closes out whatever changed the conversation
@@ -439,7 +440,7 @@ func (a *Agent) streamWithSamplingRecovery(ctx context.Context, turn int) stream
 
 	for attempt := 1; attempt <= maxSamplingAttempts; attempt++ {
 		attemptID := newStreamAttemptID(attempt)
-		a.emitStreamAttempt(attemptID, event.StreamAttemptBegin, attempt, "", nil)
+		a.emitStreamAttempt(attemptID, event.StreamAttemptBegin, attempt, "", nil, 0)
 
 		var streamSink *deferredStreamSink
 		attemptSink := a.svc.sink
@@ -482,7 +483,7 @@ func (a *Agent) streamWithSamplingRecovery(ctx context.Context, turn int) stream
 					retrySink.Discard()
 					if ctx.Err() != nil {
 						streamSink.Discard()
-						a.emitStreamAttempt(attemptID, event.StreamAttemptDiscard, attempt, provider.StreamInterruptReason(retry.err), retry.err)
+						a.emitStreamAttempt(attemptID, event.StreamAttemptDiscard, attempt, provider.StreamInterruptReason(retry.err), retry.err, 0)
 						// Use the cancelled retry as the "latest" shape so
 						// FinishReason=interrupted is preserved for accounting.
 						return streamedTurn{usage: finalizeSamplingUsage(billable, retry.usage), attemptID: attemptID, err: retry.err}
@@ -492,7 +493,7 @@ func (a *Agent) streamWithSamplingRecovery(ctx context.Context, turn int) stream
 					a.storeLatestRequestUsage(result.usage)
 					result.usage = finalizeSamplingUsage(billable, result.usage)
 					event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningFallback})
-					a.emitStreamAttempt(attemptID, event.StreamAttemptCommit, attempt, "", nil)
+					a.emitStreamAttempt(attemptID, event.StreamAttemptCommit, attempt, "", nil, result.firstTokenMs)
 					return result
 				}
 				streamSink.Discard()
@@ -508,7 +509,7 @@ func (a *Agent) streamWithSamplingRecovery(ctx context.Context, turn int) stream
 				} else {
 					event.RecordProtocolRecovery(a.svc.sink, event.ProtocolRecoveryAudit{Kind: event.ProtocolRecoveryMissingReasoningRetryRecovered})
 				}
-				a.emitStreamAttempt(attemptID, event.StreamAttemptCommit, attempt, "", nil)
+				a.emitStreamAttempt(attemptID, event.StreamAttemptCommit, attempt, "", nil, retry.firstTokenMs)
 				return retry
 			}
 			if observed != reasoningLostReplay || strings.TrimSpace(result.text) != "" {
@@ -520,21 +521,21 @@ func (a *Agent) streamWithSamplingRecovery(ctx context.Context, turn int) stream
 		}
 
 		streamSink.Flush()
-		a.emitStreamAttempt(attemptID, event.StreamAttemptCommit, attempt, "", nil)
+		a.emitStreamAttempt(attemptID, event.StreamAttemptCommit, attempt, "", nil, result.firstTokenMs)
 		result.usage = finalizeSamplingUsage(billable, result.usage)
 		return result
 	}
 	return last
 }
 
-func (a *Agent) emitStreamAttempt(id string, action event.StreamAttemptAction, attempt int, reason string, err error) {
+func (a *Agent) emitStreamAttempt(id string, action event.StreamAttemptAction, attempt int, reason string, err error, firstTokenMs int64) {
 	if reason == "" && err != nil {
 		reason = provider.StreamInterruptReason(err)
 	}
 	a.svc.sink.Emit(event.Event{
 		Kind: event.StreamAttempt,
 		StreamAttempt: event.StreamAttemptInfo{
-			ID: id, Action: action, Attempt: attempt, Max: maxSamplingAttempts, Reason: reason,
+			ID: id, Action: action, Attempt: attempt, Max: maxSamplingAttempts, Reason: reason, FirstTokenMs: firstTokenMs,
 		},
 	})
 }
@@ -584,13 +585,13 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *turnRuntime, tex
 	readiness := a.finalReadinessCheckFor()
 	a.turn.lastReadiness = &readiness
 	if state.graceRound && (readiness.reason != "" || !hasVisibleFinalAnswer(text)) {
-		return false, a.gracePause(state)
+		return false, a.gracePause(ctx, state)
 	}
 	if state.graceRound && (state.landCause.kind == "task_budget" || !state.runLimitHostOwned) {
 		// Explicit max_steps and spend budgets are user-selected boundaries.
 		// Preserve the summary, then return a resumable pause so Goal does not
 		// immediately open another Run and silently bypass the chosen limit.
-		return false, a.gracePause(state)
+		return false, a.gracePause(ctx, state)
 	}
 	// An executor that has not acted yet gets its one in-turn nudge before the
 	// gate ends the run: what it owes is still something this turn can supply.
@@ -608,10 +609,11 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *turnRuntime, tex
 		// the recovery card for an explicit user continuation.
 		event.RecordReadinessAudit(a.svc.sink, readiness.audit(hostaudit.ReadinessErrored, false))
 		a.pending.deliveryRecovery = true
+		a.noteObligationsExplained()
 		// The blocked turn is the one whose summary matters most — it is where
 		// a rewritten check or an unverified mutation is still outstanding —
 		// and it was the only turn that never reported one.
-		a.emitTurnShadows(a.turn.turnInput, true)
+		a.emitTurnShadows(ctx, a.turn.turnInput, true)
 		return false, &FinalReadinessError{Attempts: 1, Reason: readiness.reason, Missing: readiness.missingIDs(), Signature: readiness.progressSignature()}
 	}
 	// The turn has earned its stop. What the gate let through on a warn verdict
@@ -635,7 +637,7 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *turnRuntime, tex
 	if readiness.applies {
 		event.RecordReadinessAudit(a.svc.sink, readiness.audit(hostaudit.ReadinessAllowed, a.turn.readinessRecovered))
 	}
-	a.emitTurnShadows(a.turn.turnInput, false)
+	a.emitTurnShadows(ctx, a.turn.turnInput, false)
 	if !a.closeSteerIntakeIfIdle() {
 		return true, nil
 	}
@@ -686,11 +688,11 @@ func (a *Agent) handleToolRound(ctx context.Context, state *turnRuntime, step in
 		return false, fmt.Errorf("model repeatedly called context-unavailable tools without a visible answer: %s", strings.Join(unavailableContextTools, ", "))
 	}
 
-	if boundaryErr, stop := a.stopUnexecutedBoundaryCalls(state, calls, usage); stop {
+	if boundaryErr, stop := a.stopUnexecutedBoundaryCalls(ctx, state, calls, usage); stop {
 		return false, boundaryErr
 	}
 
-	state.snapshot.await(ctx)
+	state.snapshot.await(ctx, snapshotWait)
 	mark := a.markProgressRound()
 	batch := a.executeBatch(ctx, state, calls)
 	results, images := batch.results, batch.images
@@ -700,12 +702,13 @@ func (a *Agent) handleToolRound(ctx context.Context, state *turnRuntime, step in
 			Role:       provider.RoleTool,
 			Content:    results[i],
 			Images:     images[i],
+			Videos:     batch.videos[i],
 			ToolCallID: call.ID,
 			Name:       call.Name,
 		}
-		// The host names content written outside the workspace before the model
-		// reads it; the label is fixed once here and never rewritten.
+		// The host labels content from outside the workspace here, once, and never rewrites it.
 		if i < len(batch.outcomes) {
+			a.task.origins.note(batch.outcomes[i].provenance, results[i])
 			head := tool.ProvenanceHeader(batch.outcomes[i].provenance)
 			if flagged[i] {
 				head += suspectedInjectionLine
@@ -733,7 +736,7 @@ func (a *Agent) handleToolRound(ctx context.Context, state *turnRuntime, step in
 		a.recordInterruptedDisplay("", "", nil, true, state.workDurationMs(), "")
 		return false, ctx.Err()
 	}
-	if pause := a.settleProgressRound(state, mark); pause != nil {
+	if pause := a.settleProgressRound(ctx, state, mark); pause != nil {
 		return false, pause
 	}
 	if len(unavailableContextTools) > 0 {

@@ -4,7 +4,7 @@
 // capabilities under the user cache dir keyed by load-bearing, non-secret Spec
 // fields, so the next launch can register tools optimistically
 // without waiting for the network/subprocess. Caching is purely an
-// optimisation: any failure (missing dir, bad JSON, key mismatch) silently
+// optimisation: a cache miss (missing dir, bad JSON, key mismatch) silently
 // degrades to a fresh handshake.
 package plugin
 
@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -23,6 +24,7 @@ import (
 
 	"reasonix/internal/base/fileutil"
 	fileencoding "reasonix/internal/base/fileutil/encoding"
+	"reasonix/internal/base/secrets"
 	"reasonix/internal/contract/config"
 	"reasonix/internal/contract/tool"
 )
@@ -137,15 +139,18 @@ func LoadCachedSchema(name, expectedKey string) (*CachedSchema, bool) {
 	return cs, true
 }
 
-// LoadCachedSchemaForSpec returns the cached schema matching the spec's
-// current key, transparently rewriting an entry still saved under the legacy
-// URL key. Without the in-place upgrade, credential rotation or
-// the credential-aware normalization rollout would force a pointless
-// re-handshake even though nothing observable changed.
+// LoadCachedSchemaForSpec returns a usable enabled-tool snapshot matching the
+// current spec. Invalid model-visible names are a cache miss. A matching legacy
+// URL key is upgraded in place without changing the tool definitions; if that
+// rewrite fails, the hit keeps the legacy key the file still holds, so no
+// caller is handed a key that disagrees with the disk.
 func LoadCachedSchemaForSpec(s Spec) (*CachedSchema, bool) {
 	current := SchemaCacheKey(s)
 	if cs, ok := LoadCachedSchema(s.Name, current); ok {
 		cs.Tools = s.EnabledCachedTools(cs.Tools)
+		if !cachedToolNamesUsable(s, cs.Tools) {
+			return nil, false
+		}
 		return cs, true
 	}
 	legacy, ok := legacySchemaCacheKey(s)
@@ -156,10 +161,26 @@ func LoadCachedSchemaForSpec(s Spec) (*CachedSchema, bool) {
 	if !ok {
 		return nil, false
 	}
-	cs.CacheKey = current
 	cs.Tools = s.EnabledCachedTools(cs.Tools)
-	_ = SaveCachedSchema(s.Name, *cs)
+	if !cachedToolNamesUsable(s, cs.Tools) {
+		return nil, false
+	}
+	// Claim the upgraded key only once it reached the disk: the caller
+	// cannot see this write, so it must not get a key the file lacks.
+	upgraded := *cs
+	upgraded.CacheKey = current
+	if err := SaveCachedSchema(s.Name, upgraded); err == nil {
+		cs.CacheKey = current
+	}
 	return cs, true
+}
+
+func cachedToolNamesUsable(s Spec, tools []CachedTool) bool {
+	if err := validateCachedToolNames(s, tools); err != nil {
+		slog.Warn("plugin cache: catalog rejected", "server", s.Name, "err", secrets.DiagnosticError(err))
+		return false
+	}
+	return true
 }
 
 // LoadCachedSchemaAny returns the cached schema regardless of cache-key match,
@@ -167,23 +188,34 @@ func LoadCachedSchemaForSpec(s Spec) (*CachedSchema, bool) {
 // mismatched cache can still surface tools as stale candidates;
 // execution paths must keep using LoadCachedSchema, which refuses mismatches.
 func LoadCachedSchemaAny(name, expectedKey string) (cs *CachedSchema, ok bool, keyOK bool) {
-	p := cachePath(name)
+	for _, p := range []string{specCachePath(name, expectedKey), cachePath(name)} {
+		if out, found := readCachedSchema(p); found {
+			return out, true, out.CacheKey == expectedKey
+		}
+	}
+	// No entry for this spec: a sibling for the same name still shows what the
+	// server last offered, as a stale candidate (keyOK stays false).
+	if out, found := readCachedSchema(newestSiblingCachePath(name)); found {
+		return out, true, false
+	}
+	return nil, false, false
+}
+
+// readCachedSchema reads and validates one cache file; "" or a bad file is a miss.
+func readCachedSchema(p string) (*CachedSchema, bool) {
 	if p == "" {
-		return nil, false, false
+		return nil, false
 	}
 	b, err := fileencoding.ReadFileUTF8(p)
 	if err != nil {
-		return nil, false, false
+		return nil, false
 	}
 	var out CachedSchema
-	if err := json.Unmarshal(b, &out); err != nil {
-		return nil, false, false
-	}
-	if out.Version != cacheVersion {
-		return nil, false, false
+	if err := json.Unmarshal(b, &out); err != nil || out.Version != cacheVersion {
+		return nil, false
 	}
 	out.Tools = filterValidCachedTools(out.Tools)
-	return &out, true, out.CacheKey == expectedKey
+	return &out, true
 }
 
 func filterValidCachedTools(tools []CachedTool) []CachedTool {
@@ -203,7 +235,10 @@ func filterValidCachedTools(tools []CachedTool) []CachedTool {
 // logged at debug level and returned. The shared replacement helper preserves
 // overwrite semantics on Windows as well as crash safety on Unix.
 func SaveCachedSchema(name string, cs CachedSchema) error {
-	p := cachePath(name)
+	p := specCachePath(name, cs.CacheKey)
+	if p == "" {
+		p = cachePath(name)
+	}
 	if p == "" {
 		return nil
 	}
@@ -220,7 +255,86 @@ func SaveCachedSchema(name string, cs CachedSchema) error {
 		slog.Debug("plugin cache: atomic write", "name", name, "err", err)
 		return err
 	}
+	pruneSpecCaches(name, p)
 	return nil
+}
+
+// maxSpecCachesPerName bounds the entries kept for one server name. Entries are
+// per spec, so projects that declare one name differently each keep theirs; the
+// bound only stops a name that changes its launch spec forever from growing the
+// directory, and a pruned entry costs one handshake when its spec returns.
+const maxSpecCachesPerName = 8
+
+// specCachePath is the entry for one server name and one spec key:
+// "<cache>/mcp/<slug(name)>.<key prefix>.json". The slug holds no dot, so a name
+// never matches another name's entries. "" when there is no cache directory or
+// no key to tell specs apart.
+func specCachePath(name, key string) string {
+	tag := cacheKeyTag(key)
+	base := config.CacheDir()
+	if tag == "" || base == "" {
+		return ""
+	}
+	return filepath.Join(base, "mcp", slug(name)+"."+tag+".json")
+}
+
+func cacheKeyTag(key string) string {
+	tag := strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' || r >= 'a' && r <= 'f' {
+			return r
+		}
+		return -1
+	}, strings.ToLower(key))
+	return tag[:min(len(tag), 16)]
+}
+
+// siblingCachePaths lists every per-spec entry of name, newest first.
+func siblingCachePaths(name string) []string {
+	base := config.CacheDir()
+	if base == "" {
+		return nil
+	}
+	dir := filepath.Join(base, "mcp")
+	entries, _ := os.ReadDir(dir)
+	prefix := slug(name) + "."
+	type dated struct {
+		path string
+		at   time.Time
+	}
+	var list []dated
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || !strings.HasPrefix(n, prefix) || !strings.HasSuffix(n, ".json") {
+			continue
+		}
+		if info, err := e.Info(); err == nil {
+			list = append(list, dated{filepath.Join(dir, n), info.ModTime()})
+		}
+	}
+	slices.SortFunc(list, func(a, b dated) int { return b.at.Compare(a.at) })
+	out := make([]string, len(list))
+	for i, d := range list {
+		out[i] = d.path
+	}
+	return out
+}
+
+func newestSiblingCachePath(name string) string {
+	if all := siblingCachePaths(name); len(all) > 0 {
+		return all[0]
+	}
+	return ""
+}
+
+// pruneSpecCaches drops the oldest entries of name past the bound, never the one
+// just written.
+func pruneSpecCaches(name, keep string) {
+	all := siblingCachePaths(name)
+	for i, p := range all {
+		if i >= maxSpecCachesPerName && p != keep {
+			_ = os.Remove(p)
+		}
+	}
 }
 
 // cachePath returns "<config.CacheDir()>/mcp/<slug(name)>.json". Returns ""
@@ -293,13 +407,28 @@ func writeKeys(h io.Writer, key string, m map[string]string) {
 // what it can do, what it said it is for, and the tools it listed.
 func (c *Client) saveHandshakeSchema(spec Spec, tools []tool.Tool) {
 	_ = SaveCachedSchema(spec.Name, CachedSchema{
-		CacheKey: SchemaCacheKey(spec),
-		Capabilities: map[string]bool{
-			"tools":     c.hasTools,
-			"prompts":   c.hasPrompts,
-			"resources": c.hasResources,
-		},
+		CacheKey:     SchemaCacheKey(spec),
+		Capabilities: c.advertisedCapabilities(),
 		Instructions: c.instructions,
 		Tools:        cacheableToolsOf(tools),
 	})
+}
+
+// advertisedCapabilities is what the server declared at initialize, in the form
+// the schema cache keeps it.
+func (c *Client) advertisedCapabilities() map[string]bool {
+	return map[string]bool{"tools": c.hasTools, "prompts": c.hasPrompts, "resources": c.hasResources}
+}
+
+// cachedCapabilities is advertisedCapabilities of the named live server. A
+// server with no live client keeps only what its tool list says.
+func (h *Host) cachedCapabilities(server string, haveTools bool) map[string]bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, c := range h.clients {
+		if c.name == server {
+			return c.advertisedCapabilities()
+		}
+	}
+	return map[string]bool{"tools": haveTools}
 }

@@ -7,6 +7,10 @@ export const EN_STORAGE: Record<string, string> = {
   "选择旧版的数据文件夹。扫描只会复制会话，不会移动或删除原文件；找不到原工作区的会话会归入当前工作区。":
     "Choose the older data folder. The scan only copies sessions and never moves or deletes the originals; sessions whose workspace no longer exists are placed in the current workspace.",
   "选择旧版数据目录…": "Choose older data folder…",
+  "无法打开文件夹选择器。请输入旧版数据文件夹的路径（里面有 sessions、projects 或 desktop-sessions-v5）。":
+    "The folder panel could not be opened. Type the path of the older data folder (the one holding sessions, projects or desktop-sessions-v5).",
+  "旧版数据目录路径": "Older data folder path",
+  "导入此文件夹": "Import this folder",
   "正在扫描…": "Scanning…",
   "已找回 {n} 个会话。": "Recovered {n} sessions.",
   "没有发现尚未导入的旧会话。": "Nothing new to import.",
@@ -19,6 +23,7 @@ export const EN_STORAGE: Record<string, string> = {
     "These files are still where they were; nothing was moved or deleted. Copy a path to deal with it yourself, or fix it and import again.",
   体积超过读取上限: "Larger than the size limit for reading",
   "不是本版本能读取的会话格式": "Not a session format this version can read",
+  "没有记录它属于哪个项目，所以没有导入": "It records no project it belongs to, so it was not imported",
   "来自本版本尚不支持的存储版本": "Written by a storage version this version does not support yet",
   没有读取权限: "No permission to read it",
   文件已损坏: "The file is damaged",

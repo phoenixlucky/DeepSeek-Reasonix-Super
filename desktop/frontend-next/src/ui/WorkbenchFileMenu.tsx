@@ -3,19 +3,21 @@ import { createPortal } from "react-dom";
 import { t } from "../i18n";
 import { copyText } from "./CopyButton";
 import { pinToViewport } from "./place";
+import { fileReference } from "./fileReference";
 
 export type FileMenu = { path: string; folder: boolean; x: number; y: number; anchor: HTMLElement };
 
-function absoluteWorkspacePath(root: string, path: string): string {
+export function absoluteWorkspacePath(root: string, path: string): string {
   if (!root.startsWith("/") && !/^[a-z]:[\\/]/i.test(root) && !/^\\\\[^\\]+\\[^\\]+/.test(root)) return "";
   const separator = root.startsWith("\\\\") || /^[a-z]:\\/i.test(root) ? "\\" : "/";
   const base = root.replace(separator === "\\" ? /[\\/]+$/ : /\/+$/, "");
   return base + separator + (separator === "\\" ? path.replaceAll("/", "\\") : path);
 }
 
-export function WorkbenchFileMenu({ menu, root, revealable, platform, onReveal, onClose }: {
+export function WorkbenchFileMenu({ menu, root, revealable, platform, onReveal, onOpen, onAddToChat, onClose }: {
   menu: FileMenu; root: string; revealable: boolean; platform: string;
-  onReveal: (path: string) => void; onClose: () => void;
+  onReveal: (path: string) => void; onAddToChat?: (reference: string) => void; onClose: () => void;
+  onOpen?: (path: string) => void;
 }) {
   const [state, setState] = useState<"idle" | "copying" | "failed">("idle");
   const live = useRef(false);
@@ -52,7 +54,7 @@ export function WorkbenchFileMenu({ menu, root, revealable, platform, onReveal, 
   // Keep the same token spelling as control.EscapeRefPath and RefDirItems.
   const path = menu.path + (menu.folder ? "/" : "");
   const ambiguous = path.includes(":");
-  const reference = ambiguous || path.endsWith("\\") || path.trimEnd() !== path || /[\r\n\f]|[.,;!?)}\]]$/.test(path) ? "" : "@" + path.replace(/[ \t]/g, "\\$&");
+  const reference = fileReference(path);
   return createPortal(
     <div
       className="tabmenu"
@@ -90,6 +92,20 @@ export function WorkbenchFileMenu({ menu, root, revealable, platform, onReveal, 
         data-target={menu.path}
         onClick={() => void copy(reference)}
       >{t("复制引用")}</button>
+      {onAddToChat && (
+        <button
+          role="menuitem"
+          disabled={!reference}
+          title={reference ? undefined : ambiguous ? t("此名称可能被识别为 MCP 资源") : t("此名称不能表示为 @ 引用")}
+          data-action="workbench.add-to-chat"
+          data-target={menu.path}
+          onClick={() => { close(); onAddToChat(reference); }}
+        >{t("加入对话")}</button>
+      )}
+      {onOpen && !menu.folder && (
+        <button role="menuitem" data-action="workbench.open-file" data-target={menu.path}
+          onClick={() => { close(); onOpen(menu.path); }}>{t("使用系统默认应用打开")}</button>
+      )}
       {state === "failed" && <div role="alert">{t("复制失败，请重试")}</div>}
     </div>, document.body,
   );

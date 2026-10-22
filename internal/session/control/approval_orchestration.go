@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"reasonix/internal/contract/config"
 	"reasonix/internal/contract/event"
@@ -155,7 +156,9 @@ func (c *Controller) EnableInteractiveApproval() {
 	}
 	escapeApprover := sandboxEscapeApprover{c}
 	configApprover := managedConfigWriteApprover{c}
+	paidApprover := paidSearchApprover{c}
 	if c.executor != nil {
+		c.executor.SetPaidSearchApprover(paidApprover)
 		c.executor.SetGate(c.newInteractiveGate())
 		c.executor.SetSandboxEscapeApprover(escapeApprover)
 		c.executor.SetConfigWriteApprover(configApprover)
@@ -170,6 +173,11 @@ func (c *Controller) EnableInteractiveApproval() {
 		SetConfigWriteApprover(tool.ConfigWriteApprover)
 	}); ok {
 		setter.SetConfigWriteApprover(configApprover)
+	}
+	if setter, ok := c.runner.(interface {
+		SetPaidSearchApprover(tool.PaidSearchApprover)
+	}); ok {
+		setter.SetPaidSearchApprover(paidApprover)
 	}
 	if setter, ok := c.runner.(interface {
 		SetPlannerPlanApprover(agent.PlannerPlanApprover)
@@ -303,50 +311,51 @@ func (c *Controller) ask(ctx context.Context, questions []event.AskQuestion, ori
 	}
 	defer c.approval.promptMu.Unlock()
 
+	// The wait is read once, before the card is shown, so what the card says and
+	// what the host does are the same number.
+	after := c.askSkipDelay(origin)
+	shown := event.Ask{ID: id, Questions: questions, Origin: origin, SkipInMs: after.Milliseconds()}
 	c.approval.promptEmitMu.Lock()
 	c.approval.markAskEmitted(id)
-	c.sink.Emit(event.Event{Kind: event.AskRequest, Ask: event.Ask{ID: id, Questions: questions, Origin: origin}})
+	if after > 0 {
+		c.approval.setAskSkipAt(id, time.Now().Add(after))
+	}
+	c.sink.Emit(event.Event{Kind: event.AskRequest, Ask: shown})
 	c.approval.promptEmitMu.Unlock()
 	// A question blocks the run on the user exactly like an approval prompt.
 	go c.hooks.Notification(ctx, askNotificationText(questions, origin), "question_prompt")
 
-	waitCtx, cancelWait := c.askWaitContext(ctx, origin)
-	defer cancelWait()
-
-	select {
-	case ans := <-reply:
-		c.closeBarrier(id, barrierResolved)
-		return ans, nil
-	case <-waitCtx.Done():
-		return c.endUnansweredAsk(waitCtx, id, reply)
-	}
+	return c.waitForAsk(ctx, id, reply, after)
 }
 
 // AnswerQuestion resolves a pending AskRequest by ID with the user's selections.
-// Unknown/expired IDs are ignored.
-func (c *Controller) AnswerQuestion(id string, answers []event.AskAnswer) {
-	c.AnswerQuestionFrom(id, answers, nil)
+// Invalid answers retain the pending prompt; expired identities are refused.
+func (c *Controller) AnswerQuestion(id string, answers []event.AskAnswer) error {
+	return c.AnswerQuestionFrom(id, answers, nil)
 }
 
 // AnswerQuestionFrom is AnswerQuestion for answers given on a paired device,
 // which the answer's receipt names and nothing else reads.
-func (c *Controller) AnswerQuestionFrom(id string, answers []event.AskAnswer, via *provider.Via) {
-	if pending, ok := c.approval.resolveAsk(id); ok {
-		// No selections is the explicit "skip" path: it ends the turn rather than
-		// feeding a prose dismissal back to the model (#6869). An external
-		// party's form is refused to that party instead, and the turn goes on.
-		if !askAnswersHaveSelection(answers) && pending.origin == nil {
-			c.mu.Lock()
-			activeTurn := c.gate.cancel != nil
-			c.mu.Unlock()
-			if activeTurn {
-				c.cancelTurn(causeAskSkipped)
-				return
-			}
-		}
-		c.recordAskDecisionReceipt(id, pending, answers, "answered", via)
-		pending.reply <- answers // buffered, never blocks
+func (c *Controller) AnswerQuestionFrom(id string, answers []event.AskAnswer, via *provider.Via) error {
+	pending, err := c.approval.resolveAskAnswer(id, answers)
+	if err != nil {
+		return err
 	}
+	// No selections is the explicit "skip" path: it ends the turn rather than
+	// feeding a prose dismissal back to the model (#6869). An external
+	// party's form is refused to that party instead, and the turn goes on.
+	if !askAnswersHaveSelection(answers) && pending.origin == nil {
+		c.mu.Lock()
+		activeTurn := c.gate.cancel != nil
+		c.mu.Unlock()
+		if activeTurn {
+			c.cancelTurn(causeAskSkipped)
+			return nil
+		}
+	}
+	c.recordAskDecisionReceipt(id, pending, answers, "answered", via)
+	pending.reply <- answers // buffered, never blocks
+	return nil
 }
 
 func (c *Controller) recordAskDecisionReceipt(id string, pending pendingAsk, answers []event.AskAnswer, outcome string, via *provider.Via) {
@@ -425,6 +434,9 @@ func (c *Controller) ReplayPendingPromptsWith(sinkFactory func() event.Sink) {
 
 func (c *Controller) replayPendingPromptsTo(sink event.Sink) bool {
 	approvals, asks := c.approval.snapshotPrompts()
+	for i := range approvals {
+		approvals[i].AllowsPersist = c.offersPersist(approvals[i].Tool, approvals[i].AllowsPersist)
+	}
 	c.emitPendingPrompts(sink, approvals, asks)
 	return len(approvals) == 0
 }
@@ -619,7 +631,7 @@ func (c *Controller) requestApprovalDecision(ctx context.Context, req approvalRe
 	c.sink.Emit(c.approvalRequestEvent(event.Approval{
 		ID: id, Tool: req.tool, Subject: req.subject, Reason: req.reason, ReasonCode: ExplicitApprovalCode(req.tool, req.subject),
 		RawInput: append(json.RawMessage(nil), req.args...), Fresh: req.fresh,
-		AllowsSession: session, AllowsPersist: persist && c.onRemember != nil,
+		AllowsSession: session, AllowsPersist: c.offersPersist(req.tool, persist),
 	}))
 	c.approval.promptEmitMu.Unlock()
 	// The agent now needs the user's attention; a Notification hook can ping an

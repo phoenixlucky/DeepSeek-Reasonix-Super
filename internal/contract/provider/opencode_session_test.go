@@ -12,6 +12,13 @@ func TestApplyOpenCodeGoIdentityScope(t *testing.T) {
 	}{
 		{"https://opencode.ai/zen/go/v1/chat/completions", true},
 		{"https://OpenCode.ai/zen/go/v1/messages", true},
+		{"https://opencode.ai/inference/go/openai/v1/chat/completions", true},
+		{"https://opencode.ai/inference/go/anthropic/v1/messages", true},
+		{"https://opencode.ai/inference/go/v1/models", true},
+		{"https://opencode.ai/inference/go", true},
+		{"https://opencode.ai/inference/gopher/v1/chat/completions", false},
+		{"https://opencode.ai/inference/v1/chat/completions", false},
+		{"https://relay.example.com/inference/go/v1/chat/completions", false},
 		{"https://opencode.ai/zen/v1/chat/completions", false},
 		{"https://opencode.ai/zen/gopher/v1/chat/completions", false},
 		{"https://relay.example.com/zen/go/v1/chat/completions", false},
@@ -21,6 +28,14 @@ func TestApplyOpenCodeGoIdentityScope(t *testing.T) {
 		ApplyOpenCodeGoIdentity(req, "s1")
 		if got := req.Header.Get("x-opencode-session") == "s1"; got != tc.want {
 			t.Errorf("%s: session applied = %v, want %v", tc.url, got, tc.want)
+		}
+	}
+}
+
+func TestIsOpenCodeGoEndpointFollowsTheDeclaredPrefixes(t *testing.T) {
+	for _, prefix := range openCodeGoPrefixes {
+		if !IsOpenCodeGoEndpoint("https://opencode.ai" + prefix + "/v1/chat/completions") {
+			t.Errorf("a declared prefix %q is not recognised", prefix)
 		}
 	}
 }

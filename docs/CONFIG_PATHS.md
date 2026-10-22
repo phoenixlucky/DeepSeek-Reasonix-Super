@@ -244,13 +244,24 @@ Runtime configuration is resolved in this order:
 
 ```text
 command-line flags
-> project ./reasonix.toml
+> project ./reasonix.toml (otherwise .reasonix/reasonix.toml)
 > global <Reasonix home>/config.toml
 > compatible legacy global config
 > built-in defaults
 ```
 
-Writes always target the new global path:
+- The root-level project file wins when both paths exist; the files are not merged.
+- Only a missing root file permits fallback. Malformed, inaccessible, or
+  broken-symlink root files do not select the nested file.
+- Local setup, CLI settings, MCP/skill installation, and repair edit the selected
+  file in place. New project configs still use `./reasonix.toml`.
+- Both paths have the same project-scope restrictions: neither can set user-only
+  options or resolve through a symlink outside the project.
+
+To keep local configuration self-contained, put `*` in `.reasonix/.gitignore`
+and store the configuration in `.reasonix/reasonix.toml`.
+
+User-global writes target the new global path:
 
 ```text
 macOS/Linux: ~/.reasonix/config.toml

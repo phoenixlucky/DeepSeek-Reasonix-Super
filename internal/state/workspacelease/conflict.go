@@ -16,6 +16,7 @@ type ConflictError struct {
 	SessionID      string   `json:"sessionId"`
 	Paths          []string `json:"paths"`
 	RequestedPaths []string `json:"requestedPaths"`
+	Repository     string   `json:"repository,omitempty"`
 	Cause          error    `json:"-"`
 }
 
@@ -34,7 +35,7 @@ func (o *Owner) extent(paths []string) []string {
 }
 
 func (o *Owner) conflict(holder, sessionID string, held, requested []string) *ConflictError {
-	return &ConflictError{Holder: holder, SessionID: sessionID, Paths: o.extent(held), RequestedPaths: o.extent(requested), Cause: errHeld}
+	return &ConflictError{Holder: holder, SessionID: sessionID, Paths: o.extent(held), RequestedPaths: o.extent(requested), Repository: o.scope.repository, Cause: errHeld}
 }
 
 // SetSessionID binds the stable session identity independently of its name.

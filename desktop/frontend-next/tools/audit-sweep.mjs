@@ -81,7 +81,7 @@ const P = `(() => {
   const scrolled = (el) => { let c = el.parentElement; while (c && c !== document.body) {
     const s = getComputedStyle(c); if (/auto|scroll/.test(s.overflowX) && c.scrollWidth > c.clientWidth + 1) return true; c = c.parentElement; } return false; };
   const behind = (el) => { let c = el; while (c && c !== document.body) { if (parseFloat(getComputedStyle(c).opacity) < .9) return true; c = c.parentElement; } return false; };
-  const nm = (el) => (el.textContent||"").trim() || el.getAttribute("aria-label") || el.getAttribute("title") || (el.getAttribute("aria-labelledby") ? (document.getElementById(el.getAttribute("aria-labelledby"))?.textContent||"").trim() : "") || el.getAttribute("placeholder") || "";
+  const nm = (el) => (el.textContent||"").trim() || [...(el.labels||[])].map((l) => (l.textContent||"").trim()).join(" ").trim() || el.getAttribute("aria-label") || el.getAttribute("title") || (el.getAttribute("aria-labelledby") ? (document.getElementById(el.getAttribute("aria-labelledby"))?.textContent||"").trim() : "") || el.getAttribute("placeholder") || "";
   const out = { truncated: [], clippedY: [], offscreen: [], overflowX: [], unnamed: [], dupId: [], imgNoAlt: [], spill: [], contrast: [], hanCaps: [] };
   // What the pixels resolve to, not what the token table promises: a colour is
   // checked against the surface it was designed for, then used on another one.
@@ -131,7 +131,8 @@ const P = `(() => {
   for (const el of document.querySelectorAll("*")) {
     if (!vis(el)) continue;
     const s = getComputedStyle(el), txt = (el.textContent||"").trim();
-    if (el.children.length === 0 && txt.length > 4 && !el.closest("[title]")) {
+    // A 1px visually-hidden label is meant to be clipped; it is read aloud, not drawn.
+    if (el.children.length === 0 && txt.length > 4 && el.clientWidth > 2 && !el.closest("[title]")) {
       if (el.scrollWidth > el.clientWidth + 1 && /hidden|clip/.test(s.overflowX)) out.truncated.push(path(el) + " | " + txt.slice(0, 44));
       if (el.scrollHeight > el.clientHeight + 1 && /hidden|clip/.test(s.overflowY) && s.webkitLineClamp === "none") out.clippedY.push(path(el) + " | " + txt.slice(0, 44));
     }

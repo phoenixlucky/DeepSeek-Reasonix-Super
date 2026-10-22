@@ -163,7 +163,7 @@ func TestE2ECrossTurnCanonicalGateBlocksThenClears(t *testing.T) {
 			Arguments: `{"step":"beta","result":"done","evidence":[{"kind":"manual","summary":"verified by inspection"}]}`}}},
 		testutil.Turn{Text: "all done now"},
 	)
-	a := New(mp, evidenceRegistry(), sess, Options{}, event.Discard)
+	a := New(mp, evidenceRegistry(), sess, Options{CheckTargetAccess: allowTestFileAccess}, event.Discard)
 	a.SetSession(sess) // rebuilds canonical {alpha in_progress, beta pending}
 
 	firstErr := a.Run(context.Background(), "finish up")

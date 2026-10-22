@@ -57,3 +57,32 @@ export function monogram(label: string, key: string): { letter: string; tone: nu
   for (const c of key) h = (h * 31 + c.charCodeAt(0)) >>> 0;
   return { letter, tone: h % TONES };
 }
+
+/** The headings a menu offers to narrow by, in the order they appear. */
+export function groupHeadings(items: MenuItem[]): MenuItem[] {
+  return items.filter((it) => it.header);
+}
+
+/** The remembered choices that are still on offer. A choice for an account no
+ *  longer listed must not empty the menu, so it simply stops counting. */
+export function chosenGroups(items: MenuItem[], selected: readonly string[]): string[] {
+  const offered = new Set(groupHeadings(items).map((h) => h.value));
+  return selected.filter((key) => offered.has(key));
+}
+
+/** The rows of the chosen groups. What belongs to no group (the current model,
+ *  pinned before the first heading) and every action stay. */
+export function narrowToGroups(items: MenuItem[], chosen: readonly string[]): MenuItem[] {
+  if (chosen.length === 0) return items;
+  let inGroup = false;
+  let keep = true;
+  return items.filter((it) => {
+    if (it.header) {
+      inGroup = true;
+      keep = chosen.includes(it.value);
+      return keep;
+    }
+    if (it.plain) return true;
+    return inGroup ? keep : true;
+  });
+}

@@ -16,7 +16,11 @@ var errPluginHooksReadOnly = errors.New("plugin hooks belong to their package; d
 // to show those while editing; finding them at run time means finding them
 // mid-task, which is the worst moment.
 func (c *Controller) InspectHooks() hook.Inspection {
-	return hook.Inspect(hook.LoadOptions{ProjectRoot: c.workspaceRoot})
+	return hook.Inspect(c.hookLoadOptions())
+}
+
+func (c *Controller) hookLoadOptions() hook.LoadOptions {
+	return hook.LoadOptions{ProjectRoot: c.workspaceRoot, ReasonixHomeDir: c.PresetStore().Home}
 }
 
 // SaveHooks writes one scope's hooks and swaps them into the live session, so a
@@ -26,16 +30,24 @@ func (c *Controller) SaveHooks(scope hook.Scope, settings hook.Settings) error {
 	if scope == hook.ScopePlugin {
 		return errPluginHooksReadOnly
 	}
-	if err := hook.Save(scope, c.workspaceRoot, settings); err != nil {
+	opts := c.hookLoadOptions()
+	if err := hook.SaveFor(scope, opts, settings); err != nil {
 		return err
 	}
 	// Saving from the editor is the person choosing these hooks as written.
 	if scope == hook.ScopeProject {
-		if err := hook.ApproveSavedProjectHooks(hook.LoadOptions{ProjectRoot: c.workspaceRoot}, settings); err != nil {
+		if err := hook.ApproveSavedProjectHooks(opts, settings); err != nil {
 			return err
 		}
 	}
-	c.hooks.Replace(hook.Load(hook.LoadOptions{ProjectRoot: c.workspaceRoot}))
+	binding := c.CompositionBinding()
+	if binding == nil {
+		c.hooks.Replace(hook.Load(opts))
+	} else if binding.Live() {
+		c.hooks.Replace(hook.CompositionHooks(hook.Load(opts), binding.Resolved))
+	} else {
+		c.hooks.ReplacePolicyGuards(hook.Load(opts))
+	}
 	return nil
 }
 
@@ -55,5 +67,5 @@ func (c *Controller) DryRunHook(ctx context.Context, cfg hook.HookConfig, event 
 // because a project file is shared with everyone who clones the repository and
 // a global one is not.
 func (c *Controller) HookSettingsPath(scope hook.Scope) string {
-	return hook.SettingsPath(scope, c.workspaceRoot)
+	return hook.SettingsPathFor(scope, c.hookLoadOptions())
 }

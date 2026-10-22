@@ -53,7 +53,7 @@ export function AskTimeout({ port }: { port: AgentPort }) {
       <div className="lrow">
         <span className="tx">
           <span className="lb">{t("提问超时后自动跳过")}</span>
-          <span className="ds">{t("默认关闭：提问一直等你回答。开启后，超过下面的时间没有回答，这个问题会被跳过，任务继续；模型会被告知这是超时而不是你的回答，并按自己的假设往下做（全自动或目标模式下尤其如此）。终端界面读同一项设置，用 /ask-timeout 修改。")}</span>
+          <span className="ds">{t("默认关闭：提问一直等你回答。开启后，超过下面的时间没有回答，这个问题会被跳过，任务继续；模型会被告知这是超时而不是你的回答，并按自己的假设往下做（全自动或目标模式下尤其如此）。模型把任务清单交还给你、等你输入时，同样等这么久，之后宿主让它按自己的判断继续并写明假设。终端界面读同一项设置，用 /ask-timeout 修改。")}</span>
         </span>
         <Switch
           data-action="ask-timeout.enabled"

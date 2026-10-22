@@ -371,3 +371,12 @@ func TestCredentialStraddlingAChunkEdgeIsNotMissed(t *testing.T) {
 		t.Fatalf("snap = %+v err = %v", snap, err)
 	}
 }
+
+func reopen(t *testing.T, dir string) gitcmd.Repo {
+	t.Helper()
+	repo, err := gitcmd.Open(context.Background(), dir)
+	if err != nil {
+		return gitcmd.Repo{Dir: dir}
+	}
+	return repo
+}

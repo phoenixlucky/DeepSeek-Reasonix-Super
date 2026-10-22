@@ -14,6 +14,12 @@ func renderAgentDelegation(b *strings.Builder, c *Config) {
 	if c.Agent.WebSearchModel != "" {
 		fmt.Fprintf(b, "web_search_model = %q\n", c.Agent.WebSearchModel)
 	}
+	if c.Agent.TitleModel != "" {
+		fmt.Fprintf(b, "title_model = %q\n", c.Agent.TitleModel)
+	}
+	if len(c.Agent.RoleEfforts) > 0 {
+		fmt.Fprintf(b, "role_efforts = %s\n", renderStringMap(c.Agent.RoleEfforts))
+	}
 	if c.Agent.PlannerModel != "" {
 		fmt.Fprintf(b, "planner_model = %q   # low-frequency planner (two-model collaboration)\n", c.Agent.PlannerModel)
 	} else {

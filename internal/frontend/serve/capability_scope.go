@@ -21,7 +21,7 @@ func (s *Server) resolveRoot(asked string) (root string, other bool, ok bool) {
 	}
 	for _, scope := range s.capabilityScopes() {
 		if scope.Root == asked {
-			return asked, true, true
+			return scope.Root, true, true
 		}
 	}
 	return "", false, false

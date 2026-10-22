@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import type { AgentPort, ContextBreakdown, McpEntry, SessionStatus } from "../port/port";
-import type { RuntimeView } from "../port/hub";
+import type { HubPort, RuntimeView } from "../port/hub";
+import type { ConnectOffer } from "./ConnectNote";
+import type { PaneView } from "../state/paneview";
 
 // PaneReport is what the window's own chrome needs from whichever pane has
 // focus: everything else about a session stays inside the pane that owns it.
@@ -17,10 +19,19 @@ export interface PaneReport {
   context: ContextBreakdown | null;
   mcp: McpEntry[];
   wallet: string;
+  interactions?: import("../state/session_types").SessionState["interactions"];
+  // Which of the pane's views is showing, how many rows the conversation holds
+  // (the analysis view is drawn only once there are some), and how many
+  // browsers and files the workbench holds: what the window's view switch shows.
+  view: PaneView;
+  rows: number;
+  surfaces: number;
 }
 
 export interface PaneProps {
   port: AgentPort;
+  // Kernel-wide calls the window owns; the file panel uses them to open the project elsewhere.
+  hub?: Pick<HubPort, "openWith" | "openWithTargets">;
   rt: RuntimeView;
   title: string;
   active: boolean;
@@ -42,8 +53,13 @@ export interface PaneProps {
   // pane keeps reporting the posture it had when it opened.
   pulse: number;
   findPulse: number;
+  findTogglePulse?: number;
   filesPulse?: number;
+  viewRequest?: { to: PaneView; n: number };
+  sessionRef?: { n: number; id: string; title: string };
   onSettings: (section?: string) => void;
+  // Opens the feedback form; a notice in this pane can be reported from where it appeared.
+  onFeedback?: () => void;
   // Open a session this pane made, beside it: a branch is its own conversation.
   onOpenSession?: (path: string) => void;
   // 这个窗口还没有人选过的项目文件夹。空转录是唯一说得出这句话的地方 —— 那里
@@ -51,6 +67,7 @@ export interface PaneProps {
   needsProject: boolean;
   onOpenProject: () => void;
   onKeepHere: () => void;
+  connect?: ConnectOffer;
   // A prop, not a document read: this pane is memoised past an attribute flip.
   theme: string;
   // Rides on `.app`: that is where the divider writes while a drag is in flight.
@@ -58,7 +75,6 @@ export interface PaneProps {
   dockMax: number;
   onDockW: (w: number) => void;
   manualBrowser?: boolean;
-  browserAsk?: number;
   onManualBrowser?: (on: boolean) => void;
   // The window's failed-request notice, handed only to the pane in front.
   alert?: ReactNode;

@@ -770,7 +770,7 @@ func TestCoordinatorNudgesExecutorThatAnswersWithoutActing(t *testing.T) {
 
 	execReg := tool.NewRegistry()
 	execReg.Add(coordinatorTestTool{name: "write_file", readOnly: false, output: "wrote file", writesPaths: true})
-	executor := agent.New(exec, execReg, sessionstore.NewSession("exec-sys"), agent.Options{}, event.Discard)
+	executor := agent.New(exec, execReg, sessionstore.NewSession("exec-sys"), agent.Options{CheckTargetAccess: func(context.Context, tool.Tool, json.RawMessage) error { return nil }}, event.Discard)
 	coord := NewCoordinator(planner, sessionstore.NewSession("planner-sys"), nil, agent.PlannerToolRegistry(tool.NewRegistry()), agent.Options{}, executor, 0, event.Discard, nil)
 
 	if err := coord.Run(context.Background(), "install the skill"); err != nil {
@@ -846,7 +846,7 @@ func TestCoordinatorNudgesWorkTaskEvenIfPlannerMentionsUserGuidance(t *testing.T
 
 	execReg := tool.NewRegistry()
 	execReg.Add(coordinatorTestTool{name: "write_file", readOnly: false, output: "wrote file", writesPaths: true})
-	executor := agent.New(exec, execReg, sessionstore.NewSession("exec-sys"), agent.Options{}, event.Discard)
+	executor := agent.New(exec, execReg, sessionstore.NewSession("exec-sys"), agent.Options{CheckTargetAccess: func(context.Context, tool.Tool, json.RawMessage) error { return nil }}, event.Discard)
 	coord := NewCoordinator(planner, sessionstore.NewSession("planner-sys"), nil, agent.PlannerToolRegistry(tool.NewRegistry()), agent.Options{}, executor, 0, event.Discard, nil)
 
 	if err := coord.Run(context.Background(), "fix the bug"); err != nil {
@@ -879,7 +879,7 @@ func TestCoordinatorNudgesMixedGuidanceAndWorkTask(t *testing.T) {
 
 	execReg := tool.NewRegistry()
 	execReg.Add(coordinatorTestTool{name: "write_file", readOnly: false, output: "wrote file", writesPaths: true})
-	executor := agent.New(exec, execReg, sessionstore.NewSession("exec-sys"), agent.Options{}, event.Discard)
+	executor := agent.New(exec, execReg, sessionstore.NewSession("exec-sys"), agent.Options{CheckTargetAccess: func(context.Context, tool.Tool, json.RawMessage) error { return nil }}, event.Discard)
 	coord := NewCoordinator(planner, sessionstore.NewSession("planner-sys"), nil, agent.PlannerToolRegistry(tool.NewRegistry()), agent.Options{}, executor, 0, event.Discard, nil)
 
 	if err := coord.Run(context.Background(), "summarize the current behavior and update the README"); err != nil {

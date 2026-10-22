@@ -32,14 +32,14 @@ func TestACPRebuildSerializesCollaborationAndApprovalChanges(t *testing.T) {
 	}
 	sink := newUpdateSink(&fakeNotifier{}, "sess-axis-race")
 	sess := &acpSession{
-		id:               "sess-axis-race",
-		ctrl:             control.New(control.Options{}),
-		sink:             sink,
-		cwd:              testenv.TempDir(t),
-		model:            "fast",
-		runtimeProfile:   "balanced",
-		toolApprovalMode: control.ToolApprovalAsk,
-		modeID:           sessionModeNormal,
+		id:             "sess-axis-race",
+		ctrl:           control.New(control.Options{}),
+		sink:           sink,
+		cwd:            testenv.TempDir(t),
+		model:          "fast",
+		runtimeProfile: "balanced",
+		posture:        approvalPosture{mode: control.ToolApprovalAsk},
+		modeID:         sessionModeNormal,
 	}
 	svc := &service{factory: factory, sessions: map[string]*acpSession{sess.id: sess}}
 
@@ -896,13 +896,13 @@ func TestACPFailedRebuildStillDrainsNewerPendingConfig(t *testing.T) {
 func TestACPReportPendingConfigFailureRestoresClientState(t *testing.T) {
 	notifier := &fakeNotifier{}
 	sess := &acpSession{
-		id:               "sess-pending-failure-update",
-		ctrl:             control.New(control.Options{}),
-		sink:             newUpdateSink(notifier, "sess-pending-failure-update"),
-		cwd:              testenv.TempDir(t),
-		model:            "fast",
-		runtimeProfile:   "balanced",
-		toolApprovalMode: control.ToolApprovalAsk,
+		id:             "sess-pending-failure-update",
+		ctrl:           control.New(control.Options{}),
+		sink:           newUpdateSink(notifier, "sess-pending-failure-update"),
+		cwd:            testenv.TempDir(t),
+		model:          "fast",
+		runtimeProfile: "balanced",
+		posture:        approvalPosture{mode: control.ToolApprovalAsk},
 	}
 	svc := &service{factory: &configurableFactory{}, sessions: map[string]*acpSession{sess.id: sess}}
 

@@ -35,6 +35,9 @@ func markDesktopField(t *testing.T, f reflect.Value, name string) bool {
 	case reflect.Bool:
 		f.SetBool(true)
 		return true
+	case reflect.Int:
+		f.SetInt(7)
+		return true
 	case reflect.Pointer:
 		if f.Type().Elem().Kind() != reflect.Bool {
 			return false
@@ -83,6 +86,7 @@ var desktopStringMark = map[string]string{
 	"reasoning_display_mode":     "hidden",
 	"conversation_width":         "full",
 	"pinned_version":             "9.9.9",
+	"update_mode":                "notify",
 	"editor":                     "/usr/local/bin/round-trip-editor",
 }
 

@@ -42,7 +42,7 @@ func statedBootHome(t *testing.T) string {
 
 func closeBootTestHistoryCatalog(t *testing.T) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testenv.Budget(t))
 	defer cancel()
 	if err := history.CloseSharedCatalog(ctx); err != nil {
 		t.Fatalf("close shared history catalog: %v", err)

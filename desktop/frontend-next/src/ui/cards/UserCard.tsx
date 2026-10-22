@@ -2,9 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentPort, Checkpoint, RewindPlan, RewindResult, RewindScope } from "../../port/port";
 import type { Item } from "../../state/session";
 import { RewindControl } from "./RewindControl";
+import { SkillPinView } from "./SkillPinView";
+import { parseSkillPin } from "./skillpin";
 import { CopyButton } from "../CopyButton";
 import { reason } from "../../i18n/kernel";
 import { t } from "../../i18n";
+import { clock } from "../../i18n/format";
 import { StudioIcon } from "../StudioIcon";
 import { messageSource } from "../source";
 import { useSendShortcut } from "../../state/prefs";
@@ -13,11 +16,15 @@ import { useIme } from "../ime";
 import { touchKeyboard } from "../touchKeyboard";
 import { useFitHeight } from "../fitHeight";
 import { useViewer } from "../../state/viewer";
+import { ImagePreview } from "../ImagePreview";
 
 function SavedImage({ path, src }: { path: string; src: string }) {
   const [failed, setFailed] = useState(false);
+  const name = path.split("/").at(-1) ?? path;
   return <div className="user-image">
-    {failed ? <span>{t("图片不可用")}</span> : <img src={src} alt={path.split("/").at(-1)} loading="lazy" width={240} height={160} onError={() => setFailed(true)} />}
+    {failed ? <span>{t("图片不可用")}</span> : <ImagePreview src={src} name={name} className="user-image-trigger">
+      <img src={src} alt={name} loading="lazy" width={240} height={160} onError={() => setFailed(true)} />
+    </ImagePreview>}
   </div>;
 }
 
@@ -48,6 +55,7 @@ export function UserCard({
   const source = messageSource(item.via, useViewer());
   const reopen = editable && draft === null;
   const rewind = !!(cp && onPrepareRewind && onCommitRewind);
+  const pin = useMemo(() => parseSkillPin(item.text), [item.text]);
   const images = useMemo(() => [...new Set((item.attachments ?? []).map((a) => a.path))], [item.attachments]);
 
   useEffect(() => {
@@ -74,7 +82,6 @@ export function UserCard({
     <div className="call" data-k="me" data-pending={item.pending ? "" : undefined}>
       <div className="g">
         <span className="sym">{t("你")}</span>
-        <span className="line" />
       </div>
       <div className="c">
         {(item.steer || source) && <div className="hl user-hl">
@@ -90,12 +97,13 @@ export function UserCard({
                 const src = port.workspaceImageURL(path);
                 return <SavedImage key={src} path={path} src={src} />;
               })}</div>}
-              <div className="txt">{item.text}</div>
+              {pin ? <SkillPinView pin={pin} /> : <div className="txt" dir="auto">{item.text}</div>}
             </>
           ) : (
             <div className="reask">
               <textarea
                 ref={box}
+                dir="auto"
                 data-action-change="turn.edit"
                 data-action-keydown="turn.resend"
                 data-target={item.id}
@@ -143,6 +151,7 @@ export function UserCard({
           )}
         </div>
         <div className="user-acts">
+          {item.at && <time className="user-time" dateTime={new Date(item.at).toISOString()} title={new Date(item.at).toLocaleString()}>{clock(item.at)}</time>}
           <CopyButton text={item.text} iconOnly showFeedback label={t("复制")} />
           {reopen && (
             <button type="button" className="reask-open" data-action="turn.edit" data-target={item.id}

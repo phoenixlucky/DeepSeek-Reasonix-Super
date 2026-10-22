@@ -166,3 +166,23 @@ func TestRefusalsAreRecognisedAndPermanent(t *testing.T) {
 		t.Fatal("an empty host was permitted")
 	}
 }
+
+func TestSameOriginComparesSchemeHostAndPort(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want bool
+	}{
+		{"https://api.acme.test/v1", "https://API.acme.test./other", true},
+		{"https://api.acme.test/v1", "https://api.acme.test:443/x", true},
+		{"https://api.acme.test/v1", "http://api.acme.test/v1", false},
+		{"https://api.acme.test/v1", "https://api.acme.test:8443/v1", false},
+		{"https://api.acme.test/v1", "https://evil.test/v1", false},
+		{"https://api.acme.test/v1", "", false},
+		{"", "", false},
+		{"https://api.acme.test", "not a url", false},
+	} {
+		if got := SameOrigin(c.a, c.b); got != c.want {
+			t.Errorf("SameOrigin(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}

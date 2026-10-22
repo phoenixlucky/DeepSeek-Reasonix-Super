@@ -17,35 +17,45 @@ const (
 )
 
 // InstallFatalLog mirrors what the Go runtime prints when it kills the process
-// into dir/host-<utc time>-<version>-<pid>.log. Unlike InstallFatalOutput the
-// file is for people to read and for the shell to quote, so it survives the
-// next launch until the retention bounds drop it. release removes the file of a
-// run that ended cleanly.
-func InstallFatalLog(dir, version string) (release func()) {
+// into dir/host-<utc time>-<version>-<pid>.log, for people and the shell to read.
+// release removes the file of a clean run; exited keeps it for a run that returned
+// a failure code, which the runtime prints nothing for, with the code and reason.
+func InstallFatalLog(dir, version string) (release func(), exited func(code int, reason string)) {
 	release = func() {}
+	exited = func(int, string) {}
 	if strings.TrimSpace(dir) == "" {
-		return release
+		return release, exited
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return release
+		return release, exited
 	}
 	pruneFatalLogs(dir)
 	name := fmt.Sprintf("%s%s-%s-%d%s", hostFatalPrefix, time.Now().UTC().Format("20060102T150405Z"), pathSafe(version), os.Getpid(), fatalSuffix)
 	path := filepath.Join(dir, name)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		return release
+		return release, exited
 	}
 	installErr := debug.SetCrashOutput(f, debug.CrashOptions{})
 	_ = f.Close()
 	if installErr != nil {
 		_ = os.Remove(path)
-		return release
+		return release, exited
 	}
-	return func() {
+	release = func() {
 		_ = debug.SetCrashOutput(nil, debug.CrashOptions{})
 		_ = os.Remove(path)
 	}
+	exited = func(code int, reason string) {
+		_ = debug.SetCrashOutput(nil, debug.CrashOptions{})
+		w, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return
+		}
+		defer w.Close()
+		_, _ = fmt.Fprintf(w, "host exited with code %d: %s\n", code, strings.TrimSpace(reason))
+	}
+	return release, exited
 }
 
 // pruneFatalLogs drops empty files, keeps the newest keepFatalLogs-1 (room is left for

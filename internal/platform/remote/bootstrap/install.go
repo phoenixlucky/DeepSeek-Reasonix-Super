@@ -22,7 +22,7 @@ var autoRouteOrder = []string{routeRemoteFetch, InstallUpload, routeDownload, In
 // drive, installing one per the strategy when what is there will not do.
 // Present-but-below-the-floor is not the same answer as absent, and the one it
 // returns says which: an upgrade over there and an install are different moves.
-func ensureBinary(ctx context.Context, conn Conn, env loginEnv, target remoteOS, fs *sftpfs.FS, opts Options, home, goos, goarch string, paths StatePaths) (bin, version string, err error) {
+func ensureBinary(ctx context.Context, conn Conn, env loginEnv, target remoteOS, fs sftpfs.Files, opts Options, home, goos, goarch string, paths StatePaths) (bin, version string, err error) {
 	uploaded := uploadedBinPath(home, target.Executable())
 	// What the launch will ask of a kernel decides what counts as one here.
 	flags := LaunchFlags(opts.Broker.configured())
@@ -71,7 +71,7 @@ func ensureBinary(ctx context.Context, conn Conn, env loginEnv, target remoteOS,
 	return fail(fmt.Errorf("%w: %w", ErrNoInstallPath, errors.Join(attempts...)))
 }
 
-func runRoute(ctx context.Context, conn Conn, env loginEnv, target remoteOS, fs *sftpfs.FS, opts Options, route, home, goos, goarch, uploaded string, flags []string) (bin, version string, err error) {
+func runRoute(ctx context.Context, conn Conn, env loginEnv, target remoteOS, fs sftpfs.Files, opts Options, route, home, goos, goarch, uploaded string, flags []string) (bin, version string, err error) {
 	switch route {
 	case routeRemoteFetch:
 		return installViaRemoteFetch(ctx, conn, target, opts, home, goos, goarch, uploaded, flags)
@@ -115,7 +115,7 @@ func installViaRemoteFetch(ctx context.Context, conn Conn, target remoteOS, opts
 
 // installViaDownload fetches the release here and pushes it over SFTP. The
 // route for a machine that cannot reach the release itself.
-func installViaDownload(ctx context.Context, conn Conn, target remoteOS, fs *sftpfs.FS, opts Options, home, goos, goarch, uploaded string, flags []string) (bin, version string, err error) {
+func installViaDownload(ctx context.Context, conn Conn, target remoteOS, fs sftpfs.Files, opts Options, home, goos, goarch, uploaded string, flags []string) (bin, version string, err error) {
 	if opts.FetchBinary == nil {
 		// Not a sentinel: this is the caller wiring no fetcher, nothing about
 		// the machine, and it never happens in a shipped build.
@@ -255,7 +255,7 @@ func installViaNPM(ctx context.Context, conn Conn, env loginEnv, target remoteOS
 // installViaUpload uploads the local reasonix binary when the remote platform
 // matches the local one. A differing platform is served by the verified
 // release download instead, which carries every target the line publishes.
-func installViaUpload(ctx context.Context, conn Conn, target remoteOS, fs *sftpfs.FS, opts Options, home, goos, goarch, uploaded string, flags []string) (bin, version string, err error) {
+func installViaUpload(ctx context.Context, conn Conn, target remoteOS, fs sftpfs.Files, opts Options, home, goos, goarch, uploaded string, flags []string) (bin, version string, err error) {
 	if opts.LocalBinary == "" {
 		return "", "", fmt.Errorf("%w: no local Reasonix CLI to upload", ErrPlatformMismatch)
 	}
@@ -270,7 +270,7 @@ func installViaUpload(ctx context.Context, conn Conn, target remoteOS, fs *sftpf
 	return installBinaryBytes(ctx, conn, target, fs, data, opts.MinVersion, home, uploaded, flags)
 }
 
-func installBinaryBytes(ctx context.Context, conn Conn, target remoteOS, fs *sftpfs.FS, data []byte, minVersion, home, uploaded string, flags []string) (bin, version string, err error) {
+func installBinaryBytes(ctx context.Context, conn Conn, target remoteOS, fs sftpfs.Files, data []byte, minVersion, home, uploaded string, flags []string) (bin, version string, err error) {
 	if len(data) == 0 {
 		return "", "", fmt.Errorf("%w: the download was empty", ErrBinaryNotRunnable)
 	}

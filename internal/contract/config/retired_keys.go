@@ -45,14 +45,21 @@ type RetiredKeyMigrations struct {
 // calls it immediately before LoadForRoot, so config-only/read-only commands
 // never rewrite files and the runtime can surface exactly one migration notice.
 func (r Roots) MigrateRetiredKeysForRoot(root string) RetiredKeyMigrations {
-	res := r.migrateRetiredKeys(root, fileencoding.ReadFileUTF8, []retiredKey{retiredStepLimits, retiredRedactToolOutput, retiredMemoryCompiler, retiredMultiThreshold})
+	return r.MigrateRetiredKeysForRootFrom(root, r.SnapshotUserConfig())
+}
+
+// MigrateRetiredKeysForRootFrom is MigrateRetiredKeysForRoot with the user
+// config already read: a file with no retired key is neither locked nor read
+// again, and one that has any is read once more under its lock to be rewritten.
+func (r Roots) MigrateRetiredKeysForRootFrom(root string, user *ConfigSnapshot) RetiredKeyMigrations {
+	res := r.migrateRetiredKeys(root, fileencoding.ReadFileUTF8, user, []retiredKey{retiredStepLimits, retiredRedactToolOutput, retiredMemoryCompiler, retiredMultiThreshold})
 	return RetiredKeyMigrations{StepLimits: res[0], RedactToolOutput: res[1], MemoryCompiler: res[2], MultiThreshold: res[3]}
 }
 
 // migrateRetiredKeys runs migs over the user and project config. A migration
 // that fails on a file stops there and skips the remaining files, without
-// holding back the others.
-func (r Roots) migrateRetiredKeys(root string, read func(string) ([]byte, error), migs []retiredKey) []RetiredKeyResult {
+// holding back the others. user, when it is the user file, stands in for reading it.
+func (r Roots) migrateRetiredKeys(root string, read func(string) ([]byte, error), user *ConfigSnapshot, migs []retiredKey) []RetiredKeyResult {
 	root = resolveRoot(root)
 	paths := make([]string, 0, 2)
 	if userPath := r.userConfigLoadPath(); userPath != "" {
@@ -79,6 +86,13 @@ func (r Roots) migrateRetiredKeys(root string, read func(string) ([]byte, error)
 		if len(active) == 0 {
 			break
 		}
+		snap := user
+		if !snap.of(path) {
+			snap = readConfigSnapshot(path, read)
+		}
+		if snap.settled(func(text string) bool { return untouchedBy(text, active) }) {
+			continue
+		}
 		changed, err := migrateRetiredKeysFile(path, read, active)
 		for j, i := range index {
 			switch {
@@ -90,6 +104,15 @@ func (r Roots) migrateRetiredKeys(root string, read func(string) ([]byte, error)
 		}
 	}
 	return results
+}
+
+func untouchedBy(text string, migs []retiredKey) bool {
+	for _, m := range migs {
+		if _, did := m.strip(text); did {
+			return false
+		}
+	}
+	return true
 }
 
 // migrateRetiredKeysFile applies migs to one file under its edit lock with a

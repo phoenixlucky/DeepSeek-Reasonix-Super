@@ -168,7 +168,7 @@ func TestFeedbackIsCompletedAsACommand(t *testing.T) {
 	for _, it := range items {
 		labels = append(labels, it.Label)
 	}
-	if strings.Join(labels, ",") != "bug,idea,question,other,list,show,reply,name" {
+	if strings.Join(labels, ",") != "bug,idea,question,other,list,show,reply,withdraw,link,unlink,links,board,name" {
 		t.Fatalf("labels = %v", labels)
 	}
 	found := false
@@ -314,4 +314,46 @@ func TestFeedbackReplyFailuresNeverTellYouToJustRetry(t *testing.T) {
 		r.c.Submit("/feedback reply FB-7K3M-9QX2 --yes hello")
 		r.last(t, c.says)
 	}
+}
+
+func TestFeedbackWithdrawNeedsAnExplicitYesAndSaysWhatItCloses(t *testing.T) {
+	r := sentRig(t)
+	r.c.Submit("/feedback list")
+	r.last(t, "FB-9A9A-1B1B")
+	before := r.postCount()
+	r.c.Submit("/feedback withdraw FB-9A9A-1B1B")
+	if got := r.last(t, "Nothing was sent"); !strings.Contains(got, "#11350") || !strings.Contains(got, "closes") {
+		t.Fatalf("notice = %q", got)
+	}
+	if r.postCount() != before {
+		t.Fatal("a report was withdrawn without --yes")
+	}
+	r.c.Submit("/feedback withdraw FB-9A9A-1B1B --yes")
+	r.last(t, "Withdrawn")
+	if r.postCount() != before+1 {
+		t.Fatalf("posts = %d, want %d", r.postCount(), before+1)
+	}
+}
+
+func TestFeedbackWithdrawRefusalsAreSaidFromTheirIdentity(t *testing.T) {
+	r := sentRig(t)
+	r.c.Submit("/feedback list")
+	r.last(t, "FB-7K3M-9QX2")
+	for _, c := range []struct {
+		status int
+		code   string
+		says   string
+	}{
+		{409, "feedback.not_withdrawable", "can no longer be withdrawn"},
+		{404, "feedback.not_found", "no such report"},
+	} {
+		r.edit(func(r *feedbackRig) {
+			r.status = c.status
+			r.respond = `{"error":{"code":"` + c.code + `"}}`
+		})
+		r.c.Submit("/feedback withdraw FB-7K3M-9QX2 --yes")
+		r.last(t, c.says)
+	}
+	r.c.Submit("/feedback withdraw")
+	r.last(t, "usage:")
 }

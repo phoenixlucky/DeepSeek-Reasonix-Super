@@ -43,7 +43,7 @@ func walletServer(t *testing.T, balanceURL string) *httptest.Server {
 		t.Fatal(err)
 	}
 	bc := NewBroadcaster()
-	ctrl := control.New(control.Options{Sink: bc, SessionDir: dir, SessionPath: active, Balance: billing.NewCache(nil, balanceURL, "")})
+	ctrl := control.New(control.Options{Sink: bc, SessionDir: dir, SessionPath: active, Balance: billing.NewCache(nil, balanceURL, billing.FormatDeepSeek, "")})
 	srv := httptest.NewServer(operatorHandler(New(ctrl, bc, config.ServeConfig{})))
 	t.Cleanup(srv.Close)
 	return srv

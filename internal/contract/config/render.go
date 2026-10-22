@@ -39,8 +39,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	var b strings.Builder
 
 	b.WriteString("# Reasonix configuration.\n")
-	fmt.Fprintf(&b, "# Resolution order: flag > ./reasonix.toml > %s > built-in defaults.\n", processRoots().userConfigDisplayPath())
-	b.WriteString("# Fields marked user/global only are not overridden by ./reasonix.toml.\n")
+	fmt.Fprintf(&b, "# Resolution order: flag > project config > %s > built-in defaults.\n", processRoots().userConfigDisplayPath())
+	b.WriteString("# Project config: ./reasonix.toml, otherwise .reasonix/reasonix.toml.\n")
+	b.WriteString("# Fields marked user/global only are not overridden by project config.\n")
 	b.WriteString("# Secrets are named via api_key_env and stored in Reasonix's global .env; never put keys here.\n\n")
 
 	fmt.Fprintf(&b, "config_version = %d   # schema marker for diagnostics; old versions may ignore it\n", configVersion(c))
@@ -54,7 +55,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		if c.AutoSubmit {
 			b.WriteString("auto_submit = true   # CLI ask: commit a multi-question batch once its last question is answered; user/global only\n")
 		}
-		fmt.Fprintf(&b, "credentials_store = %q   # legacy compatibility; provider keys are saved in Reasonix's global .env\n", normalizeCredentialsStore(c.CredentialsStore))
+		fmt.Fprintf(&b, "credentials_store = %q   # legacy compatibility; provider keys are saved in Reasonix's global .env\n%s", normalizeCredentialsStore(c.CredentialsStore), emptyProvidersLine(c.Providers))
 	}
 	b.WriteString("\n")
 
@@ -82,15 +83,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 
 		renderProgressWatchSection(&b, c)
 		renderAutoArchiveSection(&b, c)
-		renderServeSection(&b, c)
-		b.WriteString("[notifications]\n")
-		fmt.Fprintf(&b, "enabled = %v   # system notifications for CLI and desktop turns; default off\n", c.Notifications.Enabled)
-		fmt.Fprintf(&b, "turn_done = %v   # notify when a turn finishes\n", c.Notifications.TurnDone)
-		fmt.Fprintf(&b, "approval_request = %v   # notify when a tool approval is waiting\n", c.Notifications.ApprovalRequest)
-		fmt.Fprintf(&b, "ask_request = %v   # notify when a question is waiting\n", c.Notifications.AskRequest)
-		fmt.Fprintf(&b, "feedback_reply = %v   # notify when a feedback report gets a reply\n", c.Notifications.FeedbackReply)
-		fmt.Fprintf(&b, "sound = %v   # play a short chime for the events above, with or without system notifications; default off\n", c.Notifications.Sound)
-		b.WriteString("\n")
+		renderServeAndPeers(&b, c)
+		renderObservabilitySection(&b, c)
+		renderNotificationsSection(&b, c)
 	}
 
 	if shouldRenderNetwork(c, defaults, scope) {
@@ -106,7 +101,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		} else {
 			b.WriteString("# no_proxy   = \"localhost,127.0.0.1,.local\"   # honored for proxy_mode = \"custom\"\n")
 		}
-		b.WriteString("\n[network.proxy]\n")
+		renderNetworkResolvers(&b, c, scope)
 		proxyType := c.Network.Proxy.Type
 		if proxyType == "" {
 			proxyType = "socks5"
@@ -160,6 +155,11 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	} else {
 		b.WriteString("# reasoning_language = \"zh\"   # visible reasoning language: auto|zh|en\n")
 	}
+	if c.TurnNarration() != TurnNarrationBrief {
+		fmt.Fprintf(&b, "turn_narration = %q   # between tool calls: brief|detailed (detailed asks for a few lines per batch)\n", c.TurnNarration())
+	} else {
+		b.WriteString("# turn_narration = \"detailed\"   # between tool calls: brief|detailed (detailed asks for a few lines per batch)\n")
+	}
 	fmt.Fprintf(&b, "compact_ratio       = %s   # fold at this share of the model window (default 0.85)\n", formatFloat(c.Agent.CompactRatio))
 	if c.Agent.Keep != nil {
 		fmt.Fprintf(&b, "keep                = %s   # compaction keep policy: errors, user_marked\n", renderStringArray(c.Agent.Keep))
@@ -193,7 +193,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		b.WriteString("# plan_mode_read_only_commands = [\"gh issue view\"]   # legacy compatibility only; Plan bash uses Permissions\n")
 	}
 	renderEmbeddedDiffDetection(&b, c)
-	renderAskTimeout(&b, c)
+	renderUnattended(&b, c)
 	renderAgentDelegation(&b, c)
 	if c.Agent.SubagentEffort != "" {
 		fmt.Fprintf(&b, "subagent_effort = %q   # default effort for subagent entry points\n", c.Agent.SubagentEffort)
@@ -205,14 +205,21 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	} else {
 		b.WriteString("# subagent_efforts = { review = \"max\", task = \"high\" }   # per-tool/skill effort overrides\n")
 	}
-	agentSetting(&b, "max_subagent_depth", c.Agent.MaxSubagentDepth, defaults.Agent.MaxSubagentDepth, "nested subagent delegation depth; 1 restores the old single-layer boundary")
-	agentSetting(&b, "max_subagent_concurrency", c.Agent.MaxSubagentConcurrency, defaults.Agent.MaxSubagentConcurrency, "session-wide sub-agent concurrency (task/fleet/skills)")
-	agentSetting(&b, "max_parallel_writers", c.Agent.MaxParallelWriters, defaults.Agent.MaxParallelWriters, "concurrent writers with non-overlapping write_paths")
+	renderConcurrencyLimits(&b, c, defaults)
+	agentSetting(&b, "subagent_claims", c.Agent.SubagentClaims, defaults.Agent.SubagentClaims, "optimistic: a sub-agent that declared no write_paths holds only the path it is writing, not the whole workspace; user file only")
 	agentSetting(&b, "write_lease", c.Agent.WriteLease, defaults.Agent.WriteLease, "optimistic: a writer that declared no path does not hold the whole workspace against other sessions; user file only")
+	agentSetting(&b, "write_lease_max_wait_minutes", c.Agent.WriteLeaseMaxWaitMinutes, defaults.Agent.WriteLeaseMaxWaitMinutes, "minutes a write waits behind another session's claim before it fails with workspace.claim_timeout; 0 = wait as long as the turn lasts (default), 120 is a sensible limit; user file only")
+	agentSetting(&b, "plan_approval", c.Agent.PlanApproval, defaults.Agent.PlanApproval, "auto: the plan card answers itself and execution starts; user file only")
+	agentSetting(&b, "default_mode", c.Agent.DefaultMode, defaults.Agent.DefaultMode, "plan: a new conversation starts in plan mode (the mode picker still switches it); a resumed one keeps its own; user file only")
+	agentSetting(&b, "host_verification", c.Agent.HostVerification, defaults.Agent.HostVerification, "off: the host does not hold a turn open to ask for a check, a review or a sign-off on files it changed; the receipt still says what was and was not checked; user file only")
 	if c.Agent.OutputStyle != "" {
 		fmt.Fprintf(&b, "output_style = %q   # persona/tone folded into the prompt\n", c.Agent.OutputStyle)
 	} else {
 		b.WriteString("# output_style = \"explanatory\"   # explanatory | learning | concise | custom; empty = default\n")
+	}
+	// Persona is the user's own identity, so it never goes into a project file.
+	if p := c.Agent.Persona.Normalize(); scope != RenderScopeProject && !p.IsZero() {
+		renderPersonaTable(&b, p)
 	}
 	b.WriteString("\n")
 
@@ -225,16 +232,12 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	}
 
 	b.WriteString("[tools]\n")
-	if len(c.Tools.Enabled) == 0 {
-		b.WriteString("enabled = []   # empty = all built-in tools\n")
-	} else {
-		fmt.Fprintf(&b, "enabled = %s\n", renderStringArray(c.Tools.Enabled))
-	}
+	renderToolLists(&b, c, true)
 	fmt.Fprintf(&b, "bash_timeout_seconds = %d   # foreground safety cap; set 0 for no tool-local cap\n", c.BashTimeoutSeconds())
 	fmt.Fprintf(&b, "mcp_startup_timeout_seconds = %d   # background initialize + tools/list safety cap; per-plugin overrides may raise it\n", c.MCPStartupTimeoutSeconds())
 	fmt.Fprintf(&b, "mcp_call_timeout_seconds = %d   # default MCP call safety cap; per-plugin/tool overrides may raise it\n", c.MCPCallTimeoutSeconds())
 	fmt.Fprintf(&b, "protect_changed_files = %v   # refuse a whole-file write over a change made since the agent last saw the file\n", c.Tools.ChangedFilesProtected())
-	fmt.Fprintf(&b, "browser_tools = %v   # built-in browser tools; the browser starts on first use\n\n", c.Tools.BrowserToolsEnabled())
+	fmt.Fprintf(&b, "browser_tools = %v   # built-in browser tools; the browser starts on first use\n%s\n", c.Tools.BrowserToolsEnabled(), mcpResourcesLine(c.Tools))
 	renderMCPLoadSection(&b, c.Tools.MCPLoad)
 
 	b.WriteString("[tools.background_jobs]\n")
@@ -259,11 +262,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		mode = "ask"
 	}
 	fmt.Fprintf(&b, "mode  = %q\n", mode)
-	if c.Permissions.AllowDynamicBash {
-		b.WriteString("allow_dynamic_bash = true   # advanced: let mode=allow cover command substitution and interpreter -c/-e\n")
-	} else {
-		b.WriteString("# allow_dynamic_bash = false   # advanced opt-in; deny/ask and exact rules still take precedence\n")
-	}
+	renderPermissionFlags(&b, c, true)
 	b.WriteString(renderRuleList("deny", c.Permissions.Deny, `["Bash(rm -rf*)", "Bash(git push*)"]   # hard-blocked in every mode`))
 	b.WriteString(renderRuleList("allow", c.Permissions.Allow, `["Bash(go test:*)", "Bash(git status:*)"]   # never prompted`))
 	b.WriteString(renderRuleList("ask", c.Permissions.Ask, `["Edit(src/**)"]   # force a prompt even if otherwise allowed`))
@@ -291,17 +290,15 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	} else {
 		b.WriteString("# forbid_read = []                  # dirs the agent cannot read or list\n")
 	}
-	fmt.Fprintf(&b, "bash    = %q\n", c.BashMode())
-	fmt.Fprintf(&b, "network = %v\n", c.Sandbox.Network)
+	renderBashAndNetwork(&b, c)
 	fmt.Fprintf(&b, "host_authorities = %s   # host services bash may call; user-global\n", renderStringArray(c.Sandbox.HostAuthorities))
+	renderAllowDevices(&b, c.Sandbox.AllowDevices)
 	if len(c.Sandbox.AllowedDomains) > 0 {
 		fmt.Fprintf(&b, "allowed_domains = %s\n", renderStringArray(c.Sandbox.AllowedDomains))
 	} else {
 		b.WriteString("# allowed_domains = [\"github.com\", \"*.npmjs.org\"]   # limit bash egress to these hosts (macOS, Linux)\n")
 	}
-	if len(c.Sandbox.DeniedDomains) > 0 {
-		fmt.Fprintf(&b, "denied_domains = %s\n", renderStringArray(c.Sandbox.DeniedDomains))
-	}
+	renderDomainLists(&b, c.Sandbox)
 	b.WriteString("\n")
 
 	if scope != RenderScopeProject {
@@ -319,6 +316,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	renderPassthroughTable(&b, "bot", c.Bot)
 
 	renderStorage(&b, c, scope)
+	renderAttachments(&b, c, scope)
 
 	// [secrets] is user/global only: LoadForRoot discards project values, so the
 	// project scope never renders it. Rendering it here keeps saved toggles across rewrites.
@@ -473,7 +471,7 @@ func RenderTOMLProjectDelta(c *Config) string {
 	}
 
 	// [network] section
-	if !reflect.DeepEqual(c.Network, d.Network) {
+	if networkDeltaDiffers(c, d) {
 		b.WriteString("[network]\n")
 		if c.Network.ProxyMode != d.Network.ProxyMode {
 			fmt.Fprintf(&b, "proxy_mode = %q\n", c.NetworkProxyMode())
@@ -529,16 +527,14 @@ func RenderTOMLProjectDelta(c *Config) string {
 	}
 
 	// [tools]
-	if len(c.Tools.Enabled) > 0 ||
+	if c.Tools.listsSet() ||
 		(c.Tools.BashTimeoutSeconds != nil && *c.Tools.BashTimeoutSeconds != 0) ||
 		(c.Tools.MCPStartupTimeoutSeconds != nil && *c.Tools.MCPStartupTimeoutSeconds > 0) ||
 		(c.Tools.MCPCallTimeoutSeconds != nil && *c.Tools.MCPCallTimeoutSeconds > 0) ||
 		c.Tools.ProtectChangedFiles != nil ||
-		c.Tools.BrowserTools != nil {
+		c.Tools.BrowserTools != nil || c.Tools.MCPResources || c.Tools.PresentFiles || c.Tools.any() {
 		b.WriteString("[tools]\n")
-		if len(c.Tools.Enabled) > 0 {
-			fmt.Fprintf(&b, "enabled = %s\n", renderStringArray(c.Tools.Enabled))
-		}
+		renderToolLists(&b, c, false)
 		if c.Tools.BashTimeoutSeconds != nil && *c.Tools.BashTimeoutSeconds != 0 {
 			fmt.Fprintf(&b, "bash_timeout_seconds = %d\n", *c.Tools.BashTimeoutSeconds)
 		}
@@ -551,9 +547,7 @@ func RenderTOMLProjectDelta(c *Config) string {
 		if c.Tools.ProtectChangedFiles != nil {
 			fmt.Fprintf(&b, "protect_changed_files = %v\n", *c.Tools.ProtectChangedFiles)
 		}
-		if c.Tools.BrowserTools != nil {
-			fmt.Fprintf(&b, "browser_tools = %v\n", *c.Tools.BrowserTools)
-		}
+		renderToolsSwitches(&b, c.Tools)
 		b.WriteString("\n")
 	}
 	renderMCPLoadSection(&b, c.Tools.MCPLoad)
@@ -599,9 +593,7 @@ func RenderTOMLProjectDelta(c *Config) string {
 		if mode != "ask" {
 			fmt.Fprintf(&b, "mode = %q\n", mode)
 		}
-		if c.Permissions.AllowDynamicBash {
-			b.WriteString("allow_dynamic_bash = true\n")
-		}
+		renderPermissionFlags(&b, c, false)
 		if len(c.Permissions.Deny) > 0 {
 			fmt.Fprintf(&b, "deny = %s\n", renderStringArray(c.Permissions.Deny))
 		}
@@ -683,8 +675,14 @@ func renderPricingInline(p *provider.Pricing) string {
 	if p == nil {
 		return "{}"
 	}
-	return fmt.Sprintf("{ cache_hit = %v, input = %v, output = %v, currency = %q }",
-		p.CacheHit, p.Input, p.Output, p.Symbol())
+	out := fmt.Sprintf("{ cache_hit = %v, input = %v, output = %v, currency = %q", p.CacheHit, p.Input, p.Output, p.Symbol())
+	if p.SourceURL != "" {
+		out += fmt.Sprintf(", source_url = %q", p.SourceURL)
+	}
+	if p.Checked != "" {
+		out += fmt.Sprintf(", checked = %q", p.Checked)
+	}
+	return out + " }"
 }
 
 func renderPricingMap(prices map[string]*provider.Pricing) string {

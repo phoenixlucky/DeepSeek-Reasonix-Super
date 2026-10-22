@@ -264,7 +264,7 @@ func TestACPLoadAfterRestartFollowsRecoveryTranscript(t *testing.T) {
 	id := "sess-restart"
 	originalPath, recoveryPath, svc := recoverACPSessionAndRestart(t, dir, id)
 
-	if _, err := svc.openExistingSession(context.Background(), "session/load", id, dir, nil, false); err != nil {
+	if _, err := svc.openExistingSession(context.Background(), "session/load", id, dir, nil, nil, false); err != nil {
 		t.Fatalf("openExistingSession after restart: %v", err)
 	}
 	loaded := svc.session(id)
@@ -496,7 +496,7 @@ func TestACPWorkModeSwitchPersistsRefreshedSystemPromptAcrossReload(t *testing.T
 		t.Fatalf("sessionClose: %v", err)
 	}
 
-	if _, err := svc.openExistingSession(context.Background(), "session/load", id, dir, nil, false); err != nil {
+	if _, err := svc.openExistingSession(context.Background(), "session/load", id, dir, nil, nil, false); err != nil {
 		t.Fatalf("openExistingSession after close: %v", err)
 	}
 	loaded := svc.session(id)

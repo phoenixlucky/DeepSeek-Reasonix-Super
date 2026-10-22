@@ -33,6 +33,7 @@ type Sink struct {
 	sender Sender
 	say    i18n.Messages
 	set    *Settings
+	phone  *Phone
 }
 
 // NewSink wraps an existing event sink with best-effort notification delivery.
@@ -40,12 +41,21 @@ func NewSink(inner event.Sink, sender Sender, say i18n.Messages, set *Settings) 
 	return &Sink{AuditForwarder: event.AuditForwarder{Inner: inner}, inner: inner, sender: sender, say: say, set: set}
 }
 
+// WithPhone makes the sink also report the events a phone is told about, under
+// the settings' phone switches.
+func (s *Sink) WithPhone(p *Phone) *Sink {
+	s.phone = p
+	return s
+}
+
 // Emit preserves the underlying event stream before attempting notification side effects.
 func (s *Sink) Emit(e event.Event) {
 	if s.inner != nil {
 		s.inner.Emit(e)
 	}
-	SendEvent(s.sender, s.say, s.set.Load(), e)
+	cfg := s.set.Load()
+	SendEvent(s.sender, s.say, cfg, e)
+	s.phone.Event(cfg, e)
 }
 
 // SendEvent applies the same notification rules for paths that do not emit through Sink.
@@ -62,7 +72,9 @@ func announce(sender Sender, cfg config.NotificationsConfig, msg Message) {
 		return
 	}
 	if cfg.Enabled {
-		_ = sender.Send(msg)
+		if err := sender.Send(msg); err != nil {
+			sendFailed(err)
+		}
 	}
 	if cfg.Sound {
 		if c, ok := sender.(Chimer); ok {

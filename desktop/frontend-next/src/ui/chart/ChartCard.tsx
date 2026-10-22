@@ -80,12 +80,11 @@ export function ChartCard({ spec, callId }: { spec: ChartSpec; callId?: string }
     <div className="call" data-k="chart" data-call={callId || undefined}>
       <div className="g">
         <Sym glyph="⌗" />
-        <span className="line" />
       </div>
       <div className="c">
         <div className="hl">
           <span className="nm">{t("图表")}</span>
-          <span className="arg">{spec.title}</span>
+          <span className="arg" title={spec.title}>{spec.title}</span>
         </div>
         <figure className="chart" role="group" aria-label={describe(spec)}>
           <svg width="0" height="0" aria-hidden="true" className="chart-defs">
@@ -104,7 +103,7 @@ export function ChartCard({ spec, callId }: { spec: ChartSpec; callId?: string }
             </div>
           ))}
           {axes(spec) && <figcaption className="chart-axes">{axes(spec)}</figcaption>}
-          <div className="chart-read" aria-live="polite">{read ?? " "}</div>
+          <div className="chart-read" aria-live="polite">{read ?? t("悬停或聚焦图表以查看数值")}</div>
         </figure>
         <ChartTable spec={spec} id={`${uid}-data`} />
       </div>

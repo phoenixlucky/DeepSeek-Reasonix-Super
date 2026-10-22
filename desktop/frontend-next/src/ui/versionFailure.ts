@@ -13,6 +13,8 @@ export function failureCopy(p: UpdateProgress, current: string): FailureCopy {
       return { title: t("无法读取 {v} 的发布信息", { v }), why: t("版本目录暂时连不上，可能是网络或代理问题。当前版本未被改动，稍后重试即可。"), manual: false };
     case "update.download_failed":
       return { title: t("{v} 下载中断", { v }), why: t("网络中断或超时。当前版本未被改动，可以重试。"), manual: false };
+    case "update.download_stalled":
+      return { title: t("{v} 下载卡住了", { v }), why: t("下载连接长时间没有数据，重连几次仍未恢复。当前版本未被改动，可以稍后重试，或下载完整安装包手动安装。"), manual: true };
     case "update.signature_invalid":
       return { title: t("{v} 未通过签名校验", { v }), why: t("下载到的文件与发布签名不符，已丢弃，没有安装。多为下载损坏或网络被篡改，请重试；反复出现请反馈。"), manual: false };
     case "update.disk":

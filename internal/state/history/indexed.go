@@ -292,43 +292,66 @@ func (s *IndexedSearcher) Search(ctx context.Context, req SearchRequest) ([]Hit,
 	if err != nil {
 		return nil, err
 	}
-	loaded := map[string][]provider.Message{}
-	failed := map[string]bool{}
+	text := newCandidateTexts(catalog)
 	hits := make([]Hit, 0, len(result.Items))
 	for _, candidate := range result.Items {
-		if failed[candidate.SessionPath] {
-			continue
-		}
-		messages, ok := loaded[candidate.SessionPath]
+		body, ok := text.of(candidate)
 		if !ok {
-			state, known, identityErr := sessionstore.SessionContentIdentity(candidate.SessionPath)
-			if identityErr != nil || (known && state.DigestHex != candidate.ContentDigest) {
-				failed[candidate.SessionPath] = true
-				catalog.EnqueueExisting(context.Background(), candidate.SessionPath)
-				continue
-			}
-			messages, err = loadMessages(candidate.SessionPath)
-			if err != nil {
-				failed[candidate.SessionPath] = true
-				continue
-			}
-			loaded[candidate.SessionPath] = messages
-		}
-		text, ok := candidateText(messages, candidate)
-		if !ok {
-			catalog.EnqueueExisting(context.Background(), candidate.SessionPath)
 			continue
 		}
 		hits = append(hits, Hit{Score: candidate.Score, SessionPath: candidate.SessionPath,
 			SessionID: sessionID(candidate.SessionPath), Source: candidate.Source, MessageIndex: candidate.MessageIndex,
 			Role: provider.Role(candidate.Role), Kind: Kind(candidate.Kind), ToolName: candidate.ToolName,
-			Snippet: retrieval.MakeSnippet(text, query, queryTerms, maxSnippet)})
+			Snippet: retrieval.MakeSnippet(body, query, queryTerms, maxSnippet)})
 	}
 	hits = retrieval.KeepTopRelativeScore(hits, scoreFloor, func(hit Hit) float64 { return hit.Score })
 	if len(hits) > limit {
 		hits = hits[:limit]
 	}
 	return hits, nil
+}
+
+// candidateTexts reads each session's transcript once and hands back the text a
+// catalog row points at, after checking the row still describes the file.
+type candidateTexts struct {
+	catalog *historycatalog.Catalog
+	loaded  map[string][]provider.Message
+	failed  map[string]bool
+}
+
+func newCandidateTexts(catalog *historycatalog.Catalog) *candidateTexts {
+	return &candidateTexts{catalog: catalog, loaded: map[string][]provider.Message{}, failed: map[string]bool{}}
+}
+
+func (c *candidateTexts) of(candidate historycatalog.Candidate) (string, bool) {
+	if c.failed[candidate.SessionPath] {
+		return "", false
+	}
+	messages, ok := c.loaded[candidate.SessionPath]
+	if !ok {
+		state, known, identityErr := sessionstore.SessionContentIdentity(candidate.SessionPath)
+		if identityErr != nil || (known && state.DigestHex != candidate.ContentDigest) {
+			c.failed[candidate.SessionPath] = true
+			c.catalog.EnqueueExisting(context.Background(), candidate.SessionPath)
+			return "", false
+		}
+		var err error
+		messages, err = loadMessages(candidate.SessionPath)
+		if err != nil {
+			c.failed[candidate.SessionPath] = true
+			// A read failure is not evidence that nothing matched: record the
+			// source as corrupt and reconcile it, same as the digest mismatch,
+			// so the projection cannot certify itself complete.
+			c.catalog.RecordReadFailure(context.Background(), candidate.SessionPath, err)
+			return "", false
+		}
+		c.loaded[candidate.SessionPath] = messages
+	}
+	body, ok := candidateText(messages, candidate)
+	if !ok {
+		c.catalog.EnqueueExisting(context.Background(), candidate.SessionPath)
+	}
+	return body, ok
 }
 
 func candidateText(messages []provider.Message, candidate historycatalog.Candidate) (string, bool) {
@@ -338,7 +361,7 @@ func candidateText(messages []provider.Message, candidate historycatalog.Candida
 	msg := messages[candidate.MessageIndex]
 	switch Kind(candidate.Kind) {
 	case KindUserText:
-		return stripComposePrefixes(msg.Content), msg.Role == provider.RoleUser
+		return sessionstore.UserSaidText(msg.Content), msg.Role == provider.RoleUser
 	case KindAssistantText:
 		return msg.Content, msg.Role == provider.RoleAssistant
 	case KindToolInput:

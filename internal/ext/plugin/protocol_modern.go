@@ -62,7 +62,10 @@ type modernSession struct {
 var modernVersions = []string{modernProtocolVersion}
 
 func (c *Client) clientCapabilities() map[string]any {
-	capabilities := map[string]any{"elicitation": elicitCapability()}
+	capabilities := map[string]any{
+		"elicitation": elicitCapability(),
+		"extensions":  map[string]any{tasksExtension: map[string]any{}},
+	}
 	if len(mcpRoots(c.spec.WorkspaceRoot)) > 0 {
 		capabilities["roots"] = map[string]any{}
 	}
@@ -233,7 +236,13 @@ func (c *Client) callModern(ctx context.Context, t transport, method string, par
 			InputRequests map[string]json.RawMessage `json:"inputRequests"`
 			RequestState  *string                    `json:"requestState"`
 		}
-		if json.Unmarshal(res, &r) != nil || r.ResultType != "input_required" {
+		if json.Unmarshal(res, &r) != nil {
+			return res, nil
+		}
+		if r.ResultType == "task" && method == "tools/call" {
+			return c.awaitTask(ctx, t, p, res)
+		}
+		if r.ResultType != "input_required" {
 			return res, nil
 		}
 		if round+1 >= maxInputRounds {

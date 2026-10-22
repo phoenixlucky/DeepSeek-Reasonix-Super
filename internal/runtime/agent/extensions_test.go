@@ -1967,3 +1967,69 @@ func TestExtensionMayNarrowDelegationIntoOneThePhaseAdmits(t *testing.T) {
 		t.Fatalf("the narrowed delegation ran %d times, want 1", started)
 	}
 }
+
+type recordingMCPTool struct{ recordingTool }
+
+func (r *recordingMCPTool) MCPServerName() string     { return "srv" }
+func (r *recordingMCPTool) MCPRawToolName() string    { return "raw" }
+func (r *recordingMCPTool) MCPServerAuthorized() bool { return true }
+
+func TestPermissionDecisionDenyReachesInstalledMCPTools(t *testing.T) {
+	client := &fakeDispatchClient{interceptFn: func(ev protocol.InterceptEvent, _ json.RawMessage) (protocol.InterceptResult, error) {
+		if ev == protocol.EventPermissionDecision {
+			return protocol.InterceptResult{Decision: protocol.DecisionDeny}, nil
+		}
+		return protocol.InterceptResult{Decision: protocol.DecisionContinue}, nil
+	}}
+	d := newExtDispatcher(client, true, nil, extension.PointPermissionDecision)
+	rec := &recordingMCPTool{recordingTool{name: "mcp__srv__raw", readOnly: false}}
+	reg := tool.NewRegistry()
+	reg.Add(rec)
+	a := New(nil, reg, sessionstore.NewSession(""), Options{Gate: &stubGate{}, Extensions: d}, event.Discard)
+	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: "mcp__srv__raw", Arguments: `{}`})
+	if !out.blocked || !strings.Contains(out.output, "denied by extension permission policy") {
+		t.Fatalf("outcome = %+v, want an extension denial of the installed MCP tool", out)
+	}
+	if rec.execs != 0 {
+		t.Fatal("extension-denied MCP tool executed")
+	}
+}
+
+func TestPermissionDecisionContinueLeavesInstalledMCPToolsAlone(t *testing.T) {
+	d := newExtDispatcher(&fakeDispatchClient{}, true, nil, extension.PointPermissionDecision)
+	rec := &recordingMCPTool{recordingTool{name: "mcp__srv__raw", readOnly: false}}
+	reg := tool.NewRegistry()
+	reg.Add(rec)
+	a := New(nil, reg, sessionstore.NewSession(""), Options{Gate: &stubGate{}, Extensions: d}, event.Discard)
+	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: "mcp__srv__raw", Arguments: `{}`})
+	if out.blocked || rec.execs != 1 {
+		t.Fatalf("outcome = %+v execs = %d, want the installed MCP tool to run", out, rec.execs)
+	}
+}
+
+// A mod's answer takes the place of the tool's output: the call completes
+// without running the tool, the result is not an error, and the host labels it
+// as data from the mod.
+func TestToolBeforeAnswerIsAResultFromTheModAndTheToolDoesNotRun(t *testing.T) {
+	client := &fakeDispatchClient{interceptFn: func(ev protocol.InterceptEvent, _ json.RawMessage) (protocol.InterceptResult, error) {
+		if ev == protocol.EventToolBefore {
+			return protocol.InterceptResult{Decision: protocol.DecisionBlock, Answer: "forty-two"}, nil
+		}
+		return protocol.InterceptResult{Decision: protocol.DecisionContinue}, nil
+	}}
+	d := newExtDispatcher(client, true, nil, extension.PointToolBefore)
+	rec := &recordingTool{name: "read_file", readOnly: true}
+	reg := tool.NewRegistry()
+	reg.Add(rec)
+	a := New(nil, reg, sessionstore.NewSession(""), Options{Extensions: d}, event.Discard)
+	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: "read_file", Arguments: `{"path":"/x"}`})
+	if out.blocked || out.errMsg != "" || !strings.Contains(out.output, "forty-two") {
+		t.Fatalf("outcome = %+v, want a successful result carrying the answer", out)
+	}
+	if want := (tool.Provenance{Kind: tool.ProvenanceMod, Source: extTestPlugin}); out.provenance != want {
+		t.Fatalf("provenance = %+v, want %+v", out.provenance, want)
+	}
+	if rec.execs != 0 {
+		t.Fatalf("an answered tool ran %d times", rec.execs)
+	}
+}

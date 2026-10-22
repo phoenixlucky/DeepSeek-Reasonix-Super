@@ -11,7 +11,7 @@ export interface CompletionItem {
   // A directory, or a command with its own argument menu: accepting re-opens
   // the menu one level deeper instead of closing it.
   descend?: boolean;
-  // builtin | command | skill | subagent | prompt | file | dir | resource.
+  // builtin | command | skill | subagent | prompt | file | dir | resource | session.
   // Empty on argument values, which are not things.
   kind?: string;
   // The arguments an MCP prompt declares, in order.
@@ -27,7 +27,7 @@ export interface CompletionArg {
 }
 
 export interface Completion {
-  kind: "" | "slash" | "slash-arg" | "ref";
+  kind: "" | "slash" | "slash-arg" | "ref" | "session";
   from: number;
   to: number;
   // What the kernel filtered on, so a row can point at the letters that put it
@@ -52,6 +52,8 @@ export interface ModelEntry {
   modelAlias?: string;
   kind?: string;
   active?: boolean;
+  // Configured but outside the access list the person added, so a role cannot pick it.
+  notAdded?: boolean;
   default?: boolean;
   // The endpoint host. Rows sharing it are one service reached under more than
   // one protocol, which is what lets the list fold them into a single choice.
@@ -93,18 +95,12 @@ export interface ModelMode {
 // kernel appear here; image routing joins once it can name its own model
 // instead of borrowing whatever the subagent runs.
 export interface RoleAssignments {
+  roles: Record<string, string>;
+  efforts: Record<string, string>;
   web_search: string;
   web_search_effective?: string;
   web_search_reason?: string;
   web_search_source?: string;
-  planner: string;
-  subagent: string;
-  guardian: string;
-  vision: string;
-  // The system_one backend. It names a model on a decision wire, so unlike the
-  // others it never falls back to the main model: a chat model cannot answer a
-  // question set, and a silent fallback would make a missing backend a wrong one.
-  decision: string;
 }
 
 // A per-profile entry that outranks a role's global model. `scope` names the

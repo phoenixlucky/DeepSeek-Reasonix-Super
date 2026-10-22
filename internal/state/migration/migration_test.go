@@ -3,6 +3,7 @@ package migration
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -359,8 +360,18 @@ func TestExplicitImportFindsEveryLayoutA1xInstallKeepsSessionsIn(t *testing.T) {
 			root := filepath.Join(home, "Roaming", "reasonix")
 			seed(root)
 			dest := filepath.Join(config.SessionDir(), "ws")
+			if name == "desktop v5" {
+				// Desktop's by-id store is scoped: a conversation is filed where its own
+				// header says it was made, not where the person pointed the import.
+				cwd := filepath.Join(home, "proj")
+				if err := os.MkdirAll(cwd, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				writeSourceHeader(t, root, id, cwd)
+				dest = config.ProjectSessionDir(cwd)
+			}
 
-			res := RunLegacySessionImportInto(root, dest, event.Discard)
+			res := RunLegacySessionImportInto(root, filepath.Join(config.SessionDir(), "ws"), event.Discard)
 			if got := totalImported(res.SessionImports); got != 1 || len(res.SessionErrs) != 0 {
 				t.Fatalf("imported %d, errs %v; want 1", got, res.SessionErrs)
 			}
@@ -531,5 +542,27 @@ func TestExplicitImportFindsSessionsAddedAfterAnEarlierRun(t *testing.T) {
 	writeLegacyFile(t, sessions, "b.jsonl", legacyMessageLog)
 	if got := totalImported(RunLegacySessionImportInto(picked, dest, event.Discard).SessionImports); got != 1 {
 		t.Fatalf("second run imported %d, want the new session only", got)
+	}
+}
+
+func TestExplicitImportNamesTheFoldersItRoutedSessionsBackInto(t *testing.T) {
+	home := isolateMigrationHome(t)
+	root := filepath.Join(home, "Roaming", "reasonix")
+	project := filepath.Join(home, "work", "old-project")
+	sessions := filepath.Join(root, "sessions")
+	for _, dir := range []string{project, sessions} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(sessions, "a.jsonl"), []byte(legacyMessageLog), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessions, "a.meta.json"), []byte(`{"workspace":`+strconv.Quote(project)+`}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := RunLegacySessionImportInto(root, filepath.Join(config.SessionDir(), "ws"), event.Discard)
+	if len(res.Workspaces) != 1 || res.Workspaces[0] != project {
+		t.Fatalf("Workspaces = %v, want [%s]", res.Workspaces, project)
 	}
 }

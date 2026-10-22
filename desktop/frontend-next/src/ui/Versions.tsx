@@ -1,10 +1,12 @@
 import { Fragment, useCallback, useEffect, useState, type KeyboardEvent } from "react";
 import { bytes } from "../i18n/format";
-import { t } from "../i18n";
+import { current, t } from "../i18n";
 import type { UpdateProgress, VersionHub, VersionNotes } from "../port/port";
 import { reason } from "../i18n/kernel";
+import { refreshUpdateWatch } from "../state/updatewatch";
 import { HttpError } from "../port/http_error";
 import { LazyMarkdown } from "./LazyMarkdown";
+import { NOTES_LANGUAGE_NAMES, splitNotes } from "./notesLanguages";
 import { deltaSkippedCopy, failureCopy, releasePage } from "./versionFailure";
 
 // A shell that declared no install: a build run from source, not a failure.
@@ -20,7 +22,7 @@ const NOTES_ABSENT = "studio.notes_absent";
 // worse than no button.
 
 type Port = {
-  versions(): Promise<VersionHub>;
+  versions(refresh?: boolean): Promise<VersionHub>;
   pinVersion(v: string): Promise<void>;
   goToVersion(v: string): Promise<void>;
   restartToVersion(v: string, force: boolean): Promise<void>;
@@ -50,6 +52,7 @@ function when(iso: string): string {
 function say(p: UpdateProgress): string {
   switch (p.phase) {
     case "downloading":
+      if (p.stalls) return t("下载暂停了：连接长时间没有数据，已重连 {n} 次…", { n: p.stalls });
       if (p.delta_skipped) {
         return p.total > 0 ? t("下载完整安装包 {got} / {all}", { got: bytes(p.received), all: bytes(p.total) }) : t("下载完整安装包 {got}", { got: bytes(p.received) });
       }
@@ -75,6 +78,9 @@ function say(p: UpdateProgress): string {
   }
 }
 
+// The newest few older releases stay on the page; the rest are history one click away.
+const PAST_SHOWN = 3;
+
 export function Versions({ port }: { port: Port }) {
   const [hub, setHub] = useState<VersionHub | null>(null);
   const [busy, setBusy] = useState(false);
@@ -85,6 +91,7 @@ export function Versions({ port }: { port: Port }) {
   const [progress, setProgress] = useState<UpdateProgress | null>(null);
   const [later, setLater] = useState("");
   const [running, setRunning] = useState(0);
+  const [allPast, setAllPast] = useState(false);
   const [openNotes, setOpenNotes] = useState("");
   const [notes, setNotes] = useState<Record<string, NotesState>>({});
 
@@ -92,9 +99,9 @@ export function Versions({ port }: { port: Port }) {
   // install, a server that does not carry this at all. Folding that back into
   // null spent the one sentence it gave us and left the panel reading as a
   // request still in flight, forever.
-  const reload = useCallback(() => {
+  const load = useCallback((refresh: boolean) => {
     port
-      .versions()
+      .versions(refresh)
       .then((h) => {
         setHub(h);
         setUnread("");
@@ -107,8 +114,13 @@ export function Versions({ port }: { port: Port }) {
         setUnread(none ? "" : reason(e));
       });
   }, [port]);
+  const reload = useCallback(() => load(true), [load]);
 
-  useEffect(reload, [reload]);
+  useEffect(() => load(false), [load]);
+  // Opening the page is a look at the releases, so the background watch reads now
+  // instead of at its next daily turn: with automatic download chosen, a release
+  // published since the last read starts downloading without a click.
+  useEffect(() => { void refreshUpdateWatch(); }, []);
   useEffect(() => port.onUpdateProgress(setProgress), [port]);
 
   // Starting ends once the kernel's own answer names the move; from then on
@@ -220,6 +232,10 @@ export function Versions({ port }: { port: Port }) {
   const ready = progress?.phase === "ready" ? progress.version : "";
   const locked = busy || starting !== "" || moving !== "";
   const readyOlder = ready !== "" && list.some((v) => v.version === ready && v.older);
+  const past = list.filter((v) => v.older && !v.current);
+  const held = new Set([moving, ready, hub.pinned, openNotes].filter(Boolean));
+  const shown = allPast ? list : list.filter((v) => !v.older || v.current || past.indexOf(v) < PAST_SHOWN || held.has(v.version));
+  const hidden = list.length - shown.length;
   const failure = progress?.phase === "error" ? failureCopy(progress, hub.current) : null;
   return (
     <div className="vers">
@@ -319,7 +335,7 @@ export function Versions({ port }: { port: Port }) {
       {/* Newest first: the list reads as history, and where you are in it is
           marked the way every other "this one" in the app is. */}
       <div className="vlist">
-        {list.map((v, i) => (
+        {shown.map((v, i) => (
           <Fragment key={v.version}>
           <div
             className="vrow"
@@ -386,8 +402,30 @@ export function Versions({ port }: { port: Port }) {
           )}
           </Fragment>
         ))}
+        {hidden > 0 && (
+          <button className="lnk vmore" data-action="versions.more" onClick={() => setAllPast(true)}>
+            {t("显示更早的 {n} 个版本", { n: hidden })}
+          </button>
+        )}
       </div>
     </div>
+  );
+}
+
+// The notes in the language the window draws in, with a switch to the other one
+// when the document carries both.
+function NotesBody({ markdown }: { markdown: string }) {
+  const { first, english } = splitNotes(markdown);
+  const [shown, setShown] = useState<"first" | "english">(english !== null && current() === "en" ? "english" : "first");
+  if (english === null) return <LazyMarkdown text={first} images={false} />;
+  return (
+    <>
+      <div className="vnotes-lang seg" role="group" aria-label={t("更新内容的语言")}>
+        <button data-action="versions.notes-lang" data-value="first" aria-pressed={shown === "first"} onClick={() => setShown("first")}>{NOTES_LANGUAGE_NAMES.first}</button>
+        <button data-action="versions.notes-lang" data-value="english" aria-pressed={shown === "english"} onClick={() => setShown("english")}>{NOTES_LANGUAGE_NAMES.english}</button>
+      </div>
+      <LazyMarkdown text={shown === "english" ? english : first} images={false} />
+    </>
   );
 }
 
@@ -396,7 +434,7 @@ function NotesPanel({ id, version, state, retry, onKeyDown }: { id: string; vers
   return (
     <section id={id} className="vnotes" data-action="versions.notes-close" onKeyDown={onKeyDown} aria-label={t("{v} 的更新内容", { v: version })} aria-busy={loading}>
       {loading && <p className="acct-note">{t("正在读取更新内容…")}</p>}
-      {state?.phase === "ok" && <LazyMarkdown text={state.markdown} images={false} />}
+      {state?.phase === "ok" && <NotesBody markdown={state.markdown} />}
       {state?.phase === "err" && (
         <div className="find" data-lvl="warn" role="alert">
           <span className="t">{t("更新内容读取失败")}</span>

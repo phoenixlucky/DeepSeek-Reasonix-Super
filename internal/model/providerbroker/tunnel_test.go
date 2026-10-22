@@ -83,6 +83,7 @@ func TestATurnCompletesOverTheReverseForward(t *testing.T) {
 	}
 	ch, err := p.Stream(context.Background(), provider.Request{
 		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+		Summary:  true,
 	})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -97,7 +98,7 @@ func TestATurnCompletesOverTheReverseForward(t *testing.T) {
 	if got[2].Usage == nil || got[2].Usage.CacheHitTokens != 4 {
 		t.Fatalf("usage did not survive the tunnel: %+v", got[2])
 	}
-	if sent := <-seen; len(sent.Messages) != 1 || sent.Messages[0].Content != "hi" {
+	if sent := <-seen; len(sent.Messages) != 1 || sent.Messages[0].Content != "hi" || !sent.Summary {
 		t.Fatalf("the request did not reach the local provider intact: %+v", sent)
 	}
 }

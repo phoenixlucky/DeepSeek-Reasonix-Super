@@ -212,13 +212,37 @@ describe("who may reply", () => {
     expect(screen.queryByRole("textbox")).toBeNull();
   });
 
-  it("offers nothing on received, fixed, wont-fix, duplicate, closed and unreadable reports", async () => {
-    const items = (["received", "fixed", "wontfix", "duplicate", "closed"] as const).map((status, i) => item({ receipt: `FB-AAAA-000${i + 1}`, status }));
+  it("offers nothing on wont-fix, duplicate, closed and unreadable reports", async () => {
+    const items = (["wontfix", "duplicate", "closed"] as const).map((status, i) => item({ receipt: `FB-AAAA-000${i + 1}`, status }));
     items.push(item({ receipt: "FB-AAAA-0009", status: "needs_info", needsInput: true, statusUnavailable: true }));
     render(<FeedbackMine port={portWith(() => mine(items))} onFile={() => {}} />);
     await screen.findByText("FB-AAAA-0001");
     expect(screen.queryByRole("button", { name: "回复" })).toBeNull();
     expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  it("takes a reply on a released received report, and none while it is under review", async () => {
+    const items = [
+      item({ receipt: "FB-AAAA-0001", status: "received", replies: [reply(5, "maintainer", "Which OS?")] }),
+      item({ receipt: "FB-AAAA-0002", status: "received", underReview: true }),
+    ];
+    const port = portWith(() => mine(items));
+    render(<FeedbackMine port={port} onFile={() => {}} />);
+    await screen.findByText("FB-AAAA-0001");
+    expect(within(row("FB-AAAA-0002")).queryByRole("button", { name: "回复" })).toBeNull();
+    await userEvent.click(within(row("FB-AAAA-0001")).getByRole("button", { name: "回复" }));
+    await userEvent.type(box(), "macOS 15");
+    await userEvent.click(sendButton());
+    await waitFor(() => expect(port.replyFeedback).toHaveBeenCalledWith("FB-AAAA-0001", "macOS 15"));
+  });
+
+  it("lets the reporter say a fix did not hold, and says that reopens the report", async () => {
+    render(<FeedbackMine port={portWith(() => mine([item({ status: "fixed", issueNumber: 11350 })]))} onFile={() => {}} />);
+    await screen.findByText("FB-AAAA-0001");
+    expect(screen.queryByRole("button", { name: "回复" })).toBeNull();
+    await userEvent.click(within(row("FB-AAAA-0001")).getByRole("button", { name: "仍未解决，回复" }));
+    expect(within(row("FB-AAAA-0001")).getByRole("textbox")).toBeTruthy();
+    expect(screen.getByText(/重新打开/)).toBeTruthy();
   });
 
   it("says replies wait for the network when the list is the offline copy", async () => {
@@ -405,5 +429,76 @@ describe("review fixes", () => {
     render(<FeedbackMine port={portWith(() => mine([item({ status: "received", underReview: true, statusUnavailable: true })]))} onFile={() => {}} />);
     await screen.findByText("FB-AAAA-0001");
     expect(screen.queryByText("审核中")).toBeNull();
+  });
+});
+
+describe("replying with screenshots", () => {
+  const png = (name = "shot.png") => new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], name, { type: "image/png" });
+  const openBox = async (over: Partial<FeedbackItem> = {}) => {
+    const port = portWith(() => mine([item({ status: "needs_info", needsInput: true, replies: [reply(1, "maintainer", "can you show it?")], ...over })]));
+    render(<FeedbackMine port={port} onFile={() => {}} />);
+    await screen.findByText("FB-AAAA-0001");
+    await screen.findByRole("button", { name: "添加截图…" });
+    return port;
+  };
+  const attach = (...files: File[]) => userEvent.upload(screen.getByLabelText("选择截图文件"), files);
+
+  it("sends the attached images with the reply and clears them afterwards", async () => {
+    const port = await openBox();
+    await attach(png("a.png"), png("b.png"));
+    await screen.findByText("a.png");
+    await userEvent.type(box(), "here it is");
+    await userEvent.click(sendButton());
+    await waitFor(() => expect(port.replyFeedback).toHaveBeenCalledTimes(1));
+    const [receipt, body, images] = (port.replyFeedback as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect([receipt, body, images.map((i: { name: string }) => i.name)]).toEqual(["FB-AAAA-0001", "here it is", ["a.png", "b.png"]]);
+    expect(images[0].dataBase64).not.toBe("");
+    await waitFor(() => expect(screen.queryByText("a.png")).toBeNull());
+  });
+
+  it("opens an attached screenshot at full size before the reply is sent", async () => {
+    await openBox();
+    await attach(png("a.png"));
+    await userEvent.click(await screen.findByRole("button", { name: "查看图片 a.png" }));
+    expect(screen.getByRole("dialog", { name: "a.png" }).querySelector("img")).toBeTruthy();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByText("a.png")).toBeTruthy();
+  });
+
+  it("lets a picture be removed, and refuses more than the limit or a wrong type with the reason", async () => {
+    await openBox();
+    await attach(png("a.png"), png("b.png"), png("c.png"), png("d.png"));
+    await screen.findByText("c.png");
+    expect(screen.queryByText("d.png")).toBeNull();
+    expect(document.querySelector(".fbk-refused")!.textContent).toContain("d.png：最多 3 张");
+    await userEvent.click(screen.getByRole("button", { name: "移除截图 b.png" }));
+    expect(screen.queryByText("b.png")).toBeNull();
+    await userEvent.setup({ applyAccept: false }).upload(screen.getByLabelText("选择截图文件"), new File(["x"], "notes.txt", { type: "text/plain" }));
+    expect(await screen.findByText(/notes\.txt：只支持 PNG 或 JPEG/)).toBeTruthy();
+  });
+
+  it("keeps the draft and the pictures when the send fails", async () => {
+    const port = await openBox();
+    (port.replyFeedback as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new HttpError(503, "down", { code: FEEDBACK_CODE.unavailable, error: "down" }));
+    await attach(png("a.png"));
+    await screen.findByText("a.png");
+    await userEvent.type(box(), "retry me");
+    await userEvent.click(sendButton());
+    await screen.findByRole("alert");
+    expect(screen.getByText("a.png")).toBeTruthy();
+    expect(box().value).toBe("retry me");
+  });
+
+  it("tells the reporter the pictures go to the maintainers only, on a public report too", async () => {
+    await openBox({ issueNumber: 42 });
+    expect(screen.getByText(/截图先只发给维护者/)).toBeTruthy();
+  });
+
+  it("sends a text-only reply exactly as before", async () => {
+    const port = await openBox();
+    await userEvent.type(box(), "just text");
+    await userEvent.click(sendButton());
+    await waitFor(() => expect(port.replyFeedback).toHaveBeenCalledWith("FB-AAAA-0001", "just text"));
   });
 });

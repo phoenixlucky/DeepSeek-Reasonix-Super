@@ -1,5 +1,5 @@
 import { MockTheme } from "./mock_theme";
-import type { BackupApplyResult, BackupCatalog, BackupCreated, BackupCreateRequest, BackupEntry, BackupPlan } from "./backup";
+import type { BackupApplyResult, BackupCatalog, BackupCategory, BackupCreated, BackupCreateRequest, BackupEntry, BackupFileCatalog, BackupFileExport, BackupPlan } from "./backup";
 
 const CATEGORIES: BackupCatalog["categories"] = [
   { id: "settings", defaultOn: true, consent: false },
@@ -44,6 +44,22 @@ export class MockBackup extends MockTheme {
   }
 
   async applyBackup(_planId: string, items: string[]): Promise<BackupApplyResult> {
+    return { applied: items };
+  }
+
+  async backupFileCatalog(): Promise<BackupFileCatalog> {
+    return { categories: CATEGORIES, minPassphrase: 10 };
+  }
+
+  async exportBackupFile(_categories: BackupCategory[], _passphrase: string): Promise<BackupFileExport> {
+    return { name: "reasonix-config-demo.rxcb", file: "UlhDQgAAAA==" };
+  }
+
+  async previewBackupFile(_file: string, _passphrase: string): Promise<BackupPlan> {
+    return this.previewBackup();
+  }
+
+  async applyBackupFile(_planId: string, items: string[], _consented: string[]): Promise<BackupApplyResult> {
     return { applied: items };
   }
 }

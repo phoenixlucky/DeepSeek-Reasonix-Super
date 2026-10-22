@@ -14,12 +14,17 @@ import (
 // Where the desktop re-declares the kernel's wire types by hand.
 const (
 	tsWireFile      = "desktop/frontend-next/src/port/wire.ts"
+	tsPortFile      = "desktop/frontend-next/src/port/port.ts"
+	tsLeaseFile     = "desktop/frontend-next/src/port/workspace_lease.ts"
 	tsBoundaryFile  = "desktop/frontend-next/src/port/boundary.ts"
 	tsRemoteFile    = "desktop/frontend-next/src/port/remote.ts"
 	tsSessionFile   = "desktop/frontend-next/src/port/session.ts"
+	tsSubagentFile  = "desktop/frontend-next/src/port/subagent.ts"
 	tsVersionFile   = "desktop/frontend-next/src/port/version.ts"
 	tsModelFile     = "desktop/frontend-next/src/port/model.ts"
 	tsMcpFile       = "desktop/frontend-next/src/port/mcp.ts"
+	tsScheduleFile  = "desktop/frontend-next/src/port/schedule.ts"
+	tsReplayFile    = "desktop/frontend-next/src/port/surface_replay.ts"
 	tsShellFile     = "desktop/frontend-next/src/port/shell.ts"
 	tsShareFile     = "desktop/frontend-next/src/port/share.ts"
 	tsProviderFile  = "desktop/frontend-next/src/port/provider.ts"
@@ -27,7 +32,10 @@ const (
 	tsWorkspaceFile = "desktop/frontend-next/src/port/workspace.ts"
 	tsLookFile      = "desktop/frontend-next/src/port/look.ts"
 	tsHubFile       = "desktop/frontend-next/src/port/hub.ts"
+	tsMuxFile       = "desktop/frontend-next/src/port/mux.ts"
+	tsPluginFile    = "desktop/frontend-next/src/port/plugin.ts"
 	tsChartFile     = "desktop/frontend-next/src/ui/chart/spec.ts"
+	tsSurfaceFile   = "desktop/frontend-next/src/ui/surface/spec.ts"
 )
 
 // mirroredWireTypes are the Go types the desktop keeps a second, hand-written
@@ -36,11 +44,41 @@ const (
 // wrong. Declared and not inferred, for the reason the sensitive paths are: no
 // spelling tells a mirrored contract from a struct with json tags.
 var mirroredWireTypes = []wireMirror{
+	{"internal/frontend/serve/workspace_files.go", "workspaceFile", tsWorkspaceFile, "WorkspaceFile"},
+	{"internal/base/workspacefile/file.go", "Ref", tsWorkspaceFile, "FileRef"},
+	{"internal/base/workspacefile/file.go", "Info", tsWorkspaceFile, "PreviewInfo"},
+	{"internal/contract/delivery/delivery.go", "File", tsWorkspaceFile, "DeliveredFile"},
+	{"internal/platform/worktree/source.go", "Source", tsWorkspaceFile, "WorktreeSource"},
+	{"internal/frontend/serve/workspace_source.go", "worktreeSourcesView", tsWorkspaceFile, "WorktreeSources"},
+	{"internal/frontend/serve/workspace_source.go", "worktreeSelection", tsWorkspaceFile, "WorktreeSelection"},
+	{"internal/session/control/workspace_preparation.go", "WorkspacePreparationStatus", tsWorkspaceFile, "WorktreePreparation"},
+	{"internal/contract/surfacespec/action_message.go", "Action", "desktop/frontend-next/src/port/surface.ts", "SurfaceAction"},
+	{"internal/session/control/surface_actions.go", "SurfaceActionRequest", "desktop/frontend-next/src/port/surface.ts", "SurfaceActionRequest"},
+	{"internal/session/control/surface_actions.go", "SurfaceActionRecord", "desktop/frontend-next/src/port/surface.ts", "SurfaceActionRecord"},
+	{"internal/contract/event/event.go", "AskAnswer", tsWireFile, "AskAnswer"},
+	{"internal/contract/eventwire/ask.go", "AskQuestion", tsWireFile, "AskQuestion"},
+	{"internal/contract/surfacespec/spec.go", "Spec", tsSurfaceFile, "SurfaceSpec"},
+	{"internal/contract/surfacespec/spec.go", "Node", tsWireFile, "ExtensionViewNode"},
+	{"internal/contract/surfacespec/spec.go", "Field", tsWireFile, "SurfaceField"},
+	{"internal/contract/surfacespec/spec.go", "Diff", tsWireFile, "SurfaceDiff"},
+	{"internal/contract/surfacespec/spec.go", "Option", tsWireFile, "SurfaceOption"},
+	{"internal/contract/surfacespec/image.go", "Image", "desktop/frontend-next/src/port/surface-rich.ts", "SurfaceImage"},
+	{"internal/contract/surfacespec/rich.go", "Location", "desktop/frontend-next/src/port/surface-rich.ts", "SurfaceLocation"},
+	{"internal/contract/surfacespec/rich.go", "Fact", "desktop/frontend-next/src/port/surface-rich.ts", "SurfaceFact"},
+	{"internal/contract/surfacespec/rich.go", "Dataset", "desktop/frontend-next/src/port/surface-rich.ts", "SurfaceDataset"},
+	{"internal/contract/surfacespec/rich.go", "Series", "desktop/frontend-next/src/port/surface-rich.ts", "SurfaceSeries"},
+
+	{"internal/contract/eventwire/extension.go", "ExtensionViewNode", tsWireFile, "ExtensionViewNode"},
+	{"internal/contract/eventwire/extension.go", "ExtensionSurface", tsWireFile, "ExtensionSurface"},
+	{"internal/frontend/serve/surface_history.go", "surfaceReplay", tsReplayFile, "ExtensionSurfaceReplay"},
 	{"internal/contract/event/notice_payload.go", "DormantPermissionRule", tsBoundaryFile, "DormantPermissionRule"},
 	{"internal/frontend/serve/branch.go", "workspaceBranchesView", tsWorkspaceFile, "WorkspaceBranches"},
 	{"internal/platform/gitstatus/branches.go", "Branch", tsWorkspaceFile, "WorkspaceBranch"},
 	{"internal/frontend/serve/changes.go", "workspaceGitView", tsWorkspaceFile, "WorkspaceGit"},
+	{"internal/frontend/serve/changes.go", "gitHistoryView", tsWorkspaceFile, "GitHistory"},
+	{"internal/platform/gitstatus/history.go", "Commit", tsWorkspaceFile, "GitCommit"},
 	{"internal/contract/eventwire/wire.go", "AskOrigin", tsWireFile, "AskOrigin"},
+	{"internal/session/control/goal_runtime_view.go", "GoalRuntimeView", tsSessionFile, "GoalRuntime"},
 	{"internal/contract/agentgraph/graph.go", "Node", tsWireFile, "GraphNode"},
 	{"internal/contract/agentgraph/graph.go", "Edge", tsWireFile, "GraphEdge"},
 	{"internal/contract/agentgraph/graph.go", "Delta", tsWireFile, "GraphDelta"},
@@ -65,6 +103,15 @@ var mirroredWireTypes = []wireMirror{
 	// The canonical task list, which the panel reads rather than derives. A
 	// status the page cannot read is a signed-off step drawn as the current one.
 	{"internal/frontend/serve/todos.go", "todoItem", tsSessionFile, "HostTodo"},
+	{"internal/frontend/serve/session_usage.go", "SessionUsage", tsSessionFile, "SessionUsage"},
+	{"internal/frontend/serve/jobs.go", "JobOutput", tsSessionFile, "JobOutput"},
+	{"internal/frontend/serve/history.go", "ToolOutputPage", tsSessionFile, "ToolOutputPage"},
+	// The background-job list. A name or full command the page cannot read is
+	// a task it can only call by its short preview.
+	{"internal/tools/jobs/jobs_view.go", "View", tsSessionFile, "JobEntry"},
+	{"internal/frontend/serve/subagents.go", "subagentRunView", tsSubagentFile, "SubagentRun"},
+	{"internal/frontend/serve/subagents.go", "subagentTranscriptView", tsSubagentFile, "SubagentTranscript"},
+	{"internal/frontend/serve/session_usage.go", "SourceUsage", tsSessionFile, "SourceUsage"},
 	// The agent's tabs. The target id is what the window draws a view by, so a
 	// tab the page cannot read one for is a tab it cannot show.
 	{"internal/platform/browser/session.go", "TabInfo", tsSessionFile, "BrowserTab"},
@@ -86,6 +133,22 @@ var mirroredWireTypes = []wireMirror{
 	{"internal/session/control/boundary.go", "SandboxSettings", tsBoundaryFile, "SandboxSettings"},
 	{"internal/frontend/serve/workspace_roots.go", "workspaceRootsView", tsBoundaryFile, "WorkspaceRoots"},
 	{"internal/session/control/browser_settings.go", "BrowserToolsSettings", tsBoundaryFile, "BrowserToolsSettings"},
+	{"internal/session/control/subagent_claims.go", "SubagentClaimsSettings", tsBoundaryFile, "SubagentClaimsSettings"},
+	{"internal/session/control/write_lease_settings.go", "WriteLeaseSettings", tsBoundaryFile, "WriteLeaseSettings"},
+	{"internal/session/control/plan_approval_settings.go", "PlanApprovalSettings", tsBoundaryFile, "PlanApprovalSettings"},
+	{"internal/session/control/default_mode_settings.go", "DefaultModeSettings", tsBoundaryFile, "DefaultModeSettings"},
+	{"internal/session/control/tool_settings.go", "ToolSettings", tsBoundaryFile, "ToolSettings"},
+	{"internal/session/control/tool_settings.go", "ToolSetting", tsBoundaryFile, "ToolSetting"},
+	{"internal/session/control/peer_settings.go", "PeersSettings", tsBoundaryFile, "PeersSettings"},
+	{"internal/session/control/peer_settings.go", "PeerReleased", tsBoundaryFile, "PeerProject"},
+	{"internal/session/control/mods.go", "ModStatus", tsBoundaryFile, "ModStatus"},
+	{"internal/session/control/mods.go", "ModRuntime", tsBoundaryFile, "ModRuntime"},
+	{"internal/session/control/mods.go", "ModsSettings", tsBoundaryFile, "ModsSettings"},
+	{"internal/ext/modpreview/types.go", "Preview", tsPluginFile, "ModPreview"},
+	{"internal/ext/modpreview/types.go", "Event", tsPluginFile, "ModPreviewEvent"},
+	{"internal/ext/modpreview/types.go", "Call", tsPluginFile, "ModPreviewCall"},
+	{"internal/ext/modpreview/types.go", "Import", tsPluginFile, "ModPreviewImport"},
+	{"internal/ext/modpreview/types.go", "Finding", tsPluginFile, "ModPreviewFinding"},
 	// The MCP row: a status the host answered with and the page cannot read is a
 	// row that goes back to reading the server's own prose for it.
 	{"internal/frontend/serve/catalog.go", "mcpEntry", tsMcpFile, "McpEntry"},
@@ -105,6 +168,9 @@ var mirroredWireTypes = []wireMirror{
 	// bound fires draws a fold point at 16% of the declared window with nothing
 	// on the screen that explains it, which is what it read as.
 	{"internal/frontend/serve/context_window.go", "contextView", tsShellFile, "ContextBreakdown"},
+	// The holders a class can be opened to; a field the panel cannot read is a
+	// heavy class it cannot explain.
+	{"internal/runtime/agent/context_breakdown.go", "ContextHolder", tsShellFile, "ContextHolder"},
 	// What sent one fold. Without the boundary and its size the card falls back
 	// to "a threshold was reached", and the reader supplies their own reason.
 	{"internal/contract/eventwire/wire.go", "Compaction", tsWireFile, "Compaction"},
@@ -117,22 +183,42 @@ var mirroredWireTypes = []wireMirror{
 	{"internal/session/control/display_currency.go", "DisplayCurrencySettings", tsBoundaryFile, "DisplayCurrencySettings"},
 	{"internal/session/control/progress_watch_settings.go", "ProgressWatchSettings", tsBoundaryFile, "ProgressWatchSettings"},
 	{"internal/session/control/changed_files_settings.go", "ChangedFilesSettings", tsBoundaryFile, "ChangedFilesSettings"},
+	{"internal/session/control/observability_settings.go", "ObservabilitySettings", tsBoundaryFile, "ObservabilitySettings"},
+	{"internal/session/control/schedules.go", "ScheduleDraft", tsScheduleFile, "ScheduleDraft"},
+	{"internal/session/control/schedules.go", "ScheduleView", tsScheduleFile, "ScheduleView"},
+	{"internal/session/control/schedules.go", "ScheduleRunView", tsScheduleFile, "ScheduleRunView"},
+	{"internal/session/control/schedules.go", "SchedulePolicyView", tsScheduleFile, "SchedulePolicyView"},
+	{"internal/session/control/schedules.go", "ScheduleBoard", tsScheduleFile, "ScheduleBoard"},
+	{"internal/session/control/schedules.go", "ScheduleFolder", tsScheduleFile, "ScheduleFolder"},
+	{"internal/session/control/schedules.go", "SchedulePreview", tsScheduleFile, "SchedulePreview"},
+	{"internal/session/control/schedules.go", "SchedulePendingView", tsScheduleFile, "SchedulePendingView"},
+	{"internal/session/control/schedules.go", "ScheduleResultView", tsScheduleFile, "ScheduleResultView"},
 	{"internal/session/control/fold_work_settings.go", "FoldWorkSettings", tsBoundaryFile, "FoldWorkSettings"},
 	{"internal/session/control/ask_timeout.go", "AskTimeoutSettings", tsBoundaryFile, "AskTimeoutSettings"},
+	{"internal/session/control/session_ref_settings.go", "SessionRefSettings", tsBoundaryFile, "SessionRefSettings"},
 	{"internal/session/control/auto_archive.go", "AutoArchiveSettings", tsBoundaryFile, "AutoArchiveSettings"},
 	{"internal/session/control/receipt_settings.go", "ReceiptSettings", tsBoundaryFile, "ReceiptSettings"},
+	{"internal/frontend/serve/notifications.go", "NotifyPrefs", tsPortFile, "NotifyPrefs"},
+	{"internal/frontend/serve/notifications.go", "PhoneNotifyPrefs", tsPortFile, "PhoneNotifyPrefs"},
+	{"internal/frontend/serve/share_phones.go", "PhoneView", tsShareFile, "PhoneView"},
+	{"internal/frontend/serve/share_phones.go", "PhoneList", tsShareFile, "PhoneList"},
 	// RemoteHostEdit is left out on purpose: the kernel still takes the single
 	// `workspace` an old row was saved with, which the page deliberately does
 	// not send. An under-filled request is not a picture that cannot be read.
 	{"internal/frontend/serve/hub_remote.go", "RemoteHostView", tsRemoteFile, "RemoteHost"},
 	{"internal/frontend/serve/remote_browse.go", "RemoteListing", tsRemoteFile, "RemoteListing"},
 	{"internal/frontend/serve/remote_browse.go", "RemoteFolder", tsRemoteFile, "RemoteFolder"},
+	{"internal/frontend/serve/remote_book.go", "WSLDistros", tsRemoteFile, "WSLDistros"},
+	{"internal/frontend/serve/remote_book.go", "WSLDistro", tsRemoteFile, "WSLDistro"},
 	// The sidebar row. The unread mark is derived by the kernel from two stored
 	// timestamps; a row the page cannot read it from shows a finished turn as seen.
-	{"internal/frontend/serve/hub_tree.go", "treeSession", tsHubFile, "TreeSession"},
+	{"internal/frontend/serve/hub_mux.go", "muxOpened", tsMuxFile, "MuxOpened"},
+	{"internal/frontend/serve/hub_mux.go", "muxAttachRequest", tsMuxFile, "MuxAttachRequest"},
+	{"internal/frontend/serve/hub_mux.go", "muxEnvelopeView", tsMuxFile, "MuxEnvelope"},
+	{"internal/frontend/serve/hub_tree_types.go", "treeSession", tsHubFile, "TreeSession"},
 	// The folder's true size beside the rows loaded. A window that cannot read
 	// the total labels a truncated list as the whole history.
-	{"internal/frontend/serve/hub_tree.go", "treeWorkspace", tsHubFile, "TreeWorkspace"},
+	{"internal/frontend/serve/hub_tree_types.go", "treeWorkspace", tsHubFile, "TreeWorkspace"},
 	// A session the import left in place. The reason code is what the window
 	// words the explanation from; a code it cannot read is a skipped session
 	// reported as nothing more than a count.
@@ -164,7 +250,7 @@ var mirroredWireTypes = []wireMirror{
 	{"internal/state/checkpoint/types.go", "RewindResult", tsSessionFile, "RewindResult"},
 	{"internal/state/checkpoint/types.go", "RewindUndo", tsSessionFile, "RewindUndo"},
 	{"internal/contract/eventwire/wire.go", "ShellExecution", tsWireFile, "Execution"},
-	{"internal/contract/eventwire/workspace_lease.go", "WorkspaceLease", tsWireFile, "WorkspaceLease"},
+	{"internal/contract/eventwire/workspace_lease.go", "WorkspaceLease", tsLeaseFile, "WorkspaceLease"},
 	// A source and a model as the pickers name them. A label the page cannot
 	// read puts the config name back on screen after the user renamed it.
 	{"internal/frontend/serve/providers.go", "providerView", tsProviderFile, "ProviderEntry"},
@@ -174,18 +260,25 @@ var mirroredWireTypes = []wireMirror{
 	{"internal/frontend/serve/providers.go", "providerRemovalView", tsProviderFile, "ProviderRemoval"},
 	{"internal/frontend/serve/provider_check.go", "providerModelCheck", tsProviderFile, "ProviderModelCheck"},
 	{"internal/frontend/serve/settings.go", "modelEntry", tsModelFile, "ModelEntry"},
+	{"internal/frontend/serve/roles.go", "rolesResponse", tsModelFile, "RoleAssignments"},
 	// A per-profile entry that outranks a role's global model. A scope the page
 	// cannot read offers a clear the kernel will refuse.
 	{"internal/frontend/serve/roles.go", "roleOverride", tsModelFile, "RoleOverride"},
 	// The report form draws what the kernel will send and reads back what
 	// became of it; a field the page cannot read is a status it cannot show.
 	{"internal/platform/feedback/types.go", "Env", tsFeedbackFile, "FeedbackEnvInfo"},
+	{"internal/platform/feedback/env_memory.go", "ProcessMemory", tsFeedbackFile, "FeedbackProcessMemory"},
 	{"internal/platform/feedback/types.go", "Limits", tsFeedbackFile, "FeedbackLimits"},
 	{"internal/platform/feedback/types.go", "Receipt", tsFeedbackFile, "FeedbackReceipt"},
 	{"internal/platform/feedback/types.go", "Item", tsFeedbackFile, "FeedbackItem"},
 	{"internal/platform/feedback/types.go", "Reply", tsFeedbackFile, "FeedbackReply"},
 	{"internal/platform/feedback/types.go", "ReplyReceipt", tsFeedbackFile, "FeedbackReplyReceipt"},
 	{"internal/platform/feedback/types.go", "Mine", tsFeedbackFile, "FeedbackMine"},
+	{"internal/platform/feedback/types.go", "Promotion", tsFeedbackFile, "FeedbackPromotion"},
+	{"internal/platform/feedback/board.go", "Board", tsFeedbackFile, "FeedbackBoard"},
+	{"internal/platform/feedback/board.go", "BoardEntry", tsFeedbackFile, "FeedbackBoardEntry"},
+	{"internal/platform/feedback/board.go", "BoardRelease", tsFeedbackFile, "FeedbackBoardRelease"},
+	{"internal/platform/feedback/board.go", "BoardMe", tsFeedbackFile, "FeedbackBoardMe"},
 	{"internal/platform/feedback/types.go", "Profile", tsFeedbackFile, "FeedbackProfile"},
 	{"internal/platform/feedback/types.go", "EffectiveLimits", tsFeedbackFile, "FeedbackEffectiveLimits"},
 	{"internal/frontend/serve/feedback.go", "feedbackEnvView", tsFeedbackFile, "FeedbackEnv"},
@@ -197,7 +290,16 @@ var mirroredWireTypes = []wireMirror{
 	{"internal/session/control/commit.go", "CommitProposal", tsWorkspaceFile, "CommitProposal"},
 	{"internal/session/control/commit.go", "CommitRequest", tsWorkspaceFile, "CommitRequest"},
 	{"internal/session/control/commit.go", "CommitResult", tsWorkspaceFile, "CommitResult"},
+	{"internal/session/control/commit.go", "StageRequest", tsWorkspaceFile, "StageRequest"},
 	{"internal/platform/gitcommit/gitcommit.go", "File", tsWorkspaceFile, "CommitFile"},
+	{"internal/session/control/discard.go", "DiscardRequest", tsWorkspaceFile, "DiscardRequest"},
+	{"internal/session/control/git_push.go", "PushRequest", tsWorkspaceFile, "PushRequest"},
+	{"internal/platform/gitpush/plan.go", "Plan", tsWorkspaceFile, "PushPlan"},
+	{"internal/platform/gitpush/push.go", "Result", tsWorkspaceFile, "PushResult"},
+	{"internal/frontend/serve/changes.go", "gitRepoRow", tsWorkspaceFile, "GitRepoRow"},
+	{"internal/frontend/serve/changes.go", "gitReposView", tsWorkspaceFile, "GitRepos"},
+	{"internal/platform/gitstatus/commitdetail.go", "CommitFile", tsWorkspaceFile, "GitCommitFile"},
+	{"internal/frontend/serve/git_commit_detail.go", "commitFilesView", tsWorkspaceFile, "GitCommitFiles"},
 	// The scale range the slider is drawn from: a bound the page cannot read
 	// would leave it a range of its own.
 	{"internal/frontend/serve/appearance.go", "zoomRangeView", tsLookFile, "ZoomRange"},
@@ -208,12 +310,13 @@ var mirroredWireTypes = []wireMirror{
 	{"internal/contract/chartspec/spec.go", "Column", tsChartFile, "ChartColumn"},
 	{"internal/contract/chartspec/spec.go", "Mark", tsChartFile, "ChartMark"},
 	{"internal/contract/chartspec/spec.go", "Axis", tsChartFile, "ChartAxis"},
-	// The theme a person is looking at and the picture they put behind it: the
-	// pack listing, its two shape blocks, the import receipt, and the reader's
-	// own size and wallpaper. A field one side cannot read is drawn as absent.
+	// The theme a person is looking at and the picture behind it: the pack
+	// listing with its shape blocks and recipes, the import receipt, and the
+	// reader's own size and wallpaper. A field one side cannot read is absent.
 	{"internal/frontend/serve/themes.go", "themeView", tsLookFile, "ThemePack"},
 	{"internal/ext/theme/theme.go", "Background", tsLookFile, "ThemeBackground"},
 	{"internal/ext/theme/theme.go", "Sky", tsLookFile, "ThemeSky"},
+	{"internal/ext/theme/theme.go", "Recipes", tsLookFile, "ThemeRecipes"},
 	{"internal/ext/theme/install.go", "Installed", tsLookFile, "ThemeImport"},
 	{"internal/frontend/serve/appearance.go", "appearanceView", tsLookFile, "Appearance"},
 	{"internal/frontend/serve/appearance.go", "wallpaperView", tsLookFile, "Wallpaper"},

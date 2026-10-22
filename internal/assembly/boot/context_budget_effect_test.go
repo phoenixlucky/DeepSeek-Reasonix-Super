@@ -35,7 +35,7 @@ func (p *budgetEffectProvider) Stream(_ context.Context, req provider.Request) (
 	p.mu.Unlock()
 	ch := make(chan provider.Chunk, 2)
 	defer close(ch)
-	if len(req.Messages) > 0 && strings.Contains(req.Messages[0].Content, "compacting the earlier part") {
+	if req.Summary {
 		ch <- provider.Chunk{Type: provider.ChunkText, Text: "## Standing facts\n- none recorded"}
 		ch <- provider.Chunk{Type: provider.ChunkDone}
 		return ch, nil
@@ -76,7 +76,7 @@ func (p *budgetEffectProvider) requests() []provider.Request {
 }
 
 func isSummaryRequest(req provider.Request) bool {
-	return len(req.Messages) > 0 && strings.Contains(req.Messages[0].Content, "compacting the earlier part")
+	return req.Summary
 }
 
 func countBudgetBlocks(req provider.Request) int {

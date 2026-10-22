@@ -4,14 +4,20 @@ import (
 	"path/filepath"
 	"strings"
 
+	"reasonix/internal/contract/config"
+	"reasonix/internal/platform/worktree"
 	"reasonix/internal/state/sessionstore"
 	"reasonix/internal/state/store"
 )
 
 // sessionPage is the newest rows of one folder plus the counts of the whole.
 type sessionPage struct {
+	Status                     *sessionstore.ListingStatus
 	Sessions                   []treeSession
 	Total, Archived, Remaining int
+	// Said is whether any conversation here has had a turn, or a first turn is
+	// in flight: what separates a folder with history from one only opened.
+	Said bool
 }
 
 // workspacePage lists one folder's conversations, hiding what the pickers
@@ -19,16 +25,29 @@ type sessionPage struct {
 // open stays, because something is driving it. limit bounds the rows built (0
 // is all of them); the counts always cover every row the folder lists.
 func (h *Hub) workspacePage(root, name string, open map[string]string, window treeWindow, limit int) sessionPage {
-	dir := SessionDirFor(root)
-	listed, err := sessionstore.ListSessions(dir)
-	if err != nil {
-		return sessionPage{Sessions: []treeSession{}}
+	return h.projectPage([]string{root}, name, open, window, limit)
+}
+
+func (h *Hub) projectPage(roots []string, name string, open map[string]string, window treeWindow, limit int) sessionPage {
+	status := listingStatusFor(window.progressive)
+	listed := []sessionstore.SessionInfo{}
+	titlesByDir := map[string]titleSnapshot{}
+	byDir := map[string]map[string]sessionstore.SessionInfo{}
+	for _, root := range roots {
+		dir := SessionDirFor(root)
+		if _, seen := byDir[dir]; seen {
+			continue
+		}
+		infos := h.listTreeSessions(dir, status, window.retryMetadata)
+		listed = append(listed, infos...)
+		titlesByDir[dir] = h.titleCacheFor(dir).snapshot()
+		byDir[dir] = make(map[string]sessionstore.SessionInfo, len(infos))
+		for _, si := range infos {
+			byDir[dir][sessionstore.BranchID(si.Path)] = si
+		}
 	}
-	titles := h.titleCacheFor(dir)
-	byID := make(map[string]sessionstore.SessionInfo, len(listed))
-	for _, si := range listed {
-		byID[sessionstore.BranchID(si.Path)] = si
-	}
+	sortSessions(listed)
+	heldBy := openLookup(open)
 	out := make([]treeSession, 0, min(len(listed), max(limit, 0)))
 	var total, archived, remaining, windowed int
 	workspaceNamed := window.query != "" && strings.Contains(strings.ToLower(name), window.query)
@@ -37,11 +56,14 @@ func (h *Hub) workspacePage(root, name string, open map[string]string, window tr
 	// is the one still being written.
 	lead := map[string]int{}
 	for _, si := range listed {
+		dir := filepath.Dir(si.Path)
+		byID, titles := byDir[dir], titlesByDir[dir]
+		lineage := dir + "\x00" + recoveryLineageRoot(si, byID)
 		base := filepath.Base(si.Path)
 		if store.IsSubagentTranscriptName(base) {
 			continue
 		}
-		runtimeID := open[sessionstore.CanonicalSessionPath(si.Path)]
+		runtimeID := heldBy(si.Path)
 		if runtimeID == "" && hiddenRecoveryCopy(si, "") {
 			continue
 		}
@@ -50,7 +72,7 @@ func (h *Hub) workspacePage(root, name string, open map[string]string, window tr
 		// the conversation someone is looking at.
 		folds := si.Recovered && runtimeID == ""
 		if folds {
-			if at, ok := lead[recoveryLineageRoot(si, byID)]; ok {
+			if at, ok := lead[lineage]; ok {
 				if at >= 0 {
 					out[at].Copies = append(out[at].Copies, treeSession{Path: si.Path, Name: name, Turns: si.Turns})
 				}
@@ -67,44 +89,88 @@ func (h *Hub) workspacePage(root, name string, open map[string]string, window tr
 		if inWindow {
 			windowed++
 		}
-		if !inWindow && !(si.Pinned && !si.Archived) {
+		if !inWindow && runtimeID == "" && !(si.Pinned && !si.Archived) {
 			if matches {
 				remaining++
 			}
 			if folds {
-				lead[recoveryLineageRoot(si, byID)] = -1
+				lead[lineage] = -1
 			}
 			continue
 		}
 		title := titleOf()
 		if folds {
-			lead[recoveryLineageRoot(si, byID)] = len(out)
+			lead[lineage] = len(out)
 		}
-		out = append(out, treeSession{
-			Path: si.Path, Name: name, Title: title, Turns: si.Turns, RuntimeID: runtimeID, Archived: si.Archived, Unread: si.Unread,
-		})
+		row := treeSession{
+			Path: si.Path, Name: name, Title: title, Turns: si.Turns, RuntimeID: runtimeID, Archived: si.Archived, Unread: si.Unread, ViewedAt: unreadSinceMs(si), LastActiveAt: activeAtMs(si), Legacy: sessionstore.IsForeignSessionLog(si.Path),
+		}
+		if window.progressive {
+			known := si.CountsKnown
+			row.CountsKnown, row.MetadataState = &known, si.MetadataState
+		}
+		out = append(out, row)
 		decorateArchiveState(&out[len(out)-1], si.Path)
 	}
-	attachVersions(dir, out, h.openSessionsIn(root))
-	unlisted := h.unlistedOpenSessions(root, out)
+	unlisted := []treeSession{}
+	for _, root := range roots {
+		attachVersions(SessionDirFor(root), out, h.openSessionsIn(root))
+		unlisted = append(unlisted, h.unlistedOpenSessions(root, out, listed)...)
+	}
 	// Never nil: the frontend iterates rows, and a null blanks the window.
 	rows := append(append([]treeSession{}, unlisted...), out...)
-	return sessionPage{Sessions: rows, Total: total + len(unlisted), Archived: archived, Remaining: remaining}
+	for _, root := range roots {
+		decorateWorkingDirectory(rows, root)
+	}
+	said := len(unlisted) > 0
+	for _, si := range listed {
+		said = said || si.Turns > 0
+	}
+	if window.progressive {
+		h.prioritizeTreeRows(byDir, rows)
+	}
+	return sessionPage{Sessions: rows, Total: total + len(unlisted), Archived: archived, Remaining: remaining, Said: said, Status: status}
+}
+
+func decorateWorkingDirectory(rows []treeSession, root string) {
+	dir := SessionDirFor(root)
+	for i := range rows {
+		if filepath.Dir(rows[i].Path) == dir {
+			rows[i].WorkspaceRoot = root
+			rows[i].Isolated = worktree.IsManagedPath(root, config.DeliveryWorktreeDir())
+		}
+		decorateWorkingDirectory(rows[i].Copies, root)
+		decorateWorkingDirectory(rows[i].Versions, root)
+	}
+}
+
+// openLookup answers which pane holds a listed path. Canonicalising a path costs
+// a stat per ancestor, so it is only paid for a file name some pane holds; on a
+// folder of thousands of conversations that is the difference between one
+// request and a second of disk.
+func openLookup(open map[string]string) func(path string) string {
+	names := make(map[string]bool, len(open))
+	for held := range open {
+		names[strings.ToLower(filepath.Base(held))] = true
+	}
+	return func(path string) string {
+		if !names[strings.ToLower(filepath.Base(path))] {
+			return ""
+		}
+		return open[sessionstore.CanonicalSessionPath(path)]
+	}
 }
 
 // rowTitle reads a row's title once, on first use: a name the user typed
 // outranks the generated one, and without that a rename would be written to the
 // sidecar and never show up.
-func rowTitle(titles *titleCache, si sessionstore.SessionInfo, name string) func() string {
+func rowTitle(titles titleSnapshot, si sessionstore.SessionInfo, name string) func() string {
 	var title string
 	done := false
 	return func() string {
 		if !done {
 			done = true
-			title = strings.TrimSpace(si.CustomTitle)
-			if title == "" {
-				title, _ = titles.get(name+".jsonl", titleSource(si.Preview), sessionstore.SessionContentModTime(si.Path).UnixNano())
-			}
+			title = titles.display(name+".jsonl", titleSource(si.Preview), sessionstore.SessionContentModTime(si.Path).UnixNano(), si.CustomTitle)
 			if title == "" {
 				title = previewTitle(si.Preview)
 			}
@@ -128,4 +194,18 @@ func (w treeWindow) matchesRow(si sessionstore.SessionInfo, title func() string,
 		label = name
 	}
 	return strings.Contains(strings.ToLower(label), w.query)
+}
+
+func unreadSinceMs(si sessionstore.SessionInfo) int64 {
+	if !si.Unread || si.ViewedAt.IsZero() {
+		return 0
+	}
+	return si.ViewedAt.UnixMilli()
+}
+
+func activeAtMs(si sessionstore.SessionInfo) int64 {
+	if si.LastActivityAt.IsZero() {
+		return 0
+	}
+	return si.LastActivityAt.UnixMilli()
 }

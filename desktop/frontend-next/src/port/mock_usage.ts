@@ -46,6 +46,7 @@ export function mockUsage(query: number | UsageQuery): UsageReport {
       requests: Math.round(total / 20_000), turns: Math.round(total / 150_000),
       cacheHit: Math.round(total * 0.92), cacheMiss: Math.round(total * 0.08),
       cost: amount ? [{ amount, currency: "CNY" }] : undefined,
+      estimateCost: i >= count - 2 && total > 0 ? [{ amount: i === count - 1 ? "2.8" : "3.5", currency: "CNY" }] : undefined,
     };
   });
   const tokens = daily.reduce((a, d) => a + d.total, 0);
@@ -56,6 +57,7 @@ export function mockUsage(query: number | UsageQuery): UsageReport {
     cache_hit: daily.reduce((a, d) => a + d.cacheHit, 0),
     cache_miss: daily.reduce((a, d) => a + d.cacheMiss, 0),
     cost: [{ amount: "10.4882", currency: "CNY" }],
+    estimateCost: daily.some((d) => d.estimateCost) ? [{ amount: "6.3", currency: "CNY" }] : undefined,
     active_days: daily.filter((d) => d.total > 0).length,
     top_model: "deepseek/deepseek-flash", top_provider: "deepseek",
     daily,

@@ -8,6 +8,11 @@ export type RemoteStatus = "idle" | "connecting" | "connected" | "reconnecting" 
 // row drawn from configuration alone is complete and simply idle.
 export interface RemoteHost {
   name: string;
+  // How the machine is reached: absent or "ssh", or "wsl" for a distribution on
+  // this Windows machine, named by distro. The address fields below are an
+  // SSH host's and are empty for a WSL one.
+  kind?: string;
+  distro?: string;
   // How the user would type it for ssh, so a row is recognisable without
   // opening it: user@host, and a port only when it is not the assumed one.
   target: string;
@@ -72,6 +77,8 @@ export const REMOTE_STEP_LABEL: Record<string, string> = {
 // a provider's key takes — so nothing here is a password in transit.
 export interface RemoteHostEdit {
   name: string;
+  kind?: string;
+  distro?: string;
   host?: string;
   port?: number;
   user?: string;
@@ -107,6 +114,8 @@ export interface RemoteListing {
   parent?: string;
   folders: RemoteFolder[];
   truncated?: boolean;
+  // The folder exists but the machine would not list it; it can still be chosen.
+  unlisted?: boolean;
 }
 
 // A question the link layer stopped for. Three identities: the kernel lifetime
@@ -149,4 +158,18 @@ export interface RemoteProbe {
   npm?: string;
   ready: boolean;
   routes: RemoteRoute[];
+}
+
+// One WSL distribution this machine has, and whether it is the default one.
+export interface WSLDistro {
+  name: string;
+  version: number;
+  default?: boolean;
+}
+
+// What this machine has. Not available means there is no WSL to ask, so the
+// page offers no WSL choice at all.
+export interface WSLDistros {
+  available: boolean;
+  distros: WSLDistro[];
 }

@@ -55,13 +55,11 @@ func TestUnavailableMessageIsActionable(t *testing.T) {
 		"Settings -> Sandbox",
 	}
 	if runtime.GOOS == "windows" {
-		// Windows ships no OS-level Bash backend and the effective mode is
-		// fixed to off, so the remediation states that fact instead of
-		// pointing at a config edit the platform would ignore.
+		// Windows enforces only on windows_integrity, so the remediation names
+		// that key rather than a bash setting the platform would ignore.
 		want = []string{
 			"refusing to run unconfined",
-			"OS-level Bash sandbox",
-			`fixed to "off"`,
+			"windows_integrity",
 		}
 	}
 	for _, w := range want {
@@ -279,7 +277,7 @@ func TestCommandNonDarwin(t *testing.T) {
 	}
 	spec := Spec{Mode: "enforce", WriteRoots: []string{"/tmp"}}
 	cmd, wrapped := Command(spec, Shell{Kind: ShellBash, Path: "sh"}, "echo hi")
-	if Available() {
+	if AvailableFor(spec) {
 		if !wrapped || cmd[0] == "sh" {
 			t.Fatalf("non-darwin enforce with available sandbox should wrap: %v wrapped=%v", cmd, wrapped)
 		}

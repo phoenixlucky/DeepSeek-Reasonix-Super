@@ -15,9 +15,7 @@ import (
 
 func TestBashHereDocIssue5624CommandsReturnPromptly(t *testing.T) {
 	sh := requireHereDocBash(t)
-	prevBashShellPATH := bashShellPATH
-	bashShellPATH = func(context.Context) string { return "" }
-	t.Cleanup(func() { bashShellPATH = prevBashShellPATH })
+	testenv.FakeLoginShell(t, "")
 
 	root := testenv.TempDir(t)
 	if err := os.MkdirAll(filepath.Join(root, "app", "platform", "github"), 0o755); err != nil {

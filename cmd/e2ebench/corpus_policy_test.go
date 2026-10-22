@@ -122,6 +122,14 @@ func corpusPolicies() []corpusPolicy {
 				ruleStopPolicy:   {Mode: ruleEnforce},
 			},
 		},
+		{
+			Dir: realRepoDir,
+			Rules: map[authoringRule]ruleDecision{
+				rulePristineSeed: {Mode: ruleEnforce},
+				ruleReference:    {Mode: ruleEnforce},
+				ruleStopPolicy:   {Mode: ruleEnforce},
+			},
+		},
 	}
 }
 
@@ -298,9 +306,9 @@ func TestCorpusPolicyEnforcementSets(t *testing.T) {
 		want   int
 		exempt []string
 	}{
-		{rulePristineSeed, 7, nil},
-		{ruleReference, 6, []string{memorybenchDir}},
-		{ruleStopPolicy, 7, nil},
+		{rulePristineSeed, 8, nil},
+		{ruleReference, 7, []string{memorybenchDir}},
+		{ruleStopPolicy, 8, nil},
 	} {
 		running := policiesRunning(policies, c.rule)
 		if len(running) != c.want {

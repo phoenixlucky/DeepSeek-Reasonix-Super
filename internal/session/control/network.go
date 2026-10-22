@@ -76,7 +76,7 @@ func (c *Controller) SaveNetworkSettings(in NetworkSettings, password string, cl
 		cfg.Network.Proxy.Password = password
 	}
 	if err := netclient.Validate(cfg.NetworkProxySpec()); err != nil {
-		return fmt.Errorf("这个代理设置用不了：%w", err)
+		return err
 	}
 	return cfg.SaveTo(config.UserConfigPath())
 }
@@ -92,12 +92,12 @@ type NetworkProbe = netclient.Probe
 func (c *Controller) DiagnoseNetwork(ctx context.Context) []NetworkProbe {
 	cfg, err := config.Load()
 	if err != nil {
-		return []NetworkProbe{{Step: "proxy", Detail: "读不到配置：" + err.Error()}}
+		return []NetworkProbe{{Step: "proxy", Detail: "读不到配置：" + err.Error(), Code: "net.config.unreadable", Params: map[string]any{"error": err.Error()}}}
 	}
 	spec := cfg.NetworkProxySpec()
 	endpoint := c.providerEndpoint(cfg)
 	if endpoint == "" {
-		return []NetworkProbe{{Step: "proxy", Detail: "没有配置 provider，没有可以测的目标"}}
+		return []NetworkProbe{{Step: "proxy", Detail: "没有配置 provider，没有可以测的目标", Code: "net.no_provider"}}
 	}
 	probes := netclient.Diagnose(ctx, spec, endpoint)
 	if len(probes) == 0 || !probes[len(probes)-1].OK {
@@ -114,13 +114,13 @@ func (c *Controller) probeProviderAuth(ctx context.Context, cfg *config.Config, 
 	probe := NetworkProbe{Step: "auth"}
 	entry, ok := cfg.ResolveModel(c.ModelRef())
 	if !ok {
-		probe.Detail = "没有可用的模型配置"
+		probe.Detail, probe.Code = "没有可用的模型配置", "net.auth.no_model"
 		return probe
 	}
 	key := strings.TrimSpace(entry.APIKey())
 	if key == "" {
-		probe.Detail = "没有找到 API key"
-		probe.Advice = "网络这一侧是通的，缺的是 key —— 去「模型」那页填"
+		probe.Detail, probe.Code = "没有找到 API key", "net.auth.no_key"
+		probe.Advice, probe.AdviceCode = "网络这一侧是通的，缺的是 key —— 去「模型」那页填", "net.auth.no_key_advice"
 		probe.DurationMs = time.Since(started).Milliseconds()
 		return probe
 	}
@@ -145,16 +145,16 @@ func (c *Controller) probeProviderAuth(ctx context.Context, cfg *config.Config, 
 	defer func() { _ = resp.Body.Close() }()
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		probe.Detail = fmt.Sprintf("key 被拒了 — HTTP %d", resp.StatusCode)
-		probe.Advice = "网络通了，是 key 的问题，去「模型」那页换一个"
+		probe.Detail, probe.Code, probe.Params = fmt.Sprintf("key 被拒了 — HTTP %d", resp.StatusCode), "net.auth.rejected", map[string]any{"status": resp.StatusCode}
+		probe.Advice, probe.AdviceCode = "网络通了，是 key 的问题，去「模型」那页换一个", "net.auth.rejected_advice"
 	case resp.StatusCode >= 500:
-		probe.Detail = fmt.Sprintf("对面出错了 — HTTP %d", resp.StatusCode)
-		probe.Advice = "不是你的配置问题，是服务端；过一会儿再试"
+		probe.Detail, probe.Code, probe.Params = fmt.Sprintf("对面出错了 — HTTP %d", resp.StatusCode), "net.auth.server_error", map[string]any{"status": resp.StatusCode}
+		probe.Advice, probe.AdviceCode = "不是你的配置问题，是服务端；过一会儿再试", "net.auth.server_error_advice"
 	default:
 		// Some endpoints answer 404 to /models and still work; the credential was
 		// accepted either way, which is what this step is asking.
 		probe.OK = true
-		probe.Detail = fmt.Sprintf("key 可用 — HTTP %d", resp.StatusCode)
+		probe.Detail, probe.Code, probe.Params = fmt.Sprintf("key 可用 — HTTP %d", resp.StatusCode), "net.auth.ok", map[string]any{"status": resp.StatusCode}
 	}
 	return probe
 }

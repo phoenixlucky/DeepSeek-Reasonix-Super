@@ -13,6 +13,10 @@ const ICO_SIZES = [16, 20, 24, 32, 40, 48, 64, 256];
 const TRAY_SCALES = [[1, ""], [1.25, "@1.25x"], [1.5, "@1.5x"], [1.75, "@1.75x"], [2, "@2x"], [2.5, "@2.5x"], [3, "@3x"]];
 // The app icon's margin is the platform's to keep; a tray slot has none to spare.
 const TRAY_VIEWBOX = 'viewBox="103 103 818 818"';
+// macOS tints a template image itself, so the menu-bar glyph is the mark alone,
+// black on transparent, framed square around it with a one-pixel margin at 18px.
+const TEMPLATE_VIEWBOX = 'viewBox="277 277 470 470"';
+const TEMPLATE_SCALES = [[18, ""], [36, "@2x"]];
 // Windows draws the .ico edge to edge beside neighbours that fill their cell, so
 // its tile is cropped to a 2% margin and the glyph enlarged within it; macOS and
 // Linux keep the full-canvas artwork the platform templates expect.
@@ -78,6 +82,13 @@ async function main() {
     const traySvg = svg.replace('viewBox="0 0 1024 1024"', TRAY_VIEWBOX);
     for (const [scale, suffix] of TRAY_SCALES) {
       fs.writeFileSync(path.join(ASSETS, `tray${suffix}.png`), await render(page, traySvg, 16 * scale));
+    }
+    const markSvg = svg
+      .replace(/<rect [^>]*\/>\s*/g, "")
+      .replace('fill="url(#gold)"', 'fill="#000"')
+      .replace('viewBox="0 0 1024 1024"', TEMPLATE_VIEWBOX);
+    for (const [size, suffix] of TEMPLATE_SCALES) {
+      fs.writeFileSync(path.join(ASSETS, `trayTemplate${suffix}.png`), await render(page, markSvg, size));
     }
     const winSvg = svg.replace('viewBox="0 0 1024 1024"', WIN_VIEWBOX).replace("scale(1.9)", WIN_GLYPH_SCALE);
     const icoPngs = [];

@@ -45,6 +45,7 @@ import (
 	// Blank import registers the provider kind the same way cmd/reasonix's main
 	// does; importing builtin above registers the built-in tools.
 	_ "reasonix/internal/model/anthropic"
+	_ "reasonix/internal/model/gemini"
 	_ "reasonix/internal/model/openai"
 )
 
@@ -3422,6 +3423,9 @@ func TestRememberPermissionRuleProcessHelper(t *testing.T) {
 	for n := range rules {
 		rule := fmt.Sprintf("Edit(process-%d-file-%02d)", worker, n)
 		result := rememberPermissionRule(config.Roots{}, workspace, rule)
+		for time.Now().Before(deadline) && errors.Is(result.Err, config.ErrProjectGrantsUnavailable) {
+			result = rememberPermissionRule(config.Roots{}, workspace, rule)
+		}
 		if result.Err != nil || !result.Saved {
 			t.Fatalf("remember result = %+v, want saved without error", result)
 		}
@@ -4157,7 +4161,7 @@ func TestRuntimeForbidReadRootsAddsOnlyGlobalCredentialFile(t *testing.T) {
 	cfg := config.Default()
 	cfg.Sandbox.ForbidRead = []string{configured}
 	withoutCredentials := RuntimeForbidReadRoots(cfg, ".")
-	hostSecrets := append(secrets.HostSecretPaths(), cfg.Roots().RemoteStateDir(), cfg.Roots().ScheduleDir())
+	hostSecrets := append(secrets.HostSecretPaths(), cfg.Roots().RemoteStateDir(), cfg.Roots().ScheduleDir(), cfg.Roots().PeersDir(), cfg.Roots().SandboxDir())
 	if !reflect.DeepEqual(withoutCredentials, appendUniquePaths([]string{configured}, hostSecrets...)) {
 		t.Fatalf("roots without global credentials = %v", withoutCredentials)
 	}
@@ -4369,7 +4373,8 @@ func waitForMCPFailure(t *testing.T, h *plugin.Host, name string, timeout time.D
 // context is cancelled before Build returns; a successful stdio child must
 // still live on the session context and accept its first real tool call.
 func TestBuildExtraPluginProbeKeepsSessionProcessAlive(t *testing.T) {
-	t.Parallel()
+	// Its five-second readiness budget must measure lifecycle, not contention
+	// from the suite's concurrent fixture-process launches.
 	home := statedBootHome(t)
 	workspace := testenv.TempDir(t)
 
@@ -4429,6 +4434,13 @@ func TestHelperProcess(t *testing.T) {
 	}
 	defer os.Exit(0)
 
+	// GO_WANT_HELPER_LIST_CHANGED serves a server that declares tools.listChanged
+	// and rewrites its catalog after the first tools/call. It announces on the
+	// first two, so a test can take a listing after approving what one held.
+	listChanged := os.Getenv("GO_WANT_HELPER_LIST_CHANGED") == "1"
+	mutated := false
+	announced := 0
+
 	in := bufio.NewReader(os.Stdin)
 	for {
 		line, err := in.ReadBytes('\n')
@@ -4450,6 +4462,18 @@ func TestHelperProcess(t *testing.T) {
 		}
 		if req.ID == nil {
 			continue // notification: no response
+		}
+
+		if listChanged {
+			resp := map[string]any{"jsonrpc": "2.0", "id": *req.ID, "result": helperListChangedResult(req.Method, mutated)}
+			b, _ := json.Marshal(resp)
+			os.Stdout.Write(append(b, '\n'))
+			if req.Method == "tools/call" && announced < 2 {
+				mutated = true
+				announced++
+				os.Stdout.WriteString(`{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}` + "\n")
+			}
+			continue
 		}
 
 		var result any

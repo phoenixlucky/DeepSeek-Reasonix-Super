@@ -37,9 +37,22 @@ type frontendScope struct {
 	reason string
 }
 
-// Empty on purpose: the gate ships measuring what the tree does today, and each
-// row here is a decision that has to be argued in its own pull request.
-var frontendScopes []frontendScope
+// Each row is a decision argued in its own pull request.
+var frontendScopes = []frontendScope{
+	{method: "ReleaseResources", pkg: "internal/frontend/serve", issue: "#13644", reason: "serve swaps and ends controllers through Close; only ACP rebuilds a session in place"},
+	{method: "CloseAfterDestroy", pkg: "internal/frontend/serve", issue: "#13644", reason: "serve closes a runtime through Close and does not split delete teardown from the close"},
+	{method: "NewSession", pkg: "internal/frontend/acp", issue: "#13644", reason: "an ACP client starts a conversation with session/new; the protocol has no in-place reset"},
+	{method: "InstallMCPServer", pkg: "internal/frontend/acp", issue: "#13660", reason: "writes user configuration and adds a program to run; an ACP client passes a session's servers in session/new"},
+	{method: "RemoveMCPServer", pkg: "internal/frontend/acp", issue: "#13660", reason: "deletes configuration and its recorded activation, which ACP does not edit"},
+	{method: "SetMCPServerEnabled", pkg: "internal/frontend/acp", issue: "#13660", reason: "enabling a project server approves its command and persists; approval belongs where the command is shown"},
+	{method: "ClearMCPServerOverride", pkg: "internal/frontend/acp", issue: "#13660", reason: "rewrites the persistent activation record that ACP leaves alone"},
+	{method: "SubmitHTTPFormat", pkg: "internal/frontend/acp", issue: "#13644", reason: "applies an HTTP request's response_format; ACP prompts carry no structured-output field"},
+	{method: "CustomCommand", pkg: "internal/frontend/serve", issue: "#13662", reason: "the controller's submit path resolves a custom command, so serve inherits it by submitting the line; ACP resolves it itself because its slash handling runs before submit"},
+	{method: "MCPPrompt", pkg: "internal/frontend/serve", issue: "#13662", reason: "resolved inside submit, as a custom command is"},
+	{method: "EnqueueInbox", pkg: "internal/frontend/serve", issue: "#13662", reason: "serve admits queue items with TryEnqueueFollowup and TryEnqueueAndSteer, which enqueue and dispatch when idle"},
+	{method: "TryEnqueueFollowup", pkg: "internal/frontend/acp", issue: "#13662", reason: "ACP enqueues without dispatch and drains the queue itself"},
+	{method: "ReplayPendingPromptsWith", pkg: "internal/frontend/acp", issue: "#13662", reason: "an SSE hand-off that closes an attach race; ACP has one stdio connection and no re-attach"},
+}
 
 const frontendScopeFile = "tools/repolint/frontendparity.go"
 

@@ -183,16 +183,6 @@ export function Hits({ rows, note }: { rows: Row3[]; note?: string }) {
   );
 }
 
-// The terminal fills in line by line: the first few land on the beat, the rest
-// tighten up so a long block still finishes inside SETTLED.
-const HEAD = 5;
-const BEAT = 34;
-const TIGHT = 8;
-const SETTLED = 700;
-// Past this, splitting into one node per line costs more than the entrance is
-// worth, so the block arrives whole.
-const SPLIT_MAX = 300;
-
 // A progress meter redraws by returning to column zero, and a browser draws a
 // carriage return as a space, so each line is resolved the way a terminal
 // would leave it: every frame overwrites the start of the one before.
@@ -208,25 +198,8 @@ function overstrike(text: string): string {
 }
 
 export function Term({ text: raw, one }: { text: string; one?: boolean }) {
-  const { text, lines } = useMemo(() => {
-    const out = overstrike(raw);
-    return { text: out, lines: out.split("\n") };
-  }, [raw]);
-  if (lines.length > SPLIT_MAX) return <pre className="term">{text}</pre>;
-  return (
-    <pre className="term" data-one={one ? "" : undefined}>
-      {lines.map((l, i) => (
-        <span
-          className="term-l"
-          key={i}
-          style={{ animationDelay: `${Math.min(i < HEAD ? i * BEAT : HEAD * BEAT + (i - HEAD) * TIGHT, SETTLED)}ms` }}
-        >
-          {l}
-          {i < lines.length - 1 ? "\n" : ""}
-        </span>
-      ))}
-    </pre>
-  );
+  const text = useMemo(() => overstrike(raw), [raw]);
+  return <pre className="term" data-one={one ? "" : undefined}>{text}</pre>;
 }
 
 // A provider-run search returns the listing the kernel formats for the model:

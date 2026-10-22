@@ -59,9 +59,10 @@ for (const [ws, sess] of SHAPES) {
   const after = Object.fromEntries((await cdp.send("Performance.getMetrics")).metrics.map((m) => [m.name, m.value]));
 
   // 展开一个折叠的工作区，量这一下点击有多久才落地。
-  const twist = page.locator(".wsnode").nth(1).locator("button.twist");
+  const project = page.locator(".wsnode > .wsrow").nth(1);
+  if (await project.getAttribute("aria-expanded") === "true") await project.click();
   const tExpand = Date.now();
-  await twist.click();
+  await project.click();
   await page.waitForTimeout(50);
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
   const expand = Date.now() - tExpand;

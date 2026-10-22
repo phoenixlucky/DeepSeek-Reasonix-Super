@@ -16,7 +16,7 @@ func TestFetchDoesNotFollowARedirectWithTheKey(t *testing.T) {
 		http.Redirect(w, r, elsewhere.URL, http.StatusTemporaryRedirect)
 	}))
 	defer home.Close()
-	if _, err := Fetch(context.Background(), home.URL, "secret"); err == nil {
+	if _, err := FetchFormat(context.Background(), nil, home.URL, FormatDeepSeek, "secret"); err == nil {
 		t.Fatal("a cross-origin redirect was followed")
 	}
 	if n := reached.Load(); n != 0 {

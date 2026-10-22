@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -34,17 +35,19 @@ func slowShellBuild(t *testing.T, kind string, tune func(*sandbox.ShellDiscovery
 	return phases, time.Since(begin)
 }
 
-func fakeBashOnPath(t *testing.T) {
+func fakeBashOnPath(t *testing.T) string {
 	t.Helper()
 	bin := t.TempDir()
 	name := "bash"
 	if runtime.GOOS == "windows" {
 		name = "bash.exe"
 	}
-	if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	path := filepath.Join(bin, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return path
 }
 
 func TestEffectHungShellProbeDoesNotHoldTheAssemblyPastItsBudget(t *testing.T) {
@@ -72,10 +75,13 @@ func TestEffectHungShellProbeDoesNotHoldTheAssemblyPastItsBudget(t *testing.T) {
 
 func TestEffectProvenShellIsNotLaunchedAgainByTheNextStart(t *testing.T) {
 	isolateConfigHome(t)
-	fakeBashOnPath(t)
+	fake := fakeBashOnPath(t)
 	var launches atomic.Int32
 	tune := func(d *sandbox.ShellDiscovery) {
-		d.Probe = func(string) bool {
+		d.Probe = func(path string) bool {
+			if !strings.EqualFold(filepath.Clean(path), filepath.Clean(fake)) {
+				return true
+			}
 			launches.Add(1)
 			time.Sleep(300 * time.Millisecond)
 			return true

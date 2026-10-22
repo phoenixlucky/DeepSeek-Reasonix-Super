@@ -1,0 +1,36 @@
+## e2ebench comparison: 2 arms
+
+| Arm | Pass@1 | Solved | TTFT | TTCS median | TTCS p90 | Solved/hour | 1st-req cache | Requests/solved | Tokens/solved | Cost/solved |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `a` | 50% | 1/2 | 0ms | 1m00s | 1m00s | 24.0 | n/a | 16.0 | 2,400 | 0.0500 |
+| `b` | 50% | 1/2 | 0ms | 45.0s | 45.0s | 26.7 | n/a | 14.0 | 2,200 | 0.0400 |
+
+### Pareto: accuracy vs TTCS
+
+```
+Accuracy
+ 100% |                                              
+      |                                              
+      |                                              
+      |                                              
+      |                                              
+      |                                              
+      |   B                                     ✗    
+      |                                              
+  40% |                                              
+      +----------------------------------------------→ TTCS
+       43.5s                                    1m01s
+       A=a  B=b
+```
+
+- ⚠️ `a` is **dominated** by `b`: at least as accurate and no slower — the unambiguous alarm
+- ✅ `b` is on the Pareto frontier (50% solved, TTCS median 45.0s)
+
+### Per-class winners
+
+| Class | `a` | `b` | Winner |
+|---|---:|---:|---|
+| bugfix | 100% · 1m00s | 100% · 45.0s | b |
+| perf | 0% · — | 0% · — | a |
+
+<sub>Per-solved figures divide each arm's accounted totals (failures included) by its accounted solves; TTCS charges a retried solve with its failed attempts' wall.</sub>

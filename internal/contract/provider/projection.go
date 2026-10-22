@@ -19,9 +19,10 @@ func ModelMessages(msgs []Message) []Message { return projectMessages(msgs, fals
 func ProjectionMessages(msgs []Message) []Message { return projectMessages(msgs, true) }
 
 func projectMessages(msgs []Message, keepExecution bool) []Message {
+	answered := videoAnswered(msgs, keepExecution)
 	needsCopy := false
-	for _, m := range msgs {
-		if (len(m.UnavailableImages) > 0 && !keepExecution) || m.LocalOnly || m.RawContent != "" || m.ProviderContent != "" || m.HostAuthored || m.ModelRef != "" || m.Via != nil || m.DecisionReceipt != nil || len(m.DecisionReceipts) > 0 || (m.ToolExecution != nil && !keepExecution) || (m.ToolFailure != nil && !keepExecution) {
+	for i, m := range msgs {
+		if (answered != nil && len(m.Videos) > 0 && answered[i]) || needsProjection(m, keepExecution) {
 			needsCopy = true
 			break
 		}
@@ -30,9 +31,12 @@ func projectMessages(msgs []Message, keepExecution bool) []Message {
 		return msgs
 	}
 	out := make([]Message, 0, len(msgs))
-	for _, candidate := range msgs {
+	for i, candidate := range msgs {
 		if candidate.LocalOnly {
 			continue
+		}
+		if answered != nil && answered[i] {
+			candidate = WithoutVideos(candidate, VideoShownNote)
 		}
 		if candidate.ProviderContent != "" {
 			candidate.Content = candidate.ProviderContent
@@ -45,6 +49,8 @@ func projectMessages(msgs []Message, keepExecution bool) []Message {
 		candidate.DecisionReceipt = nil
 		candidate.DecisionReceipts = nil
 		if !keepExecution {
+			candidate.AgentComposition = nil
+			candidate.ToolCalls = withoutArgumentNormalization(candidate.ToolCalls)
 			// Local shell metadata must never enter provider request bytes.
 			candidate.ToolExecution = nil
 			candidate.ToolFailure = nil
@@ -56,6 +62,29 @@ func projectMessages(msgs []Message, keepExecution bool) []Message {
 		out = append(out, candidate)
 	}
 	return out
+}
+
+// needsProjection reports a host-only field this message carries.
+func needsProjection(m Message, keepExecution bool) bool {
+	if (hasArgumentNormalization(m.ToolCalls) || m.AgentComposition != nil || len(m.UnavailableImages) > 0 || m.ToolExecution != nil || m.ToolFailure != nil) && !keepExecution {
+		return true
+	}
+	return m.LocalOnly || m.RawContent != "" || m.ProviderContent != "" || m.HostAuthored || m.ModelRef != "" || m.Via != nil || m.DecisionReceipt != nil || len(m.DecisionReceipts) > 0
+}
+
+// videoAnswered says, per message, whether the model has answered since it; nil
+// when no message carries a video or the projection is a stored one that keeps
+// the references.
+func videoAnswered(msgs []Message, keepExecution bool) []bool {
+	if keepExecution {
+		return nil
+	}
+	for _, m := range msgs {
+		if len(m.Videos) > 0 {
+			return answeredAfter(msgs)
+		}
+	}
+	return nil
 }
 
 // UnavailableImagesNote is what a request says in place of images the host

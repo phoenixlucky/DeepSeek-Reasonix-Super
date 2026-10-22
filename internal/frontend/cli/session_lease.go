@@ -2,12 +2,10 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"reasonix/internal/state/sessionstore"
 	"strings"
 
-	"reasonix/internal/base/i18n"
 	"reasonix/internal/session/control"
 )
 
@@ -38,16 +36,6 @@ func cliSessionRecoveredHandler(leases *control.SessionLeaseKeeper) func(control
 		// first; the next Snapshot path match is ensured once Bind runs.
 		return nil
 	}
-}
-
-func rebindCLIControllerAuthority(leases *control.SessionLeaseKeeper, ctrl *control.Controller) error {
-	if leases == nil || ctrl == nil {
-		return nil
-	}
-	if err := leases.Rebind(ctrl.SessionPath()); err != nil {
-		return err
-	}
-	return leases.BindControllerAuthority(ctrl)
 }
 
 // copySessionForWriting duplicates the session at src into a fresh session
@@ -96,39 +84,4 @@ func copySessionForWriting(src string) (string, error) {
 		return "", fmt.Errorf("copy session meta: %w", err)
 	}
 	return newPath, nil
-}
-
-// bindRunSession attaches a headless run to its session file — an explicit
-// --resume path, otherwise a fresh one — and takes the write lease a turn
-// needs. A fresh path is defensively rebound too; a resumed one already holds
-// the lease, making that a no-op.
-func bindRunSession(ctrl *control.Controller, leases *control.SessionLeaseKeeper, resumed *sessionstore.Session, resumePath string) error {
-	if resumePath != "" {
-		_ = ctrl.Resume(resumed, resumePath) // startup: nothing can be running
-	}
-	if ctrl.SessionPath() == "" && ctrl.SessionDir() != "" {
-		ctrl.SetFreshSessionPath(sessionstore.NewSessionPath(ctrl.SessionDir(), ctrl.Label()))
-	}
-	if err := rebindCLIControllerAuthority(leases, ctrl); err != nil {
-		return err
-	}
-	reclaimCLIRecoveryBranches(ctrl.SessionDir())
-	reportInterruptedAdjudications(ctrl)
-	return nil
-}
-
-// reportInterruptedAdjudications says why a resumed session stops where it
-// does. A run that died waiting on a person leaves no sign in the transcript,
-// so without this the terminal shows a conversation that simply ends. It is
-// provenance, not a prompt: the question cannot be answered any more, and
-// nothing it was holding back was executed.
-func reportInterruptedAdjudications(ctrl *control.Controller) {
-	active, _ := ctrl.Adjudications()
-	for _, item := range active {
-		question := item.Summary
-		if question == "" {
-			question = item.Kind
-		}
-		fmt.Fprintf(os.Stderr, "%s %s\n", i18n.M.InterruptedAdjudicationPrefix, question)
-	}
 }

@@ -33,11 +33,13 @@ func transientSummaryFailure(code string) bool {
 }
 
 // retriesOnGrowth reports a failure the input's growth releases: the summary
-// request failed, or the checkpoint was refused for the protected content it
-// would carry, which a larger input and a forced fold both answer differently.
+// request failed, the checkpoint was refused for the protected content it would
+// carry, or the fold lost the race to a transcript append (that append is the
+// growth), which a larger input answers differently.
 // Anything else holds, because retrying the same input cannot change it.
 func retriesOnGrowth(code string) bool {
-	return transientSummaryFailure(code) || CompactionNoopReason(code) == NoopCandidateAboveCeiling
+	return transientSummaryFailure(code) || CompactionNoopReason(code) == NoopCandidateAboveCeiling ||
+		CompactionNoopReason(code) == FailContextChanged
 }
 
 // retryGrowthStep is how much the input must grow past a transient failure
@@ -172,6 +174,7 @@ func (a *contextWindow) noteMaintenanceHeld() {
 		Kind: event.Notice, Level: event.LevelWarn, Code: event.NoticeCodeCompactHeld, Detail: string(reason),
 		Text: fmt.Sprintf("Automatic compaction is paused: the last attempt did not finish (%s).", reason),
 	})
+	a.noteContextComposition()
 }
 
 // recordContextMaintenanceBlocked persists a generation-scoped blocked receipt.

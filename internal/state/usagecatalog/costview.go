@@ -23,6 +23,18 @@ func CostView(currency string) string {
 	return ""
 }
 
+// ModeEstimate is the cost mode of a subscription-equivalent quote: an
+// API-priced estimate of what a plan covered, not money billed.
+const ModeEstimate = "estimate"
+
+// CostMode is the cost mode a billing mode files its quotes under: "" is billed.
+func CostMode(billingMode string) string {
+	if billingMode == pricing.BillingModeSubscriptionEquivalent {
+		return ModeEstimate
+	}
+	return ""
+}
+
 // Priced is the quote a stats line was written with, spelled as the line
 // spells it. CNY and USD are the vendor-table valuations, empty when none.
 type Priced struct {
@@ -31,12 +43,17 @@ type Priced struct {
 	CNY       string
 	USD       string
 	Estimated bool
+	// Incomplete says the quote could not price the row's usage: its money is
+	// unknown, not zero.
+	Incomplete bool
+	// BillingMode is the mode the quote was made in; empty reads as billed.
+	BillingMode string
 }
 
 // WithCost attaches a line's quote. An amount that does not parse is dropped
 // rather than guessed: a missing total beats a wrong one.
 func (e Entry) WithCost(p Priced) Entry {
-	e.Cost, e.CostCurrency, e.CostEstimated = 0, "", p.Estimated
+	e.Cost, e.CostCurrency, e.CostEstimated, e.CostIncomplete, e.BillingMode = 0, "", p.Estimated, p.Incomplete, p.BillingMode
 	if amount, ok := parseAmount(p.Amount); ok {
 		e.Cost, e.CostCurrency = amount, pricing.NormalizeCurrency(p.Currency)
 	}
@@ -86,7 +103,8 @@ func viewCostSelect(view string) string {
 		valuation = "valuation_" + strings.ToLower(view)
 	}
 	currency := "CASE WHEN " + valuation + " IS NULL THEN cost_currency ELSE '" + view + "' END"
-	return `INSERT INTO usage_cost(day,source,model_ref,view,currency,cost,estimated)
-        SELECT day,source,model_ref,'` + view + `',` + currency + `,SUM(COALESCE(` + valuation + `,cost)),MAX(cost_estimated)
-        FROM usage_records WHERE day=? AND cost_currency<>'' AND cost<>0 GROUP BY day,source,model_ref,` + currency
+	mode := "CASE WHEN billing_mode='" + pricing.BillingModeSubscriptionEquivalent + "' THEN '" + ModeEstimate + "' ELSE '' END"
+	return `INSERT INTO usage_cost(day,source,model_ref,view,currency,mode,cost,estimated)
+        SELECT day,source,model_ref,'` + view + `',` + currency + `,` + mode + `,SUM(COALESCE(` + valuation + `,cost)),MAX(cost_estimated)
+        FROM usage_records WHERE day=? AND cost_currency<>'' AND cost<>0 GROUP BY day,source,model_ref,` + currency + `,` + mode
 }

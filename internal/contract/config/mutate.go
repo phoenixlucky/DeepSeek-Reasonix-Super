@@ -262,7 +262,7 @@ func resolveConfigEditTarget(path string) (configEditTarget, error) {
 }
 
 func configFileEditLockPathResolved(resolved string) (string, error) {
-	lockDir, err := configEditLockRegistryDir()
+	lockDir, err := configEditLockRegistryDirFor(resolved)
 	if err != nil {
 		return "", err
 	}
@@ -272,6 +272,55 @@ func configFileEditLockPathResolved(resolved string) (string, error) {
 	}
 	digest := sha256.Sum256([]byte(lockKey))
 	return filepath.Join(lockDir, fmt.Sprintf("%x.lock", digest)), nil
+}
+
+// configEditLockRegistryDirFor keeps a file's lock inside the explicitly
+// isolated Reasonix home that holds the file: a self-contained runtime writes
+// nothing outside its home. Every other file, and every default launch, locks
+// under the OS account's home as before.
+func configEditLockRegistryDirFor(resolved string) (string, error) {
+	if home := IsolatedHomeDir(); home != "" && homeHolds(home, resolved) {
+		identity, err := configEditLockIdentity()
+		if err != nil {
+			return "", err
+		}
+		digest := sha256.Sum256([]byte(identity))
+		return filepath.Join(filepath.Clean(home), "locks", fmt.Sprintf("config-edits-%x", digest[:8])), nil
+	}
+	return configEditLockRegistryDir()
+}
+
+// homeHolds reports whether resolved, an already symlink-resolved path, is
+// inside home as the environment spelled it or as the filesystem resolves it.
+func homeHolds(home, resolved string) bool {
+	if pathWithin(home, resolved) {
+		return true
+	}
+	real, err := filepath.EvalSymlinks(home)
+	return err == nil && pathWithin(real, resolved)
+}
+
+func pathWithin(dir, path string) bool {
+	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(path))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+func configEditLockIdentity() (string, error) {
+	current, err := osuser.Current()
+	if err != nil {
+		return "", fmt.Errorf("lock config edits: resolve OS user: %w", err)
+	}
+	identity := strings.TrimSpace(current.Uid)
+	if identity == "" {
+		identity = strings.TrimSpace(current.Username)
+	}
+	if identity == "" {
+		identity = strings.TrimSpace(current.HomeDir)
+	}
+	if identity == "" {
+		return "", fmt.Errorf("lock config edits: OS user identity unavailable")
+	}
+	return identity, nil
 }
 
 func configEditLockRegistryDir() (string, error) {

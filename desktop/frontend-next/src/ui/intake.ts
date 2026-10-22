@@ -149,12 +149,6 @@ function basename(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
-// refToken is the same token the @ completion produces, so a dropped file and a
-// completed one leave the composer identical.
-export function refToken(rel: string): string {
-  return "@" + rel;
-}
-
 // A paste long enough to bury the composer becomes a chip instead. Lines and
 // characters both count, whichever comes first: eight hundred lines of narrow
 // log is under the character cap and has already eaten the window.

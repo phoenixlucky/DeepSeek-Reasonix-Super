@@ -47,8 +47,7 @@ async function mount(running = false, pathless = false) {
     const [report, setReport] = useState<PaneReport | null>(null);
     const onReport = useCallback((_: string, next: PaneReport) => setReport(next), []);
     return <>
-      <Chrome port={port} status={report?.status ?? null} title="active" steer={0} onSettings={() => {}} onBrowser={() => {}}
-        browser={false} account={null} rail theme="light" onRail={() => {}} onTheme={() => {}} onFind={() => {}} />
+      <Chrome port={port} status={report?.status ?? null} title="active" steer={0} onSettings={() => {}} account={null} theme="light" onTheme={() => {}} onFind={() => {}} view="flow" rows={0} surfaces={0} onView={() => {}} />
       <Pane port={port} rt={{ id: "r1", base: "/rt/r1", root: "/workspace", name: "workspace", sessionPath }}
         title="active" active visible sideHost={null} side={false} onFocus={() => {}} onReport={onReport}
         onSessionChanged={() => {}} pulse={0} findPulse={0} onSettings={() => {}} needsProject={false}
@@ -136,7 +135,7 @@ it("loads deferred panels and the branch chip when the first status fails", asyn
   for (const name of deferredReads) expect(pane.calls[name], name).toHaveBeenCalledTimes(1);
   expect(pane.port.branchReads).toHaveBeenCalled();
   expect(pane.calls.changes).toHaveBeenCalled();
-  await screen.findByLabelText("当前 Git 分支：rescue");
+  expect((await screen.findByRole("button", { name: "配置工作目录" })).textContent).toContain("rescue");
   pane.send({ kind: "turn_done" });
   await waitFor(() => expect(pane.calls.queue).toHaveBeenCalledTimes(2));
   expect(pane.calls.models).toHaveBeenCalledTimes(1);

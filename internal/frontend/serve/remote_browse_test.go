@@ -47,6 +47,7 @@ func TestBrowsingAnswersWithNoPaneOnTheMachine(t *testing.T) {
 			},
 		}, nil
 	}})
+	saveTestRemoteHosts(t, "gpu-box")
 	resp, got, _ := browseGet(t, front, "/remotes/gpu-box/dirs")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -68,6 +69,7 @@ func TestTheAskedForPathReachesTheFarMachineAsWritten(t *testing.T) {
 		return RemoteListing{Path: dir}, nil
 	}})
 	want := `/C:/Users/ada/pipe line`
+	saveTestRemoteHosts(t, "box")
 	browseGet(t, front, "/remotes/box/dirs?path="+url.QueryEscape(want))
 	if seen != want {
 		t.Fatalf("the link layer was asked for %q, want %q", seen, want)
@@ -80,6 +82,7 @@ func TestAFolderWithNoSubfoldersAnswersAnEmptyList(t *testing.T) {
 	front := bookServer(t, &stubAttacher{browse: func(string, string) (RemoteListing, error) {
 		return RemoteListing{Path: "/srv/empty"}, nil
 	}})
+	saveTestRemoteHosts(t, "box")
 	resp, err := http.Get(front.URL + "/remotes/box/dirs")
 	if err != nil {
 		t.Fatal(err)
@@ -102,6 +105,7 @@ func TestABrowseRefusalKeepsTheCodeTheLinkLayerGaveIt(t *testing.T) {
 		return RemoteListing{}, Refusal(http.StatusNotFound, "remote.no_such_folder",
 			errors.New("no such file"), map[string]any{"path": dir})
 	}})
+	saveTestRemoteHosts(t, "box")
 	resp, _, why := browseGet(t, front, "/remotes/box/dirs?path=/srv/typo")
 	if resp.StatusCode != http.StatusNotFound || why.Code != "remote.no_such_folder" {
 		t.Fatalf("refusal = %d/%q, want 404/remote.no_such_folder", resp.StatusCode, why.Code)
@@ -134,6 +138,7 @@ func TestProbeReportsEveryRouteInOneAnswer(t *testing.T) {
 			{Name: "download", OK: true},
 		},
 	}})
+	saveTestRemoteHosts(t, "gpu-box")
 	resp, err := http.Get(front.URL + "/remotes/gpu-box/probe")
 	if err != nil {
 		t.Fatal(err)
@@ -161,6 +166,7 @@ func TestProbeReportsEveryRouteInOneAnswer(t *testing.T) {
 // drawn nothing.
 func TestProbeSendsRoutesAsAnArray(t *testing.T) {
 	front := bookServer(t, &stubAttacher{probe: &RemoteProbe{OS: "linux", Arch: "amd64", Ready: true}})
+	saveTestRemoteHosts(t, "gpu-box")
 	resp, err := http.Get(front.URL + "/remotes/gpu-box/probe")
 	if err != nil {
 		t.Fatal(err)

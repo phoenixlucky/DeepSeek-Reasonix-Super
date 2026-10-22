@@ -96,7 +96,9 @@ func TestAWrittenPageTellsTheModelToLookAtIt(t *testing.T) {
 		{toolCallChunk("draw", "write_file", string(args)), {Type: provider.ChunkDone}},
 		{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}},
 	}}
-	a := New(prov, evidenceRegistry(), sessionstore.NewSession(""), Options{RenderRoot: root}, event.Discard)
+	a := New(prov, evidenceRegistry(), sessionstore.NewSession(""), Options{RenderRoot: root,
+		CheckTargetAccess: allowTestFileAccess,
+	}, event.Discard)
 	_ = a.Run(context.Background(), "draw a pelican riding a bicycle")
 	got := toolResultByID(a.sess.conversation, "draw")
 	for _, want := range []string{string(evidence.ObligationUnseenRender), evidence.FileURL(page), "browser_read what=screenshot"} {
@@ -109,7 +111,7 @@ func TestAWrittenPageTellsTheModelToLookAtIt(t *testing.T) {
 		{toolCallChunk("draw", "write_file", string(args)), {Type: provider.ChunkDone}},
 		{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}},
 	}}
-	b := New(blind, evidenceRegistry(), sessionstore.NewSession(""), Options{}, event.Discard)
+	b := New(blind, evidenceRegistry(), sessionstore.NewSession(""), Options{CheckTargetAccess: allowTestFileAccess}, event.Discard)
 	_ = b.Run(context.Background(), "draw a pelican riding a bicycle")
 	if got := toolResultByID(b.sess.conversation, "draw"); strings.Contains(got, string(evidence.ObligationUnseenRender)) {
 		t.Fatalf("an agent with nowhere to look was told to look: %q", got)

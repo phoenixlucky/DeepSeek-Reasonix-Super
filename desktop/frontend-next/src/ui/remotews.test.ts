@@ -35,6 +35,13 @@ describe("the folders listed under a remote machine", () => {
     expect(warm[0].sessions).toHaveLength(3);
   });
 
+  it("keeps a booked worktree inside the far kernel's original project", () => {
+    const project = { ...far("/srv/train", 2), workspaceRoots: ["/srv/train", "/state/worktrees/train"] };
+    const warm = remoteWorkspaces(host({ workspaces: ["/state/worktrees/train"] }), [project]);
+    expect(roots(warm)).toEqual(["/srv/train"]);
+    expect(warm[0].booked).toBe(true);
+  });
+
   it("keeps a folder added here that has never been opened over there", () => {
     // Otherwise adding a project makes it vanish the moment the host connects.
     const warm = remoteWorkspaces(host({ workspaces: ["/srv/train", "/srv/eval"] }), [far("/srv/train", 2)]);

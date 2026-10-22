@@ -21,6 +21,9 @@ type WaitOptions struct {
 	// supplies it: only the caller knows what it waits for, and a host picking
 	// which words deserve an interruption is the guess this avoids.
 	Match *regexp.Regexp
+	// Echo receives what the jobs write while the wait lasts, as whole lines,
+	// starting from their latest output. Never called under a job's lock.
+	Echo func(string)
 }
 
 // WaitOutcome says why a wait ended. A job still running means one thing after
@@ -36,6 +39,7 @@ const (
 
 // outputWatch wakes one wait when a job writes something its pattern matches.
 type outputWatch struct {
+	echo  func([]byte)
 	re    *regexp.Regexp
 	hit   chan struct{}
 	fired bool
@@ -45,6 +49,10 @@ type outputWatch struct {
 // notifyWatches is called under the job's lock for every write.
 func (j *Job) notifyWatches(p []byte) {
 	for _, w := range j.watches {
+		if w.echo != nil {
+			w.echo(p)
+			continue
+		}
 		if w.fired {
 			continue
 		}
@@ -125,6 +133,10 @@ func (m *Manager) WaitForSession(ctx context.Context, parentSession string, ids 
 			}
 		}
 		return out, outcome
+	}
+
+	if opts.Echo != nil {
+		defer pumpEcho(newEcho(opts.Echo, len(targets) > 1), targets)()
 	}
 
 	var timeout <-chan time.Time

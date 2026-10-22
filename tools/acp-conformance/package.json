@@ -1,0 +1,14 @@
+{
+  "name": "reasonix-acp-conformance",
+  "private": true,
+  "type": "module",
+  "description": "Drives the reasonix acp subprocess with the official ACP TypeScript SDK.",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "@agentclientprotocol/sdk": "1.8.0",
+    "ajv": "8.17.1",
+    "zod": "4.1.12"
+  }
+}

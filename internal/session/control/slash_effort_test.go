@@ -127,10 +127,22 @@ func TestEffortOnAResponsesEntryFollowsItsDeclaration(t *testing.T) {
 	}
 }
 
-func TestEffortOnAnUndeclaredResponsesEntryIsReportedNotConfigurable(t *testing.T) {
+func TestEffortOnAnUndeclaredResponsesEntryNamesTheMissingDeclaration(t *testing.T) {
 	i18n.DetectLanguage("en")
 	c, take := settingsController(t)
 	seedUserConfig(t, responsesRelaySeed)
+	c.modelRef = "relay/gpt-5.5"
+	c.managementNotice("/effort")
+	got := lastNotice(t, take())
+	if want := fmt.Sprintf(i18n.M.EffortUndeclaredFmt, "relay"); got != want || !strings.Contains(got, "supported_efforts") {
+		t.Errorf("/effort = %q, want %q naming supported_efforts", got, want)
+	}
+}
+
+func TestEffortTurnedOffByTheProtocolIsNotReportedAsUndeclared(t *testing.T) {
+	i18n.DetectLanguage("en")
+	c, take := settingsController(t)
+	seedUserConfig(t, responsesRelaySeed+"reasoning_protocol = \"none\"\n")
 	c.modelRef = "relay/gpt-5.5"
 	c.managementNotice("/effort")
 	got := lastNotice(t, take())

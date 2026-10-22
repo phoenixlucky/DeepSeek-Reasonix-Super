@@ -121,7 +121,6 @@ func TestEachCommitRefusalHasItsOwnCode(t *testing.T) {
 
 	clean := repoWith(t, nil)
 	cleanSrv := commitServer(t, clean, messenger("x"))
-	noModel := commitServer(t, repoWith(t, map[string]string{"x.go": "package x\n"}), nil)
 	noRepo := commitServer(t, "", messenger("x"))
 
 	cases := []struct {
@@ -137,7 +136,6 @@ func TestEachCommitRefusalHasItsOwnCode(t *testing.T) {
 		{"empty message", secretSrv, "/commit", `{"message":" ","fingerprint":"` + fp + `"}`, http.StatusBadRequest, "commit.empty_message"},
 		{"bad json", secretSrv, "/commit", `not json`, http.StatusBadRequest, "commit.bad_request"},
 		{"nothing staged", cleanSrv, "/commit/propose", `{}`, http.StatusConflict, "commit.nothing_staged"},
-		{"no model", noModel, "/commit/propose", `{}`, http.StatusConflict, "commit.no_model"},
 		{"no repository", noRepo, "/commit/propose", `{}`, http.StatusConflict, "commit.no_repository"},
 	}
 	for _, c := range cases {
@@ -152,4 +150,98 @@ func TestEachCommitRefusalHasItsOwnCode(t *testing.T) {
 	if status != http.StatusConflict || len(files) != 1 || files[0] != ".env" {
 		t.Errorf("secrets refusal params = %v", out["params"])
 	}
+}
+
+// A draft that cannot be made is a proposal without a message, not a refusal:
+// the staged set and its fingerprint still come back so the person can write
+// the message, and the reason is a code, never a sentence.
+func TestADraftThatCannotBeMadeStillOffersTheStagedSet(t *testing.T) {
+	srv := commitServer(t, repoWith(t, map[string]string{"x.go": "package x\n"}), nil)
+	status, prop := commitPost(t, srv, "/commit/propose", `{}`)
+	files, _ := prop["files"].([]any)
+	if status != http.StatusOK || prop["draftFailure"] != "no_model" || prop["message"] != "" || prop["fingerprint"] == "" || len(files) != 1 {
+		t.Fatalf("propose without a model = %d %v", status, prop)
+	}
+}
+
+// The report behind this: a new file in the list and a commit button that
+// answered "stage it with git add" to a person with no terminal open. Staging
+// from the list is what makes the commit possible.
+func TestAUntrackedFileCanBeStagedFromTheListThenCommitted(t *testing.T) {
+	dir := repoWith(t, nil)
+	if err := os.WriteFile(filepath.Join(dir, "pelican.svg"), []byte("<svg/>\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv := commitServer(t, dir, messenger("feat: add pelican"))
+	flags := func() (bool, bool) {
+		res, err := http.Get(srv.URL + "/changes")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var got struct {
+			Changes []struct {
+				Path     string `json:"path"`
+				Staged   bool   `json:"staged"`
+				Unstaged bool   `json:"unstaged"`
+			} `json:"changes"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range got.Changes {
+			if c.Path == "pelican.svg" {
+				return c.Staged, c.Unstaged
+			}
+		}
+		t.Fatalf("pelican.svg is not listed: %+v", got)
+		return false, false
+	}
+
+	if s, u := flags(); s || !u {
+		t.Fatalf("before staging: staged=%v unstaged=%v", s, u)
+	}
+	if status, body := commitPost(t, srv, "/commit/propose", `{}`); status != http.StatusConflict || !strings.Contains(asString(body), "commit.nothing_staged") {
+		t.Fatalf("propose with an empty index = %d %v", status, body)
+	}
+	if status, body := commitPost(t, srv, "/changes/stage", `{"paths":["pelican.svg"]}`); status != http.StatusNoContent {
+		t.Fatalf("stage = %d %v", status, body)
+	}
+	if s, u := flags(); !s || u {
+		t.Fatalf("after staging: staged=%v unstaged=%v", s, u)
+	}
+	if status, prop := commitPost(t, srv, "/commit/propose", `{}`); status != http.StatusOK || prop["message"] != "feat: add pelican" {
+		t.Fatalf("propose after staging = %d %v", status, prop)
+	}
+	if status, _ := commitPost(t, srv, "/changes/stage", `{"paths":["pelican.svg"],"unstage":true}`); status != http.StatusNoContent {
+		t.Fatalf("unstage = %d", status)
+	}
+	if s, u := flags(); s || !u {
+		t.Fatalf("after unstaging: staged=%v unstaged=%v", s, u)
+	}
+}
+
+func TestStagingRefusesWhatIsNotAChangeInTheWorkspace(t *testing.T) {
+	dir := repoWith(t, nil)
+	srv := commitServer(t, dir, messenger("m"))
+	for name, tc := range map[string]struct{ body, code string }{
+		"a path git does not list": {`{"paths":["nope.go"]}`, "stage.unknown_path"},
+		"a traversal":              {`{"paths":["../x"]}`, "stage.unknown_path"},
+		"nothing named":            {`{}`, "stage.unknown_path"},
+		"a body that is not JSON":  {`not json`, "stage.bad_request"},
+	} {
+		status, body := commitPost(t, srv, "/changes/stage", tc.body)
+		if status != http.StatusBadRequest || body["code"] != tc.code {
+			t.Errorf("%s: %d %v, want 400 %s", name, status, body, tc.code)
+		}
+	}
+	noRepo := commitServer(t, "", messenger("m"))
+	if status, body := commitPost(t, noRepo, "/changes/stage", `{"all":true}`); status != http.StatusConflict || body["code"] != "commit.no_repository" {
+		t.Errorf("no repository: %d %v", status, body)
+	}
+}
+
+func asString(m map[string]any) string {
+	raw, _ := json.Marshal(m)
+	return string(raw)
 }

@@ -82,7 +82,7 @@ it.each(["enter", "button"])("allows adding an exact wire ID that matches anothe
   render(<EditConn entry={entry} port={port} busy="" setBusy={() => {}} onDone={() => {}} onRevert={() => {}} />);
   const search = screen.getByRole("searchbox", { name: "搜索或添加模型" });
   await userEvent.type(search, "beta");
-  expect(screen.getByText("vendor/long-v1")).toBeTruthy();
+  expect(screen.getAllByText("vendor/long-v1").length).toBeGreaterThan(0);
   const add = screen.getByRole("button", { name: /添加未列出的模型「beta」/ });
   if (method === "enter") await userEvent.type(search, "{enter}");
   else await userEvent.click(add);

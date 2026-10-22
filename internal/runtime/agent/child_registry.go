@@ -279,10 +279,10 @@ func newSubagentCapabilityFrontend(parent *tool.Registry, runtime *usecap.MCPCap
 }
 
 // mcpCapabilityAllowlist converts profile/call tool names into capability IDs
-// for the restricted use_capability proxy. Accepts complete mcp-tool:<s>/<t>,
-// mcp-server:<s>, model-visible mcp__* names, and wildcards expanded against
-// the parent. Incomplete prefixes such as "mcp-server:" or "mcp-tool:foo" are
-// rejected so they cannot install a restricted proxy with an empty server set.
+// for the restricted use_capability proxy. Complete mcp-tool:<s>/<t> and
+// mcp-server:<s> IDs work before connection; callable names and wildcards need
+// parent metadata because normalized names cannot establish raw identity.
+// Incomplete IDs are rejected so a restricted proxy cannot have an empty server set.
 func mcpCapabilityAllowlist(parent *tool.Registry, names []string) map[string]bool {
 	if len(names) == 0 {
 		return nil
@@ -311,18 +311,10 @@ func mcpCapabilityAllowlist(parent *tool.Registry, names []string) map[string]bo
 		default:
 			if parent != nil {
 				if tl, ok := parent.Get(name); ok {
-					if m, ok := tl.(tool.MCPMetadata); ok {
-						server := strings.TrimSpace(m.MCPServerName())
-						raw := strings.TrimSpace(m.MCPRawToolName())
-						if server != "" && raw != "" {
-							allowed["mcp-tool:"+server+"/"+raw] = true
-							continue
-						}
+					if binding, ok := tool.MCPBindingFor(tl); ok {
+						allowed[binding.CapabilityID] = true
 					}
 				}
-			}
-			if server, raw, ok := tool.SplitMCPName(name); ok {
-				allowed["mcp-tool:"+server+"/"+raw] = true
 			}
 		}
 	}

@@ -147,6 +147,10 @@ func (m *model) approvalPanel(it *Item) []string {
 	if a.Kind == "plan" {
 		text = []string{approvalTitle(i18n.M.PlanApprovalPrompt)}
 	} else {
+		if a.ReasonCode == originTextCode {
+			text = originApprovalRows(a, width)
+			return m.finishApprovalPanel(it, a, text)
+		}
 		name, detail := approvalToolDetails(a.Tool)
 		subject := strings.TrimSpace(a.Subject)
 		preview, shown := "", ""
@@ -164,12 +168,40 @@ func (m *model) approvalPanel(it *Item) []string {
 			text = append(text, subjectRows(subject, width)...)
 		}
 	}
+	return m.finishApprovalPanel(it, a, text)
+}
+
+// finishApprovalPanel appends the answers the host allows and the key hint.
+func (m *model) finishApprovalPanel(it *Item, a *eventwire.Approval, text []string) []string {
 	row := m.approvalRow(it)
 	for i, c := range m.approvalChoices(a) {
 		text = append(text, rowLine(i == row, i+1, "", c.label, false))
 	}
 	text = append(text, termrender.Dim(i18n.M.ApprovalChoiceHint))
 	return panel(text, m.width, accentEdge)
+}
+
+// originTextCode is the host's name for the question put to a person when a call
+// repeats text from outside; it travels as the approval's reason code.
+const originTextCode = "origin_text"
+
+// originApprovalRows shows the whole of what a person is deciding on: where the
+// text came from and the call itself, wrapped rather than clipped, because the part
+// a one-line preview would cut can be the part that matters.
+func originApprovalRows(a *eventwire.Approval, width int) []string {
+	title, _, _ := strings.Cut(i18n.M.ToolApprovalPromptFmt, "\n")
+	rows := []string{approvalTitle(title)}
+	for _, field := range []string{strings.TrimSpace(a.Subject), strings.TrimSpace(a.Reason)} {
+		if field == "" {
+			continue
+		}
+		wrapped := wrapRows("", field, width, func(s string) string { return s })
+		if len(wrapped) > approvalSubjectRows {
+			wrapped = append(wrapped[:approvalSubjectRows-1], "…")
+		}
+		rows = append(rows, wrapped...)
+	}
+	return rows
 }
 
 // approvalTitle heads the panel in its accent, with no pictograph: a terminal

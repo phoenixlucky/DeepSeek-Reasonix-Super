@@ -10,10 +10,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"reasonix/internal/base/backgroundwork"
 	"reasonix/internal/state/sessionstore"
 	"strings"
 
@@ -42,6 +44,7 @@ func (s *Server) resume(w http.ResponseWriter, r *http.Request) {
 // status a refusal deserves so both the HTTP handler and a hub opening a
 // session in a new pane refuse for the same reasons.
 func (s *Server) resumeInto(path string) (int, error) {
+	defer backgroundwork.Shared.Foreground()()
 	dir := s.ctl().SessionDir()
 	if dir == "" {
 		return http.StatusBadRequest, refusal(http.StatusBadRequest, "session.disabled", errors.New("sessions disabled"), nil)
@@ -50,31 +53,38 @@ func (s *Server) resumeInto(path string) (int, error) {
 	if err != nil {
 		return http.StatusBadRequest, refusal(http.StatusBadRequest, codeSessionBadPath, errors.New("invalid session dir"), nil)
 	}
-	realDir, err := filepath.EvalSymlinks(absDir)
-	if err != nil {
-		return http.StatusBadRequest, refusal(http.StatusBadRequest, codeSessionBadPath, errors.New("invalid session dir"), nil)
-	}
+	realDir, dirErr := filepath.EvalSymlinks(absDir)
 	absPath, err := filepath.Abs(strings.TrimSpace(path))
-	if err != nil || !store.IsSessionTranscriptName(filepath.Base(absPath)) {
+	name := filepath.Base(absPath)
+	if err != nil || !store.IsSessionTranscriptName(name) {
 		return http.StatusBadRequest, refusal(http.StatusBadRequest, codeSessionBadPath, errors.New("invalid session path"), nil)
 	}
 	// A 1.x v4 conversation the list offered becomes a transcript here first.
-	if filepath.Dir(absPath) == absDir {
-		if err := sessionstore.PrepareSessionPath(absPath); err != nil {
-			return http.StatusBadRequest, fmt.Errorf("open 1.x session: %w", err)
-		}
+	if absPath, err = prepareResumeSessionPath(absDir, absPath); err != nil {
+		return http.StatusBadRequest, fmt.Errorf("open 1.x session: %w", err)
 	}
 	// A transcript that is gone lands here: the delete took the file, and the
 	// list the click came from was drawn before it did.
 	realPath, err := filepath.EvalSymlinks(absPath)
 	if err != nil {
-		return http.StatusBadRequest, refusal(http.StatusBadRequest, codeSessionBadPath, errors.New("invalid session path"), nil)
+		return pathUnresolved(err)
+	}
+	// A transcript that exists cannot be inside a directory that does not.
+	if errors.Is(dirErr, fs.ErrNotExist) {
+		return http.StatusForbidden, refusal(http.StatusForbidden, codeSessionOutside, errors.New("path outside session dir"), nil)
+	}
+	if dirErr != nil {
+		return pathUnresolved(dirErr)
 	}
 	if realPath == realDir || !strings.HasPrefix(realPath, realDir+string(os.PathSeparator)) {
 		return http.StatusForbidden, refusal(http.StatusForbidden, codeSessionOutside, errors.New("path outside session dir"), nil)
 	}
 	if sessionstore.IsCleanupPending(realPath) {
 		return http.StatusBadRequest, refusal(http.StatusBadRequest, "session.pending_cleanup", errors.New("session is pending cleanup"), nil)
+	}
+	settings, err := branchSettings(realPath)
+	if err != nil {
+		return http.StatusInternalServerError, err
 	}
 	// Serialize with /new, /fork, and switchModel so the controller and lease
 	// cannot land on different sessions. Validate first to avoid slow holders.
@@ -103,7 +113,7 @@ func (s *Server) resumeInto(path string) (int, error) {
 	if hook := resumeBindHookForTest; hook != nil {
 		hook()
 	}
-	if err := s.ctl().Resume(loaded, realPath); err != nil {
+	if err := s.resumeCompositionInto(loaded, realPath); err != nil {
 		// The turn in flight owns the session it is writing to. Binding another
 		// one under it is how the running conversation's output lands in the
 		// transcript the user just switched to.
@@ -115,9 +125,52 @@ func (s *Server) resumeInto(path string) (int, error) {
 			return http.StatusInternalServerError, refusal(http.StatusInternalServerError, "session.bind_failed", errors.New("session authority: unable to bind resumed session"), nil)
 		}
 	}
-	s.adoptSessionModelLocked(realPath)
+	if settings != nil {
+		if s.branchModelAvailable(settings.Model) {
+			if currentModelRef(s.ctl()) != settings.Model {
+				if err := s.switchModelLocked(context.Background(), settings.Model); err != nil {
+					return http.StatusInternalServerError, err
+				}
+			}
+		} else {
+			s.notifyBranchModelFallback(settings.Model)
+		}
+		// A model rebuild constructs a new controller, so apply these after it.
+		s.ctl().SetAgentPreset(settings.AgentPreset)
+		s.ctl().SetPlanMode(settings.Mode == "plan")
+		if s.leases == nil || s.leases.Lease() != nil {
+			if err := s.ctl().Snapshot(); err != nil {
+				return http.StatusInternalServerError, err
+			}
+		}
+	} else {
+		s.adoptSessionModelLocked(realPath)
+	}
 	s.resetSessionView()
 	return http.StatusNoContent, nil
+}
+
+func prepareResumeSessionPath(dir, path string) (string, error) {
+	if filepath.Dir(path) != dir {
+		return path, nil
+	}
+	name := filepath.Base(path)
+	if !filepath.IsLocal(name) {
+		return "", refusal(http.StatusBadRequest, codeSessionBadPath, errors.New("invalid session path"), nil)
+	}
+	path = filepath.Join(dir, name)
+	return path, sessionstore.PrepareSessionPath(path)
+}
+
+// pathUnresolved tells a path that is not there from one the host could not
+// read. The host is the only party that saw which it was, so it says so: a
+// transcript that is gone is "no such session", anything else carries the
+// operating system's own reason for the person or support to read.
+func pathUnresolved(err error) (int, error) {
+	if errors.Is(err, fs.ErrNotExist) {
+		return http.StatusNotFound, refusal(http.StatusNotFound, codeSessionUnknown, err, nil)
+	}
+	return http.StatusBadRequest, refusal(http.StatusBadRequest, codeSessionPathUnreadable, err, map[string]any{"detail": err.Error()})
 }
 
 // adoptSessionModelLocked rebuilds the runtime on the model the target session

@@ -35,6 +35,10 @@ type MCPServer struct {
 	Launch      string    `json:"launch"`
 	// PendingReason is the kernel's code for why a pending server waits.
 	PendingReason string `json:"pendingReason"`
+	// HTTPStatus is what the endpoint answered when the failure was an HTTP one.
+	HTTPStatus int `json:"httpStatus"`
+	// ScopeUpgrade is the access a signed-in server asked for, in its own words.
+	ScopeUpgrade []string `json:"scopeUpgrade"`
 }
 
 func (c *Client) MCPServers(ctx context.Context) ([]MCPServer, error) {
@@ -54,6 +58,16 @@ func (c *Client) ReconnectMCP(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodPost, "/mcp/reconnect", map[string]string{"name": name}, nil)
 }
 
+// SignInMCP runs the browser sign-in for one server and returns when it ends.
+func (c *Client) SignInMCP(ctx context.Context, name string) error {
+	return c.do(ctx, http.MethodPost, "/mcp/signin", map[string]string{"name": name}, nil)
+}
+
+// UpgradeMCP grants a signed-in server the access it asked for.
+func (c *Client) UpgradeMCP(ctx context.Context, name string) error {
+	return c.do(ctx, http.MethodPost, "/mcp/upgrade", map[string]string{"name": name}, nil)
+}
+
 // mcpPanel lists the MCP servers; Enter on one shows its tools.
 type mcpPanel struct {
 	servers []MCPServer
@@ -61,6 +75,10 @@ type mcpPanel struct {
 	detail  bool
 	busy    bool
 	confirm string
+	// input, review and removeAsk are the add and remove flows in progress.
+	input     *mcpInput
+	review    *mcpReview
+	removeAsk string
 }
 
 type mcpMsg struct {
@@ -87,11 +105,6 @@ func (m *model) onMCP(msg mcpMsg) tea.Cmd {
 		}
 		return m.commit()
 	}
-	if len(msg.servers) == 0 {
-		m.mcp = nil
-		m.tr.AddNotice("info", i18n.M.SlashMCPNone)
-		return m.commit()
-	}
 	p := m.mcp
 	if p == nil {
 		p = &mcpPanel{}
@@ -103,7 +116,7 @@ func (m *model) onMCP(msg mcpMsg) tea.Cmd {
 			p.sel = i
 		}
 	}
-	p.sel = min(p.sel, len(p.servers)-1)
+	p.sel = max(min(p.sel, len(p.servers)-1), 0)
 	return nil
 }
 
@@ -115,7 +128,30 @@ func (m *model) mcpKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	if p.busy {
 		return nil, true
 	}
+	if p.input != nil {
+		return m.mcpInputKey(msg)
+	}
+	if p.review != nil {
+		return m.mcpReviewKey(msg)
+	}
+	if len(p.servers) == 0 {
+		switch msg.String() {
+		case "n":
+			p.input = &mcpInput{}
+		case "q", "esc", "ctrl+c", "left", "h":
+			m.mcp = nil
+		}
+		return nil, true
+	}
 	cur := p.servers[p.sel]
+	if p.removeAsk != "" {
+		name := p.removeAsk
+		p.removeAsk = ""
+		if msg.String() == "y" && name == cur.Name {
+			return m.mcpRemove(name), true
+		}
+		return nil, true
+	}
 	if p.confirm != "" {
 		if msg.String() == "y" && p.confirm == cur.Name {
 			p.confirm = ""
@@ -124,6 +160,12 @@ func (m *model) mcpKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		p.confirm = ""
 		return nil, true
 	}
+	return m.mcpListKey(msg, cur)
+}
+
+// mcpListKey takes the keys of the server list itself.
+func (m *model) mcpListKey(msg tea.KeyPressMsg, cur MCPServer) (tea.Cmd, bool) {
+	p := m.mcp
 	switch msg.String() {
 	case "q":
 		m.mcp = nil
@@ -139,12 +181,28 @@ func (m *model) mcpKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		p.sel = min(p.sel+1, len(p.servers)-1)
 	case "enter", "right", "l":
 		p.detail = true
+	case "n":
+		p.input = &mcpInput{}
+	case "d":
+		p.removeAsk = cur.Name
 	case "space":
 		if !cur.Enabled && repoDeclared(cur) {
 			p.confirm = cur.Name
 			return nil, true
 		}
 		return m.mcpToggle(cur), true
+	case "a":
+		if !cur.Enabled || cur.State != "failed" || cur.HTTPStatus != http.StatusUnauthorized {
+			return nil, true
+		}
+		p.busy = true
+		return m.mcpAction(cur.Name, func(ctx context.Context) error { return m.client.SignInMCP(ctx, cur.Name) }), true
+	case "u":
+		if !cur.Enabled || len(cur.ScopeUpgrade) == 0 {
+			return nil, true
+		}
+		p.busy = true
+		return m.mcpAction(cur.Name, func(ctx context.Context) error { return m.client.UpgradeMCP(ctx, cur.Name) }), true
 	case "r":
 		if !cur.Enabled || cur.State != "failed" {
 			return nil, true
@@ -192,6 +250,18 @@ func (m *model) onMCPActionErr(msg mcpActionErrMsg) tea.Cmd {
 
 func (m *model) mcpPanelLines() []string {
 	p := m.mcp
+	switch {
+	case p.input != nil:
+		return m.mcpInputLines()
+	case p.review != nil:
+		return m.mcpReviewLines()
+	case len(p.servers) == 0:
+		lines := []string{termrender.Accent(i18n.M.McpPanelTitle)}
+		for part := range strings.SplitSeq(i18n.M.McpEmptyHelp, " — ") {
+			lines = append(lines, termrender.Dim("  "+clipVisible(part, max(m.width-8, 12))))
+		}
+		return panel(append(lines, termrender.Dim(i18n.M.McpEmptyHint)), m.width, accentEdge)
+	}
 	cur := p.servers[p.sel]
 	if p.detail {
 		return m.mcpDetail(cur)
@@ -236,15 +306,30 @@ func (m *model) mcpPanelLines() []string {
 	if end < len(p.servers) {
 		lines = append(lines, termrender.Dim("  "+i18n.M.ListMoreBelow))
 	}
-	if p.confirm != "" {
+	if p.removeAsk != "" {
+		lines = append(lines, termrender.Yellow("  "+clipVisible(fmt.Sprintf(i18n.M.McpRemoveAskFmt, textutil.SanitizeLaunch(p.removeAsk)), width)))
+	} else if p.confirm != "" {
 		lines = append(lines, termrender.Yellow("  "+fmt.Sprintf(i18n.M.McpPanelConfirmFmt, textutil.SanitizeLaunch(p.confirm), clipVisible(textutil.SanitizeLaunch(cur.Launch), width-8))))
 	} else {
 		if cur.State == "pending" && cur.Launch != "" {
 			lines = append(lines, termrender.Yellow("  "+fmt.Sprintf(i18n.M.McpPanelLaunchFmt, clipVisible(textutil.SanitizeLaunch(cur.Launch), width-8))))
 		}
+		lines = append(lines, mcpAuthHint(cur, width)...)
 		lines = append(lines, termrender.Dim(i18n.M.McpPanelHint))
 	}
 	return panel(lines, m.width, accentEdge)
+}
+
+// mcpAuthHint names the one key that answers the server under the cursor, when
+// one does. The scope names are the server's words and are shown as written.
+func mcpAuthHint(s MCPServer, width int) []string {
+	switch {
+	case s.Enabled && len(s.ScopeUpgrade) > 0:
+		return []string{termrender.Yellow("  " + clipVisible(fmt.Sprintf(i18n.M.McpPanelUpgradeFmt, textutil.SanitizeLaunch(strings.Join(s.ScopeUpgrade, " "))), width))}
+	case s.Enabled && s.State == "failed" && s.HTTPStatus == http.StatusUnauthorized:
+		return []string{termrender.Yellow("  " + i18n.M.McpPanelSignIn)}
+	}
+	return nil
 }
 
 func (m *model) mcpDetail(s MCPServer) []string {

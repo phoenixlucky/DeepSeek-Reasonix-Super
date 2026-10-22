@@ -2,6 +2,7 @@ package delegation
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"path/filepath"
@@ -905,7 +906,8 @@ func TestTaskToolBackgroundSalvagePublishesEvidenceForCollection(t *testing.T) {
 		finalText,
 		finalText,
 	}}
-	task := NewTaskTool(sub, nil, reg, 20, 0, 0, 0, 0.0, "", "sys", nil, 0, "", "", nil).
+	task := NewTaskTool(sub, nil, reg, 20, 0, 0, 0, 0.0, "", "sys", nil, 0, "", "", nil,
+		func(context.Context, tool.Tool, json.RawMessage) error { return nil }).
 		WithTranscripts(NewSubagentStore(testenv.TempDir(t)), testenv.TempDir(t), "base-model", "base-effort").
 		WithDeliveryProfile(true)
 

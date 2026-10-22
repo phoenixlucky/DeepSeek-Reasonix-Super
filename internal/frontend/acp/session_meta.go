@@ -52,7 +52,7 @@ func (s *acpSession) metaLocked() acpSessionMeta {
 		Model:             s.model,
 		EffortOverride:    cloneStringPtr(s.effortOverride),
 		RuntimeProfile:    s.runtimeProfile,
-		ToolApprovalMode:  normalizeACPToolApprovalMode(s.toolApprovalMode),
+		ToolApprovalMode:  firstNonEmpty(s.posture.kept, normalizeACPToolApprovalMode(s.posture.mode)),
 		CollaborationMode: normalizeACPCollaborationMode(s.modeID),
 		Title:             s.title,
 		CreatedAt:         s.createdAt,
@@ -236,4 +236,22 @@ func parseSessionUpdatedAt(s string) time.Time {
 		return time.Time{}
 	}
 	return t
+}
+
+// persistedSessionMeta reads what a saved session kept about itself, and the path
+// it was read from; both are empty when the agent keeps no sessions.
+func (s *service) persistedSessionMeta(method, id string) (acpSessionMeta, string, *RPCError) {
+	dir := s.sessionDir()
+	if dir == "" {
+		return acpSessionMeta{}, "", nil
+	}
+	path := resolveTranscriptPath(dir, id)
+	if sessionstore.IsCleanupPending(path) {
+		return acpSessionMeta{}, "", &RPCError{Code: ErrInvalidParams, Message: method + ": unknown session " + id}
+	}
+	meta, _, err := loadACPMeta(path)
+	if err != nil {
+		return acpSessionMeta{}, "", &RPCError{Code: ErrInternal, Message: method + ": " + err.Error()}
+	}
+	return meta, path, nil
 }

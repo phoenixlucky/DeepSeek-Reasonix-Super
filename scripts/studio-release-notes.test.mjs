@@ -62,7 +62,7 @@ test("an unresolved ref stays plain and is reported by code", async () => {
 
 test("committed notes render unchanged when nothing is credited", async () => {
   const dir = new URL("../release-notes/studio/", import.meta.url);
-  for (const name of await readdir(dir)) {
+  for (const name of (await readdir(dir, { recursive: true })).filter((entry) => entry.endsWith(".md"))) {
     const source = await readFile(new URL(name, dir), "utf8");
     assert.equal(renderStudioNotes(source, new Map()), `${source.trimEnd()}\n`, name);
   }
@@ -87,4 +87,31 @@ test("an item whose only author is excluded renders plain and lists no contribut
     [2, { kind: "issue", fixes: [{ number: 9, login: "owner", bot: true }] }],
   ]);
   assert.equal(renderStudioNotes("摘要。\n\n## 修复\n\n- 一 #1\n- 二 #2\n", credits), "摘要。\n\n## 修复\n\n- 一 #1\n- 二 #2 fixed in #9\n");
+});
+
+test("notes with an English part credit contributors in each language and keep the marker between them", async () => {
+  const both = `本版修复一件事。
+
+## 修复
+
+- 会话不再丢失（#20）
+
+---
+
+<!-- lang:en -->
+
+This release fixes one thing.
+
+## Fixed
+
+- Sessions are no longer lost (#20)
+`;
+  const { credits } = await resolveCredits(markdownRefs(both), async (ref) => authors[ref]);
+  const rendered = renderStudioNotes(both, credits);
+  const [first, english] = rendered.split("<!-- lang:en -->");
+  assert.match(first, /会话不再丢失（#20 by @alice）/);
+  assert.match(first, /## 贡献者\n\n感谢本版本的贡献者：@alice\n\n---\n\n$/);
+  assert.match(english, /Sessions are no longer lost \(#20 by @alice\)/);
+  assert.match(english, /## Contributors\n\nThanks to this release's contributors: @alice\n$/);
+  assert.equal(rendered.split("## 贡献者").length, 2);
 });

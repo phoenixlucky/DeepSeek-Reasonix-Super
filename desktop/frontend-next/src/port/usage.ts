@@ -28,6 +28,8 @@ export interface UsageDay {
   cacheHit: number;
   cacheMiss: number;
   cost?: Money[];
+  // A subscription's API-priced estimate for the day: not money billed, never added to cost.
+  estimateCost?: Money[];
 }
 
 export interface UsageModel {
@@ -52,9 +54,15 @@ export interface UsageReport {
   cache_hit: number;
   cache_miss: number;
   cost?: Money[];
+  // What subscription-equivalent connections would have cost at API prices. It is
+  // an estimate of a plan's use, not a charge, and is kept out of cost.
+  estimateCost?: Money[];
   // Set when any folded quote was priced from a fallback rate card. The
   // total is then an estimate wearing a "paid" label unless the panel says so.
   costEstimated?: boolean;
+  // Set when a counted call's money is unknown (no rate card, or a quote that
+  // could not price its usage). cost is then a floor, not the bill.
+  costIncomplete?: boolean;
   active_days: number;
   top_model: string;
   top_provider: string;

@@ -163,10 +163,11 @@ type Settings struct {
 // ResolvedHook is a loaded hook with its origin baked in.
 type ResolvedHook struct {
 	HookConfig
-	Event    Event
-	Scope    Scope
-	Source   string                 // absolute path to the settings.json it came from
-	approval *config.ProjectProgram // the approval a project hook runs under
+	Event         Event
+	Scope         Scope
+	Source        string                 // absolute path to the settings.json it came from
+	approval      *config.ProjectProgram // the approval a project hook runs under
+	retainedCheck func() error
 }
 
 func (h ResolvedHook) timeout() time.Duration {
@@ -1014,21 +1015,6 @@ type SpawnInput struct {
 	Env     map[string]string
 	Stdin   string
 	Timeout time.Duration
-}
-
-// RuntimeOptions carries resolved host dependencies into Hook execution.
-// It is runtime-only and never changes persisted Hook configuration.
-type RuntimeOptions struct {
-	BashPath string
-}
-
-// RuntimeOptionsForShell carries an explicitly configured Bash path into Hook
-// execution while leaving other interpreter preferences independent.
-func RuntimeOptionsForShell(prefer, path string) RuntimeOptions {
-	if !strings.EqualFold(strings.TrimSpace(prefer), "bash") {
-		return RuntimeOptions{}
-	}
-	return RuntimeOptions{BashPath: strings.TrimSpace(path)}
 }
 
 // RuntimeIssue identifies one plugin Hook whose host dependency is unavailable.

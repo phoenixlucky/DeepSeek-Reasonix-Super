@@ -84,3 +84,24 @@ it("keeps a working preview mounted across ordinary palette redraws", async () =
   expect((card.querySelector(".pal-art") as HTMLElement).style.getPropertyValue("--pal-page")).toBe("#0F0D0B");
   expect(themes).toHaveBeenCalledTimes(1);
 });
+
+it.each(["zh", "en"])("keeps foundations visible and previews their own scheme in %s", async (lang) => {
+  localStorage.setItem(STORAGE, lang);
+  boot();
+  const port = new MockPort();
+  const view = render(picker(port));
+  const blue = await screen.findByRole("button", { name: lang === "zh" ? /清白蓝/ : /Clear Blue/ });
+  const green = screen.getByRole("button", { name: lang === "zh" ? /茶绿/ : /Tea Green/ });
+  expect(blue.closest("details")).toBeNull();
+  expect(green.closest("details")).toBeNull();
+  const sky = document.querySelector('.pal[data-value="tide"]')!;
+  expect(sky.closest("details")?.open).toBe(false);
+  const art = blue.querySelector(".pal-art") as HTMLElement;
+  expect(art.style.getPropertyValue("--pal-page")).toBe("#F5F7FA");
+  await userEvent.click(green);
+  await waitFor(() => expect(green.getAttribute("aria-pressed")).toBe("true"));
+  expect(art.style.getPropertyValue("--pal-page")).toBe("#F5F7FA");
+  view.rerender(picker(port, "dark"));
+  expect(art.style.getPropertyValue("--pal-page")).toBe("#151B24");
+  expect((green.querySelector(".pal-art") as HTMLElement).style.getPropertyValue("--pal-page")).toBe("#18211B");
+});

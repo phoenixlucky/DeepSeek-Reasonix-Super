@@ -195,6 +195,7 @@ func TestDownloadFailuresKeepTheirClass(t *testing.T) {
 		want string
 	}{
 		{fmt.Errorf("%w: %w", update.ErrFetch, context.DeadlineExceeded), FailDownload},
+		{fmt.Errorf("%w: %w", update.ErrFetch, update.ErrStalled), FailStalled},
 		{fmt.Errorf("%w: bad sig", update.ErrVerify), FailVerify},
 		{fmt.Errorf("%w: disk full", update.ErrStore), FailDisk},
 		{failAs(FailCatalog, errors.New("catalog 503")), FailCatalog},
@@ -203,5 +204,21 @@ func TestDownloadFailuresKeepTheirClass(t *testing.T) {
 		if got := failureCode(tc.err); got != tc.want {
 			t.Errorf("failureCode(%v) = %q, want %q", tc.err, got, tc.want)
 		}
+	}
+}
+
+// A connection dropped for going quiet is on the frame the panel reads, and it
+// survives the byte counts that follow it.
+func TestAStalledConnectionReachesTheProgress(t *testing.T) {
+	c := &capability{}
+	r := c.report("2.1.0", "")
+	r.Bytes(100, 1000)
+	r.Stalled()
+	if got := c.install.read(); got.Stalls != 1 || got.Received != 100 || got.Phase != update.PhaseDownloading {
+		t.Fatalf("after the drop: %+v", got)
+	}
+	r.Bytes(300, 1000)
+	if got := c.install.read(); got.Stalls != 1 || got.Received != 300 {
+		t.Fatalf("after bytes resumed: %+v, want the drop still counted", got)
 	}
 }

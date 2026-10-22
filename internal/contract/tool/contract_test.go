@@ -121,29 +121,31 @@ func boolString(v bool) string {
 // which is the guard against a context-maintenance strategy silently desyncing
 // from the tool surface.
 var acceptsDefaultSnip = map[string]bool{
-	"bash_output":    true, // streamed job output; tailing handled by the job, not the snip pass
-	"browser_act":    true, // step results lead; the page changes after them are the part a head keeps
-	"browser_open":   true, // a snapshot reads top-down, so the head is the top of the page
-	"browser_read":   true, // same shape as browser_open, and paged by offset when longer
-	"code_index":     true,
-	"complete_step":  true,
-	"render_chart":   true, // a chart_id and a few summary lines; never large enough to snip
-	"computer_act":   true, // step results lead, then the application's tree read top-down
-	"computer_read":  true, // an accessibility tree reads top-down, like a page snapshot
-	"compress":       true,
-	"context_budget": true, // a fixed four-number JSON; never large enough to snip
-	"delete_range":   true,
-	"delete_symbol":  true,
-	"edit_file":      true,
-	"kill_shell":     true,
-	"move_file":      true,
-	"multi_edit":     true,
-	"notebook_edit":  true,
-	"recall":         true, // recalled transcript: head and tail are both real content, like any read
-	"todo_write":     true,
-	"update_goal":    true,
-	"wait":           true,
-	"write_file":     true,
+	"bash_output":      true, // streamed job output; tailing handled by the job, not the snip pass
+	"browser_act":      true, // step results lead; the page changes after them are the part a head keeps
+	"browser_open":     true, // a snapshot reads top-down, so the head is the top of the page
+	"browser_read":     true, // same shape as browser_open, and paged by offset when longer
+	"code_index":       true,
+	"complete_step":    true,
+	"import_web_image": true, // a small JSON receipt (path, dimensions, hash); never large enough to snip
+	"render_chart":     true, // a chart_id and a few summary lines; never large enough to snip
+	"computer_act":     true, // step results lead, then the application's tree read top-down
+	"computer_read":    true, // an accessibility tree reads top-down, like a page snapshot
+	"compress":         true,
+	"context_budget":   true, // a fixed four-number JSON; never large enough to snip
+	"delete_range":     true,
+	"delete_symbol":    true,
+	"edit_file":        true,
+	"kill_shell":       true,
+	"move_file":        true,
+	"multi_edit":       true,
+	"notebook_edit":    true,
+	"read_video":       true, // a few labelled lines; the frames travel as images, which are aged on their own
+	"recall":           true, // recalled transcript: head and tail are both real content, like any read
+	"todo_write":       true,
+	"update_goal":      true,
+	"wait":             true,
+	"write_file":       true,
 }
 
 func TestEveryBuiltinDeclaresSnipStance(t *testing.T) {

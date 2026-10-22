@@ -6,6 +6,7 @@ import {
   CLOSE_REVOKED,
   closeAction,
   linkCodec,
+  maxRequestBody,
   RemoteLink,
   RemoteLinkError,
   type RemoteConnection,
@@ -295,5 +296,166 @@ describe("remote link", () => {
     expect(dial).toHaveBeenCalledTimes(2);
     expect(ends[0]?.kind).toBe("ended");
     expect(ends[0]?.failure).toBeUndefined();
+  });
+});
+
+describe("a request too large for the desktop's read limit", () => {
+  const upload = (bytes: number, path = "/rt/one/attachments") =>
+    new Request(`${location.origin}${path}`, { method: "POST", body: "x".repeat(bytes) });
+
+  it("is refused here, says why, and leaves the link and later requests alone", async () => {
+    const { conn, socket } = connection();
+    const link = new RemoteLink(conn, async () => conn, (end) => ends.push(end));
+    const room = maxRequestBody("/rt/one/attachments");
+    expect(room).toBeGreaterThan(20_000);
+    await expect(link.fetch(upload(room + 1))).rejects.toThrow(/太大|too large/);
+    expect(socket.sent).toHaveLength(0);
+    expect(ends).toEqual([]);
+    const small = link.fetch(upload(100));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(socket.sent).toHaveLength(1);
+    socket.reply(String(socket.sent[0].id), "{}");
+    expect((await small).status).toBe(200);
+  });
+
+  it("is judged by what the sealed message would weigh, which the room stays well under", async () => {
+    const { conn, socket } = connection();
+    const link = new RemoteLink(conn, async () => conn, (end) => ends.push(end));
+    const room = maxRequestBody("/rt/one/attachments");
+    void link.fetch(upload(room)).catch(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(socket.sent).toHaveLength(1);
+    const wire = JSON.stringify(socket.sent[0]).length;
+    expect(Math.ceil(((wire + 16 + 96) * 4) / 3) + 120).toBeLessThan(64 * 1024);
+  });
+});
+
+describe("a request too large for one message", () => {
+  const upload = (bytes: number) => new Request(`${location.origin}/rt/one/attachments`, { method: "POST", body: new Uint8Array(bytes).fill(7) });
+  const partsOf = (socket: FakeSocket) => socket.sent.filter((m) => m.type === "desktop.request.part");
+
+  it("crosses as numbered parts to a desktop that can put them back together, and resolves on its answer", async () => {
+    const { conn, socket } = connection(["replay", "upload"]);
+    const link = new RemoteLink(conn, async () => conn, (end) => ends.push(end));
+    const size = 24 * 1024 * 5 + 321;
+    const sent = link.fetch(upload(size));
+    await vi.advanceTimersByTimeAsync(0);
+    const parts = partsOf(socket);
+    expect(parts).toHaveLength(6);
+    expect(socket.sent.filter((m) => m.type === "desktop.request")).toHaveLength(0);
+    expect(parts.map((p) => p.index)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(new Set(parts.map((p) => p.id)).size).toBe(1);
+    expect(parts.every((p) => p.total === 6)).toBe(true);
+    expect(parts[0]).toMatchObject({ method: "POST", path: "/rt/one/attachments" });
+    expect(parts.slice(1).every((p) => p.method === undefined && p.path === undefined)).toBe(true);
+    const bytes = parts.flatMap((p) => [...linkCodec.base64ToBytes(String(p.body))]);
+    expect(bytes).toHaveLength(size);
+    expect(bytes.every((b) => b === 7)).toBe(true);
+    for (const p of parts) expect(JSON.stringify(p).length).toBeLessThan(40 * 1024);
+    socket.reply(String(parts[0].id), "{}");
+    expect((await sent).status).toBe(200);
+  });
+
+  it("is refused here, with nothing sent, by a desktop that does not say it can reassemble", async () => {
+    const { conn, socket } = connection(["replay"]);
+    const link = new RemoteLink(conn, async () => conn, (end) => ends.push(end));
+    await expect(link.fetch(upload(200 * 1024))).rejects.toThrow(/太大|too large/);
+    expect(socket.sent).toHaveLength(0);
+  });
+
+  it("is refused here past what the desktop would hold", async () => {
+    const { conn, socket } = connection(["upload"]);
+    const link = new RemoteLink(conn, async () => conn, (end) => ends.push(end));
+    await expect(link.fetch(upload(16 * 1024 * 1024 + 1))).rejects.toThrow(/16 MB|16 MB/);
+    expect(socket.sent).toHaveLength(0);
+  });
+
+  it("stops reading an oversized upload stream at the relay budget", async () => {
+    const { conn, socket } = connection(["upload"]);
+    const link = new RemoteLink(conn, async () => conn, (end) => ends.push(end));
+    let chunks = 0;
+    const canceled = vi.fn();
+    const body = new ReadableStream({
+      pull(controller) { chunks++; controller.enqueue(new Uint8Array(1024 * 1024)); },
+      cancel: canceled,
+    });
+    const request = new Request(`${location.origin}/rt/one/attachments/upload?name=large.apk`, { method: "POST", body, duplex: "half" } as RequestInit);
+    await expect(link.fetch(request)).rejects.toThrow(/16 MB/);
+    expect(chunks).toBeLessThanOrEqual(18);
+    expect(canceled).toHaveBeenCalledOnce();
+    expect(socket.sent).toHaveLength(0);
+  });
+
+  it("starts again from the first part, under the same id, when the link is lost midway", async () => {
+    const first = connection(["replay", "upload"], "desktop-1");
+    const second = connection(["replay", "upload"], "desktop-1");
+    const link = new RemoteLink(first.conn, async () => second.conn, (end) => ends.push(end), { retryDelaysMs: [10] });
+    void link.fetch(upload(24 * 1024 * 3)).catch(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(partsOf(first.socket)).toHaveLength(3);
+    first.socket.close(1006, "gone");
+    await vi.advanceTimersByTimeAsync(50);
+    const again = partsOf(second.socket);
+    expect(again.map((p) => p.index)).toEqual([0, 1, 2]);
+    expect(again[0].id).toBe(partsOf(first.socket)[0].id);
+  });
+});
+
+describe("a slow answer over a live link", () => {
+  function chunk(socket: FakeSocket, id: string, index: number, done: boolean) {
+    socket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({
+      type: "desktop.response", id, index, done, status: 200,
+      body: linkCodec.bytesToBase64(new TextEncoder().encode(`part${index};`)),
+    }) }));
+  }
+
+  it("is not failed while its own chunks keep arriving, however long the whole takes", async () => {
+    const first = connection();
+    const link = new RemoteLink(first.conn, vi.fn(async () => first.conn), (end) => ends.push(end), { requestTimeoutMs: 30_000 });
+    const answer = link.fetch(request());
+    const settled = answer.then(() => "answered", (error: Error) => error.message);
+    await vi.advanceTimersByTimeAsync(0);
+    const id = String(first.socket.sent[0]?.id);
+
+    for (let index = 0; index < 5; index++) {
+      await vi.advanceTimersByTimeAsync(20_000);
+      chunk(first.socket, id, index, index === 4);
+    }
+
+    await expect(settled).resolves.toBe("answered");
+    await expect((await answer).text()).resolves.toBe("part0;part1;part2;part3;part4;");
+  });
+
+  it("keeps waiting for a request queued behind others while the desktop is still answering them", async () => {
+    const first = connection();
+    const link = new RemoteLink(first.conn, vi.fn(async () => first.conn), (end) => ends.push(end), { requestTimeoutMs: 30_000 });
+    const queued = link.fetch(request("GET", "/rt/two/events/replay"));
+    const settled = queued.then(() => "answered", (error: Error) => error.message);
+    await vi.advanceTimersByTimeAsync(0);
+    const id = String(first.socket.sent[0]?.id);
+
+    for (let beat = 0; beat < 6; beat++) {
+      await vi.advanceTimersByTimeAsync(20_000);
+      chunk(first.socket, "someone-elses-request", beat, false);
+    }
+    first.socket.reply(id, "finally");
+
+    await expect(settled).resolves.toBe("answered");
+  });
+
+  it("still gives up on a request nothing has answered, so a silent desktop is not waited on forever", async () => {
+    const first = connection();
+    const second = connection();
+    const link = new RemoteLink(first.conn, vi.fn(async () => second.conn), (end) => ends.push(end), { requestTimeoutMs: 30_000 });
+    const answer = link.fetch(request());
+    const settled = answer.then(() => "answered", (error: Error) => error.message);
+    await vi.advanceTimersByTimeAsync(0);
+
+    for (let beat = 0; beat < 40; beat++) {
+      await vi.advanceTimersByTimeAsync(10_000);
+      chunk(first.socket, "someone-elses-request", beat, false);
+    }
+
+    await expect(settled).resolves.toMatch(/Remote Studio|远程 Studio/);
   });
 });

@@ -4,6 +4,7 @@ package eventwire
 import (
 	"reasonix/internal/base/externalurl"
 	"reasonix/internal/contract/agentgraph"
+	"reasonix/internal/contract/delivery"
 	"reasonix/internal/contract/event"
 	"reasonix/internal/contract/pricing"
 	"reasonix/internal/contract/provider"
@@ -44,6 +45,7 @@ type Event struct {
 	Receipt         *CompletionReceipt  `json:"receipt,omitempty"`
 	CheckpointTurn  *int                `json:"checkpointTurn,omitempty"`
 	WorkDurationMs  int64               `json:"workDurationMs,omitempty"` // TurnDone: run time up to the final answer
+	WorkStartedAt   int64               `json:"workStartedAt,omitempty"`  // TurnDone: unix ms the turn began
 	// Which producer wrote this frame: the executor, the planner, a sub-agent.
 	// A turn can carry two models, and the alternative is reading it off the
 	// last phase marker — an adjacency a replay cannot even see.
@@ -130,6 +132,8 @@ type StreamAttempt struct {
 	Attempt int    `json:"attempt,omitempty"`
 	Max     int    `json:"max,omitempty"`
 	Reason  string `json:"reason,omitempty"` // connection_reset | premature_eof | idle_timeout
+	// FirstTokenMs rides a commit: request sent to first output, host-measured.
+	FirstTokenMs int64 `json:"firstTokenMs,omitempty"`
 }
 
 // ToWire converts a typed runtime event into the shared frontend JSON contract.
@@ -161,6 +165,8 @@ func ToWire(e event.Event) Event {
 	case event.AskRequest:
 		w.Ask = ToWireAsk(e.Ask)
 		w.NonPersistable = urlAsk(e.Ask)
+	case event.AskEngaged:
+		w.Ask = ToWireAsk(event.Ask{ID: e.Ask.ID})
 	case event.CompactionStarted, event.CompactionDone:
 		w.Compaction = toWireCompaction(e.Compaction)
 	case event.ContextMaintenanceEvent:
@@ -194,7 +200,7 @@ func ToWire(e event.Event) Event {
 		w.HostAuthored = e.HostAuthored
 	case event.TurnDone:
 		w.Cancelled, w.Outcome = e.Cancelled, e.Outcome
-		w.CheckpointTurn, w.WorkDurationMs = e.CheckpointTurn, e.WorkDurationMs
+		w.CheckpointTurn, w.WorkDurationMs, w.WorkStartedAt = e.CheckpointTurn, e.WorkDurationMs, e.WorkStartedAt
 		w.Receipt = completionReceiptWire(e.Receipt)
 		if e.Readiness != nil {
 			w.Readiness = &FinalReadiness{Attempts: e.Readiness.Attempts, Missing: append([]string(nil), e.Readiness.Missing...)}
@@ -206,11 +212,12 @@ func ToWire(e event.Event) Event {
 		w.setRetry(e)
 	case event.StreamAttempt:
 		w.StreamAttempt = &StreamAttempt{
-			ID:      e.StreamAttempt.ID,
-			Action:  string(e.StreamAttempt.Action),
-			Attempt: e.StreamAttempt.Attempt,
-			Max:     e.StreamAttempt.Max,
-			Reason:  e.StreamAttempt.Reason,
+			ID:           e.StreamAttempt.ID,
+			Action:       string(e.StreamAttempt.Action),
+			Attempt:      e.StreamAttempt.Attempt,
+			Max:          e.StreamAttempt.Max,
+			Reason:       e.StreamAttempt.Reason,
+			FirstTokenMs: e.StreamAttempt.FirstTokenMs,
 		}
 	case event.TurnPhase:
 		w.Phase = string(e.PhaseName)
@@ -361,6 +368,8 @@ type Compaction struct {
 	Boundary      string `json:"boundary,omitempty"`
 	TriggerTokens int    `json:"triggerTokens,omitempty"`
 	Code          string `json:"code,omitempty"` // why a fold installed nothing
+	// What the prompt still holds after a fold that left a large share of the window.
+	Remains *event.ContextComposition `json:"remains,omitempty"`
 }
 
 func toWireCompaction(c event.Compaction) *Compaction {
@@ -370,7 +379,7 @@ func toWireCompaction(c event.Compaction) *Compaction {
 		SourceTokens: c.SourceTokens, ProjectionTokens: c.ProjectionTokens,
 		CoverageRequired: c.CoverageRequired, CoverageMissing: c.CoverageMissing,
 		CoverageBackstopped: c.CoverageBackstopped,
-		Boundary:            c.Boundary, TriggerTokens: c.TriggerTokens, Code: c.Code,
+		Boundary:            c.Boundary, TriggerTokens: c.TriggerTokens, Code: c.Code, Remains: c.Remains,
 	}
 }
 
@@ -378,17 +387,6 @@ func toWireCompaction(c event.Compaction) *Compaction {
 type AskOption struct {
 	Label       string `json:"label"`
 	Description string `json:"description,omitempty" externalizable:"true"`
-}
-
-// AskQuestion is one JSON-formatted structured ask question.
-type AskQuestion struct {
-	ID      string      `json:"id"`
-	Header  string      `json:"header,omitempty"`
-	Prompt  string      `json:"prompt" externalizable:"true"`
-	Reason  string      `json:"reason,omitempty"`
-	Options []AskOption `json:"options"`
-	Multi   bool        `json:"multi,omitempty"`
-	Default []string    `json:"default,omitempty"`
 }
 
 // AskOrigin is the JSON form of an event.AskOrigin.
@@ -407,6 +405,7 @@ type Ask struct {
 	ID        string        `json:"id"`
 	Questions []AskQuestion `json:"questions"`
 	Origin    *AskOrigin    `json:"origin,omitempty"`
+	SkipInMs  int64         `json:"skipInMs,omitempty"`
 }
 
 // Profile carries the subagent model/effort resolved for a tool call.
@@ -415,6 +414,7 @@ type Profile struct {
 	Count  int    `json:"count,omitempty"`
 	Model  string `json:"model,omitempty"`
 	Effort string `json:"effort,omitempty"`
+	Label  string `json:"label,omitempty"`
 }
 
 // Bound is the JSON form of event.OutputBound, present only when the result did
@@ -434,63 +434,41 @@ var boundKindNames = map[event.BoundKind]string{
 	event.BoundTruncated: "truncated",
 }
 
-func toWireTool(t event.Tool) *Tool {
-	wt := &Tool{
-		ID: t.ID, Name: t.Name, Args: t.Args,
-		ResolvedName: t.ResolvedName, CapabilityID: t.CapabilityID,
-		Output: t.Output, Images: t.Images, Err: t.Err, RefusalCode: t.RefusalCode,
-		WorkspaceLease: toWireWorkspaceLease(t.WorkspaceLease),
-		OutputDiff:     t.OutputDiff,
-		ReadOnly:       t.ReadOnly, Truncated: t.Bound.Lossy(),
-		DurationMs: t.DurationMs, ContextTokens: t.ContextTokens(),
-		Partial: t.Partial, StartedAt: t.StartedAt, EndedAt: t.EndedAt,
-		ArgChars: t.ArgChars, Refreshed: t.Refreshed,
-		ParentID: t.ParentID, AttemptID: t.AttemptID, Issuer: string(t.Issuer),
-		Diff: t.Diff, Added: t.Added, Removed: t.Removed,
-	}
-	if b := t.Bound; b.Kind != event.BoundWhole {
-		wt.Bound = &Bound{
-			Kind: boundKindNames[b.Kind], Lines: b.Lines,
-			Bytes: b.Bytes, KeptBytes: b.KeptBytes, Path: b.Path,
-		}
-	}
-	if t.Profile != nil {
-		wt.Profile = &Profile{Name: t.Profile.Name, Count: t.Profile.Count, Model: t.Profile.Model, Effort: t.Profile.Effort}
-	}
-	if t.Execution != nil {
-		wt.Execution = toWireShellExecution(t.Execution)
-	}
-	return wt
+// VideoShown is the JSON form of an event.VideoShown.
+type VideoShown struct {
+	Name       string `json:"name"`
+	Size       int64  `json:"size"`
+	DurationMs int64  `json:"durationMs,omitempty"`
+	Model      string `json:"model"`
 }
 
-// toWireWorkspace renders a workspace mutation. A nil payload still renders,
-// so a frontend reading the field never has to tell "no changes" apart from
-// "the event arrived without one".
-func toWireWorkspace(ws *event.WorkspaceChangedPayload) *WorkspaceChanged {
-	if ws == nil {
-		ws = &event.WorkspaceChangedPayload{}
+func toWireVideos(in []event.VideoShown) []VideoShown {
+	if len(in) == 0 {
+		return nil
 	}
-	changes := make([]WorkspacePathChange, 0, len(ws.Changes))
-	for _, c := range ws.Changes {
-		changes = append(changes, WorkspacePathChange{Path: c.Path, OldPath: c.OldPath, Op: c.Op})
+	out := make([]VideoShown, len(in))
+	for i, v := range in {
+		out[i] = VideoShown{Name: v.Name, Size: v.Size, DurationMs: v.DurationMs, Model: v.Model}
 	}
-	return &WorkspaceChanged{
-		Revisions: WorkspaceRevision{Content: ws.Revisions.Content, Tree: ws.Revisions.Tree, WorkingTree: ws.Revisions.WorkingTree, GitMeta: ws.Revisions.GitMeta, Session: ws.Revisions.Session},
-		Changes:   changes, AllPaths: ws.AllPaths, Source: ws.Source, WatchState: string(ws.WatchState),
-	}
+	return out
 }
 
 // Tool is the JSON form of an event.Tool.
 type Tool struct {
-	ID           string `json:"id,omitempty"`
-	Name         string `json:"name"`
-	Args         string `json:"args,omitempty" externalizable:"true"`
-	ResolvedName string `json:"resolvedName,omitempty"`
-	CapabilityID string `json:"capabilityId,omitempty"`
-	Output       string `json:"output,omitempty" externalizable:"true"`
+	Deliveries            []delivery.File                 `json:"deliveries,omitempty"`
+	ID                    string                          `json:"id,omitempty"`
+	Name                  string                          `json:"name"`
+	Args                  string                          `json:"args,omitempty" externalizable:"true"`
+	ArgumentNormalization *provider.ArgumentNormalization `json:"argumentNormalization,omitempty"`
+	ResolvedName          string                          `json:"resolvedName,omitempty"`
+	CapabilityID          string                          `json:"capabilityId,omitempty"`
+	Output                string                          `json:"output,omitempty" externalizable:"true"`
 	// Images the call showed the model, as data URLs.
 	Images []string `json:"images,omitempty"`
-	Err    string   `json:"err,omitempty" externalizable:"true"`
+	// Videos the call handed to the model to watch natively; the file's name and
+	// size, never its bytes.
+	Videos []VideoShown `json:"videos,omitempty"`
+	Err    string       `json:"err,omitempty" externalizable:"true"`
 	// RefusalCode is the host's dotted identity for a refusal. Err is only its
 	// wording, and a reader that has to tell one refusal from another cannot
 	// use a sentence.
@@ -506,6 +484,9 @@ type Tool struct {
 	Truncated  bool   `json:"truncated,omitempty"`
 	Bound      *Bound `json:"bound,omitempty"`
 	DurationMs int64  `json:"durationMs,omitempty"`
+	// RateTokensPerSec is a sub-agent's estimated streaming rate, on its status
+	// channel while it reasons or answers. Estimated, never billed.
+	RateTokensPerSec int `json:"rate,omitempty"`
 	// ContextTokens is what this call left in the prompt (args + result), so a
 	// card can say which step is eating the window. Estimated, never billed.
 	ContextTokens int    `json:"contextTokens,omitempty"`
@@ -671,9 +652,9 @@ func ToWireAsk(a event.Ask) *Ask {
 		for j, o := range q.Options {
 			opts[j] = AskOption{Label: o.Label, Description: o.Description}
 		}
-		qs[i] = AskQuestion{ID: q.ID, Header: q.Header, Prompt: q.Prompt, Reason: q.Reason, Options: opts, Multi: q.Multi, Default: q.Default}
+		qs[i] = AskQuestion{ID: q.ID, Header: q.Header, Prompt: q.Prompt, Reason: q.Reason, Options: opts, Multi: q.Multi, Default: q.Default, Surface: q.Surface, CallID: q.CallID}
 	}
-	out := &Ask{ID: a.ID, Questions: qs}
+	out := &Ask{ID: a.ID, Questions: qs, SkipInMs: a.SkipInMs}
 	if o := a.Origin; o != nil {
 		out.Origin = &AskOrigin{Kind: o.Kind, Source: o.Source, Message: o.Message, Note: o.Note, URL: o.URL}
 		if o.URL != "" {

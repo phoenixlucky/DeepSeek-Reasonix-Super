@@ -1,0 +1,39 @@
+.composition-module-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.composition-module-controls > select { flex: 1 1 260px; }
+.composition-module-trigger { display: flex; flex: 1 1 200px; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 8px 12px; min-height: 40px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--raised); color: var(--text); font: var(--w-reg) var(--fs-ui)/1.5 var(--ui); cursor: pointer; }
+.composition-module-trigger > svg { width: 16px; height: 16px; flex: none; color: var(--muted); }
+.composition-module-trigger[aria-expanded="true"] { border-color: var(--focus); }
+.composition-capabilities .composition-manual { margin-top: 12px; }
+.composition-capabilities .composition-manual > summary { min-height: 32px; color: var(--muted); font-size: var(--fs-meta); font-weight: var(--w-reg); list-style: disclosure-closed; display: list-item; }
+.composition-capabilities .composition-manual[open] > summary { list-style: disclosure-open; }
+.composition-module-picker { position: fixed; z-index: 1150; display: flex; flex-direction: column; width: min(480px, calc(100vw / var(--zoom, 1) - 24px)); max-height: calc(100dvh / var(--zoom, 1) - 24px); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); color: var(--text); box-shadow: var(--lit); font: var(--w-reg) var(--fs-ui)/1.5 var(--ui); overflow: hidden; }
+.composition-picker-tools, .composition-picker-group-heading, .composition-picker-footer { display: flex; align-items: center; gap: 10px; padding: 10px 14px; flex-shrink: 0; }
+.composition-picker-tools { border-bottom: 1px solid var(--hair); }
+.composition-select-all { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.composition-module-picker input[type="checkbox"] { flex: none; width: 16px; height: 16px; margin: 0; accent-color: var(--accent-ink); cursor: pointer; }
+.composition-picker-action { margin-left: auto; border: 0; background: transparent; color: var(--muted); padding: 4px; font: inherit; font-size: var(--fs-meta); cursor: pointer; }
+.composition-picker-action:hover { color: var(--text); }
+.composition-picker-search { display: flex; align-items: center; gap: 8px; margin: 10px 12px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--raised); flex-shrink: 0; }
+.composition-picker-search > svg { width: 16px; height: 16px; flex: none; color: var(--muted); }
+.composition-picker-search input { min-width: 0; width: 100%; border: 0; background: transparent; color: var(--text); font: inherit; }
+.composition-picker-list { min-height: 0; max-height: 360px; overflow-y: auto; overscroll-behavior: contain; }
+.composition-picker-group + .composition-picker-group { border-top: 1px solid var(--hair); margin-top: 6px; padding-top: 6px; }
+.composition-picker-group-heading { padding-block: 4px; }
+.composition-picker-group-heading strong { font-weight: var(--w-med); }
+.composition-picker-group-heading small { color: var(--muted); font-size: var(--fs-meta); }
+.composition-choice { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 8px 14px; cursor: pointer; }
+.composition-choice:hover { background: var(--overlay); }
+.composition-choice > svg { width: 16px; height: 16px; flex: none; color: var(--muted); }
+.composition-choice-name { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.composition-choice-description { flex: 1; min-width: 0; color: var(--muted); font-size: var(--fs-meta); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.composition-picker-footer { justify-content: space-between; border-top: 1px solid var(--hair); margin-top: 8px; }
+.composition-picker-footer .btn { min-width: 76px; }
+.composition-picker-note { margin: 0; padding: 8px 14px 12px; border-top: 1px solid var(--hair); color: var(--muted); font-size: var(--fs-meta); flex-shrink: 0; }
+.composition-picker-empty { padding: 16px; color: var(--muted); }
+.composition-module-picker :is(button, input):focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.composition-module-picker :disabled, .composition-module-trigger:disabled { opacity: .55; cursor: default; }
+@media (max-width: 700px) {
+  .composition-choice { display: grid; grid-template-columns: 16px 16px minmax(0, 1fr); gap: 4px 10px; }
+  .composition-choice-description { grid-column: 3; white-space: normal; }
+  .composition-picker-group-heading { flex-wrap: wrap; }
+}

@@ -10,14 +10,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"reasonix/internal/base/workspacefile"
 )
 
 const maxWorkspaceFile = 2 << 20
 
 type workspaceFile struct {
-	Path     string `json:"path"`
-	Content  string `json:"content"`
-	Revision string `json:"revision"`
+	Path            string `json:"path"`
+	Content         string `json:"content"`
+	Revision        string `json:"revision"`
+	ObservedVersion string `json:"observedVersion,omitempty"`
+	// Root is the granted folder the file was read from; empty for the workspace
+	// itself. A file read from a granted folder is ReadOnly: only the workspace
+	// may be written through this route.
+	Root     string `json:"root,omitempty"`
+	ReadOnly bool   `json:"readOnly,omitempty"`
 }
 
 func fileRevision(data []byte) string {
@@ -31,6 +39,22 @@ func workspacePath(raw string) (string, error) {
 		return "", errors.New("path is not a workspace file")
 	}
 	return path, nil
+}
+
+// refuseOpen answers a failed open by its cause: only a file that is not there
+// is "missing". A permission, a lock or a path the root refuses is a different
+// thing to do next, and saying "not found" sends the person looking for a file
+// that exists.
+func refuseOpen(w http.ResponseWriter, err error) {
+	if errors.Is(err, fs.ErrNotExist) {
+		refuse(w, http.StatusNotFound, "workspace.file_missing", err.Error(), nil)
+		return
+	}
+	if errors.Is(err, workspacefile.ErrDenied) || errors.Is(err, fs.ErrPermission) {
+		refuse(w, http.StatusForbidden, "workspace.preview_denied", err.Error(), nil)
+		return
+	}
+	refuse(w, http.StatusInternalServerError, "workspace.file_failed", err.Error(), nil)
 }
 
 func (s *Server) workspaceFiles(w http.ResponseWriter, r *http.Request) {
@@ -75,34 +99,26 @@ func (s *Server) workspaceFileRead(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusBadRequest, "workspace.path_outside_tree", err.Error(), nil)
 		return
 	}
-	root, err := os.OpenRoot(s.ctl().WorkspaceRoot())
+	named := r.URL.Query().Get("root")
+	base, ok := s.readRoot(w, named)
+	if !ok {
+		return
+	}
+	data, info, err := (workspacefile.Service{Primary: base}).Text(r.Context(), workspacefile.Ref{Path: filepath.ToSlash(path)})
 	if err != nil {
-		refuse(w, http.StatusInternalServerError, "workspace.file_failed", err.Error(), nil)
-		return
-	}
-	defer root.Close()
-	file, err := root.Open(path)
-	if err != nil {
-		refuse(w, http.StatusNotFound, "workspace.file_missing", err.Error(), nil)
-		return
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil || info.IsDir() || info.Size() > maxWorkspaceFile {
-		refuse(w, http.StatusBadRequest, "workspace.file_unreadable", "file is not editable text or exceeds 2 MiB", nil)
-		return
-	}
-	data := make([]byte, info.Size())
-	if _, err = file.ReadAt(data, 0); err != nil && len(data) > 0 {
-		refuse(w, http.StatusInternalServerError, "workspace.file_failed", err.Error(), nil)
-		return
-	}
-	if strings.IndexByte(string(data), 0) >= 0 {
-		refuse(w, http.StatusBadRequest, "workspace.file_unreadable", "binary files cannot be edited here", nil)
+		if errors.Is(err, workspacefile.ErrTooLarge) || errors.Is(err, workspacefile.ErrNotFile) || errors.Is(err, workspacefile.ErrNotText) {
+			refuse(w, http.StatusBadRequest, "workspace.file_unreadable", err.Error(), nil)
+		} else {
+			refuseOpen(w, err)
+		}
 		return
 	}
 	w.Header().Set("content-type", "application/json")
-	_ = json.NewEncoder(w).Encode(workspaceFile{Path: filepath.ToSlash(path), Content: string(data), Revision: fileRevision(data)})
+	out := workspaceFile{Path: filepath.ToSlash(path), Content: string(data), Revision: fileRevision(data), ObservedVersion: info.Version}
+	if base != s.ctl().WorkspaceRoot() {
+		out.Root, out.ReadOnly = base, true
+	}
+	_ = json.NewEncoder(w).Encode(out)
 }
 
 func (s *Server) workspaceFileWrite(w http.ResponseWriter, r *http.Request) {
@@ -124,7 +140,7 @@ func (s *Server) workspaceFileWrite(w http.ResponseWriter, r *http.Request) {
 	defer root.Close()
 	current, err := root.ReadFile(path)
 	if err != nil {
-		refuse(w, http.StatusNotFound, "workspace.file_missing", err.Error(), nil)
+		refuseOpen(w, err)
 		return
 	}
 	if fileRevision(current) != in.Revision {
@@ -144,6 +160,7 @@ func (s *Server) workspaceFileWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := []byte(in.Content)
+	info, _ := (workspacefile.Service{Primary: s.ctl().WorkspaceRoot()}).Info(r.Context(), workspacefile.Ref{Path: filepath.ToSlash(path)})
 	w.Header().Set("content-type", "application/json")
-	_ = json.NewEncoder(w).Encode(workspaceFile{Path: filepath.ToSlash(path), Content: in.Content, Revision: fileRevision(data)})
+	_ = json.NewEncoder(w).Encode(workspaceFile{Path: filepath.ToSlash(path), Content: in.Content, Revision: fileRevision(data), ObservedVersion: info.Version})
 }

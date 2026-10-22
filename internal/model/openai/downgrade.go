@@ -50,6 +50,22 @@ func bodyRejected(err error) bool {
 // evidence, and CompareAndSwap makes it a question asked once per endpoint
 // rather than on every refusal.
 func (c *client) openChatStream(ctx context.Context, req provider.Request) (<-chan provider.Chunk, error) {
+	source := req.Messages
+	resolved, cached := c.resolveVideos(ctx, source)
+	req.Messages = resolved
+	stream, err := c.openResolvedChatStream(ctx, req)
+	var api *provider.APIError
+	if err != nil && len(cached) > 0 && errors.As(err, &api) && api.Status == http.StatusNotFound && ctx.Err() == nil {
+		// A vendor that answers 404 to a request naming a file it was given earlier
+		// no longer holds it: forget the reference and send the file again, once.
+		c.video.forget(cached)
+		req.Messages, _ = c.resolveVideos(ctx, source)
+		return c.openResolvedChatStream(ctx, req)
+	}
+	return stream, err
+}
+
+func (c *client) openResolvedChatStream(ctx context.Context, req provider.Request) (<-chan provider.Chunk, error) {
 	wire := c.buildRequest(req)
 	stream, err := c.openStream(ctx, c.chatURL, wire, req.Tools)
 	if err == nil || wire.StreamOptions == nil || !bodyRejected(err) || ctx.Err() != nil ||

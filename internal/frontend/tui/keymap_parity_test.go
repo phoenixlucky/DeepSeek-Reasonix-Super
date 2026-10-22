@@ -287,6 +287,22 @@ func TestViEscInTheMenuDoesNotStopARunningTurn(t *testing.T) {
 	}
 }
 
+// docs/GUIDE.md lists leaving ! shell mode among what Esc backs out of.
+func TestEscOnAnEmptyComposerLeavesShellMode(t *testing.T) {
+	m, k := testModel(t)
+	typeText(m, "!")
+	if !m.shell {
+		t.Fatal("setup: ! on an empty composer did not enter shell mode")
+	}
+	run(m, press(m, "esc"))
+	if m.shell {
+		t.Fatal("esc left shell mode on")
+	}
+	if calledWith(k, "POST /cancel") {
+		t.Fatal("esc on an idle composer sent a cancel")
+	}
+}
+
 func TestDoubleEscOnAnIdleEmptyComposerStillOpensRewind(t *testing.T) {
 	m, _ := testModel(t)
 	press(m, "esc")
@@ -363,6 +379,46 @@ func TestCtrlEnterSteersOnlyARunningTurn(t *testing.T) {
 	}
 	if m.composer.Value() != "" {
 		t.Fatalf("the steered text stayed in the composer: %q", m.composer.Value())
+	}
+}
+
+// Ctrl+S, which docs/GUIDE.md lists beside Ctrl+Enter, steers a running turn
+// and, unlike Ctrl+Enter, sends an idle draft as Enter does.
+func TestCtrlSSendsAnIdleDraftAndSteersARunningTurn(t *testing.T) {
+	m, k := testModel(t)
+	typeText(m, "hello")
+	run(m, press(m, "ctrl+s"))
+	if !calledWith(k, `POST /submit {"input":"hello"}`) {
+		t.Fatalf("idle Ctrl+S did not send the draft:\n%s", strings.Join(k.seen(), "\n"))
+	}
+	startTurn(m)
+	typeText(m, "use make")
+	run(m, press(m, "ctrl+s"))
+	if !calledWith(k, `POST /inbox/items {"input":"use make","intent":"steer"}`) {
+		t.Fatalf("Ctrl+S during a turn did not steer:\n%s", strings.Join(k.seen(), "\n"))
+	}
+}
+
+// docs/GUIDE.md says an approval row's number is its position among the rows
+// shown: with no session grant offered, 2 is always-allow, not a session grant.
+func TestApprovalNumbersFollowTheRowsShown(t *testing.T) {
+	m, k := testModel(t)
+	apply(m, eventwire.Event{Kind: "approval_request", Approval: &eventwire.Approval{ID: "ap1", Tool: "bash", Subject: "rm x", AllowsPersist: true}})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: '2', Text: "2"})
+	run(m, cmd)
+	if !calledWith(k, `POST /approve {"allow":true,"id":"ap1","persist":true,"session":false}`) {
+		t.Fatalf("2 did not answer the second row shown:\n%s", strings.Join(k.seen(), "\n"))
+	}
+}
+
+// Esc on a plan approval asks for a revision, as docs/GUIDE.md says; it does
+// not start the plan or leave plan mode.
+func TestEscOnAPlanApprovalAsksForARevision(t *testing.T) {
+	m, k := testModel(t)
+	apply(m, eventwire.Event{Kind: "approval_request", Approval: &eventwire.Approval{ID: "pl1", Kind: "plan"}})
+	run(m, press(m, "esc"))
+	if !calledWith(k, `POST /plan-decision {"action":"revise_plan","id":"pl1"}`) {
+		t.Fatalf("Esc did not ask for a revision:\n%s", strings.Join(k.seen(), "\n"))
 	}
 }
 

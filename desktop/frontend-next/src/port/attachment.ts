@@ -19,3 +19,12 @@ export interface DroppedRef {
   image?: boolean;
   error?: string;
 }
+
+// A paste a person chose to keep out of the conversation. pointer is the text
+// that stands in for it in the message: size, where it is, how to read it. There
+// is no "@" reference on purpose, because the turn parser expands one into the
+// file's head and would put the text back.
+export interface KeptText {
+  path: string;
+  pointer: string;
+}

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { t } from "../i18n";
 import { StudioIcon } from "./StudioIcon";
+import { TooltipButton } from "./TooltipButton";
 
 // Wails serves the window over a custom scheme on macOS and Linux, so those two
 // hosts are not a secure context and navigator.clipboard is undefined there.
@@ -39,9 +40,10 @@ export function CopyButton({ text, iconOnly = false, showFeedback = false, class
   // A clipboard the host denied is not the same as nothing happening, and the
   // reader is about to try again — so the failure says so instead of staying idle.
   const label = state === "done" ? t("已复制") : state === "failed" ? t("复制失败，请重试") : what ?? t("复制回复");
+  const Button = iconOnly ? TooltipButton : "button";
 
   return (
-    <button
+    <Button
       className={className ? `copy ${className}` : "copy"}
       type="button"
       role={role}
@@ -54,6 +56,6 @@ export function CopyButton({ text, iconOnly = false, showFeedback = false, class
     >
       {iconOnly && <StudioIcon name={state === "done" ? "check" : state === "failed" ? "warning" : "copy"} />}
       <span className={iconOnly && !(showFeedback && state !== "idle") ? "sr-only" : undefined} aria-live="polite">{label}</span>
-    </button>
+    </Button>
   );
 }

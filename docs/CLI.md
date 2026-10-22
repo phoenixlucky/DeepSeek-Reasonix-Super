@@ -66,6 +66,11 @@ reasonix setup --local            # manage ./reasonix.toml
 reasonix setup /path/to/config.toml
 ```
 
+Local commands use `./reasonix.toml` when present, otherwise an existing
+`.reasonix/reasonix.toml`. New project files are created at the root. This applies
+to `setup --local`, `config compact-ratio --local`, and
+`config reasoning-language --local`.
+
 In an interactive terminal, `reasonix setup` is a staged provider manager. It
 lists configured providers and lets you:
 
@@ -573,7 +578,12 @@ groups instead of cutting labels in half. Visible labels and execution-setting v
 follow `/language`.
 
 Use `/theme auto|light|dark` to select the terminal background mode, or choose a
-named accent from `/theme`. Both composer borders, the insertion cursor,
+named accent from `/theme`.
+
+- `/theme` alone opens a picker that previews each row as the cursor reaches it.
+- Enter keeps the row, Esc restores the original, and `/theme list` prints the names.
+
+Both composer borders, the insertion cursor,
 selection, scrollbar, and footer use the active CLI theme. See
 [Keyboard shortcuts](./GUIDE.md#keyboard-shortcuts) for transcript navigation,
 multiline input, rewind, and clipboard controls.

@@ -9,6 +9,31 @@ reviewed: 2026-09-29
 
 This document records the provider-visible contract for Reasonix compile-time built-in tools. It is generated from the same canonical schema path used by the runtime registry.
 
+`present_files` declares up to four existing files in the workspace or authorized folders.
+Its versioned result remains in the canonical tool history; live and restored cards use
+the host-confirmed capability identity and the complete result, even when model context
+is shortened.
+
+Opening a card reads the current source file, not an immutable snapshot.
+It does not certify task completion and is not admitted by the Observe posture.
+
+`present_files` 每次声明最多四个工作区或已授权目录中的现有文件。有版本的结果保存在原始工具历史中；
+实时与恢复后的卡片使用宿主确认的能力身份和完整结果，不依赖模型上下文是否被压缩。
+点击卡片读取源文件当前内容，不保存版本快照，不构成任务完成证明，也不进入 Observe 模式。
+
+This tool is conditional: user-only `tools.present_files = true` enables it on
+session open. Off by default, it contributes nothing to the registry or provider
+request. The unconditional builtin budget remains 7,185 tokens.
+
+Boot effect tests
+verify absence while off, the exact enabled schema, denied reads, direct and
+capability-proxy calls, and stable schemas within a turn. Viewers remain available.
+
+该工具按条件注册：仅用户配置 `tools.present_files = true` 在打开会话时启用。
+默认关闭，不进入注册表或模型请求；无条件内置工具预算保持 7,185 tokens。
+Boot 效果测试覆盖关闭时缺席、启用时精确的 schema、读取拒绝、直接调用、能力代理及轮内稳定性。
+文件预览不受此开关影响。
+
 | Tool | Read-only | Description |
 | --- | --- | --- |
 | `bash` | false | Execute a command in the shell and return combined stdout/stderr. Use for builds, tests, git, package managers, etc. To read or modify a file use read_file / edit_file / write_file — never Get-Content, cat, sed, head/tail or a shell redirect. read_file returns up to 2000 lines per call, each prefixed with its line number, and those numbers are what edit_file targets; paging a file through the shell instead costs one round trip per chunk and yields no line anchors. |
@@ -19,27 +44,29 @@ This document records the provider-visible contract for Reasonix compile-time bu
 | `code_index` | true | Lightweight built-in code symbol index. Prefer lsp_* for language semantics and installed code graph MCP tools for call graph, impact, and architecture relationships; use this as the local fallback for file outlines and symbol definition candidates, then verify with read_file or grep. |
 | `complete_step` | true | Record the evidence-backed completion of ONE step of an approved plan. Call it as you finish each step instead of silently moving on: a completion with no evidence is REJECTED, so don't claim a step is done until you can show why. The host advances the list for you — it marks this step completed and moves the next to in_progress, so a todo_write that marks such an item completed on its own is REJECTED too. Sign off one step per tool-call ROUND, not one per call: the sign-off promotes the next item, and a second sign-off sent beside it signs against the list as it stood before. |
 | `compress` | true | Compress a selected part of the current model-visible conversation without deleting visible history. Use only when the user explicitly asks for context compression. Choose `before` to summarize everything before the uniquely matched user turn while keeping that turn and later context, or `after` to summarize from that turn through the last completed turn while keeping the active turn. The anchor must be an exact, unique excerpt from a real user message; use a longer excerpt if the tool reports multiple matches. |
-| `computer_act` | false | Operate another application. Steps run in order and stop at the first failure. Through its accessibility actions, leaving the pointer alone: click (ref, or x/y from a screenshot), right_click opens a ref's context menu, focus and set_value take a ref, type enters text where focus is and paste puts it there at once (the clipboard is borrowed and put back), key presses keys like Enter or Meta+s (control+s on Windows; times repeats), hold_key holds one for seconds. Paste needs the application in front on macOS; on Windows type, paste and key bring it forward. scroll brings a ref into view or turns the wheel by amount lines, wait pauses ms. pointer_move, pointer_click (button, times), pointer_drag (to_x/to_y) and pointer_position instead take the person's pointer and bring the application forward, approved separately; use them for what has no accessibility action, and the pointer goes back where it was. Returns a snapshot afterwards. |
-| `computer_read` | false | See another application on this computer, named as what=apps lists it. what=apps lists applications with windows; snapshot returns its accessibility tree with [aN] refs for computer_act; screenshot captures its front window (computer_act x/y use its pixels, and the person is shown it too). |
+| `computer_act` | false | Operate an approved application through CUA Driver. launch must be one separate step using an exact installed identity from computer_read what=apps; no window selector or extra arguments. Select window when the app has multiple windows. Use refs from its latest snapshot or coordinates from its latest screenshot. Background clicks, set_value, type/paste, key and scroll never silently escalate. pointer_click explicitly takes foreground control and requires separate approval. wait is bounded. Inspect fresh state after an unverified effect; never assume an action landed. Returns a snapshot afterwards except launch, which returns the verified running identity for a separately approved read. |
+| `computer_read` | false | See an approved application listed by what=apps. Installed entries without a targetable window provide an exact launch identity for a separate computer_act launch step. Select window by id when it has multiple windows. snapshot returns session-bound element refs in brackets for computer_act. screenshot captures that exact window; computer_act x/y use pixels of this latest displayed image. Old tokens and captures expire on refresh or reconnect. |
 | `context_budget` | true | Report how much context room is left before this conversation is automatically compacted. Nothing reports it unprompted: check it at the start of a long task, before a large change, and before output you may not finish reading (a broad search, a large file, a long build log), so you can narrow the command. `tokens_remaining` counts down to the compaction trigger, not the physical window. |
 | `delete_range` | false | Delete a contiguous text range from a file using exact start/end text anchors. Each anchor must match exactly one line. Returns unified diff on success. Use for large deletions — smaller changes should use edit_file. |
 | `delete_symbol` | false | Delete a named symbol (function, method, type, interface, const, var) from a Go source file using AST parsing. For non-Go files, use delete_range with manual anchors. |
 | `edit_file` | false | Replace an exact string in a file with another. old_string must occur exactly once; add surrounding context to disambiguate. Use for targeted edits instead of rewriting the whole file. |
 | `glob` | true | Find files matching a glob pattern (e.g. "*.go", "internal/*/*.go", "**/*.test.ts"). Supports shell metacharacters * ? [] and the recursive ** pattern. |
 | `grep` | true | Search for a regular expression in a file, or recursively under a directory (skips hidden files and files matched by .gitignore). Returns matching lines as path:line:text, capped at 200 matches. Ignored paths are searched only when nothing else matched; such matches say so, so an empty answer means absent rather than filtered. |
+| `import_web_image` | false | Import web_fetch image_url from source url into new path. Validates PNG/JPEG/GIF/WebP. Returns image {path,alt,source} for render_surface. Match extension. |
 | `kill_shell` | false | Terminate a running background job (bash or task) started with run_in_background. A no-op if the job has already finished or the id is unknown. |
 | `ls` | true | List the entries of a directory. Directories are shown with a trailing slash; files show their byte size. Set recursive=true to list all nested files depth-first (skips .git/node_modules). |
 | `move_file` | false | Move or rename a file from source_path to destination_path. Creates the destination parent directory as needed. Use instead of shell mv, Move-Item, or ren for file moves so workspace confinement and file-edit permissions apply. |
 | `multi_edit` | false | Apply a list of edits to a single file atomically: each edit runs against the result of the previous one, all in memory; the file is rewritten only if every edit succeeds. Cheaper and safer than chaining edit_file calls — a failure in step 3 leaves the file untouched instead of half-edited. |
 | `notebook_edit` | false | Edit one cell of a Jupyter notebook (.ipynb). Target a cell by 0-based cell_number (or cell_id). edit_mode: "replace" (default) swaps the cell's source; "insert" adds a new cell after cell_number (use -1 to prepend at the top), taking cell_type and new_source; "delete" removes the cell. cell_type is "code" or "markdown" (required for insert). Editing a code cell clears its outputs. Prefer this over edit_file for notebooks — it keeps the JSON valid. |
 | `read_file` | true | Read a text file with optional line offset/limit. Output prefixes each line with its 1-based number (e.g. `   42→...`) so subsequent edit_file calls can target exact lines. Use `offset` and `limit` to page through large files; the tool reports total length and pagination hints in a trailer. |
+| `read_video` | true | Look at a video: native if the model watches video, else ffmpeg frames. |
 | `recall` | true | Bring folded conversation back: read the #n positions listed under "Folded work index" in a compaction summary, or search the whole folded region by query when no index line names what you need. Prefer re-reading a file over recalling it — a current copy beats a folded one. One budget per compaction covers both, and a request past it is refused whole, not truncated. |
 | `render_chart` | true | Show the user a chart inline. Rows hold only numbers, strings and nulls; no URLs, markup or colours. Returns a chart_id and a text summary, not the rows. |
 | `todo_write` | true | Record and update a structured task list for the current work. Send the COMPLETE list every call — it replaces the previous one. Use it to plan multi-step work and show progress: keep exactly one item in_progress at a time, and flip an item to completed the moment it's done (don't batch completions). Skip it for trivial single-step tasks. The list is two-level: a `level` 0 item is a PHASE (a milestone) and the `level` 1 items after it are its concrete sub-steps. COPY `step_id` VERBATIM for every item that already has one: it is how a completion stays attached to its step when you retitle it, insert a step above it, or reorder the list. Give a new item a fresh unique id (e.g. "plan_step_07"); never reuse or renumber an existing one. |
 | `update_goal` | true | Report this turn's disposition for the active goal. Call it at the end of every goal turn instead of using prose markers: `continue` (work is ongoing — give a concrete next_action), `complete` (the request is fully done, output format and constraints satisfied, and verification was attempted or reported unavailable), or `blocked` (only the user can unblock: missing user-only information, an irreversible/externally visible operation, or changed scope). The host validates your claim against Delivery acceptance criteria and decides whether to continue automatically. |
 | `wait` | true | Block until background jobs finish, then return each job's status and final output/answer. Use to collect the result of a task(run_in_background) or bash(run_in_background) before continuing. Omit job_ids to wait for every running job. |
-| `web_fetch` | true | Fetch a URL over HTTPS/HTTP and return its text content. HTML pages are reduced to readable text (scripts, styles, tags stripped, whitespace collapsed); JSON / plain text / markdown bodies come back verbatim. Use to read documentation pages, API responses, or source files hosted somewhere the local filesystem can't reach. |
-| `write_file` | false | Write content to a file at the given path (overwriting existing content). Creates parent directories as needed. Sends the whole file every time: for a change to part of one that already exists, edit_file and multi_edit send only the changed region. |
+| `web_fetch` | true | Read HTTP(S) text. Reduces HTML to text and image candidates for import_web_image; returns JSON/plain text verbatim. |
+| `write_file` | false | Write full file content, overwriting and creating parent directories. Prefer edit_file/multi_edit for partial changes. |
 
 ## Schema Snapshot
 
@@ -106,7 +133,7 @@ ask, await_user, docs, explore, fleet, forget, history, install_skill, install_s
 
 `list_subagents` recovers the references themselves when the aggregate that carried them never arrived, which is what an interrupted background fleet leaves behind. References are restricted to the current conversation lineage and workspace.
 
-`use_capability` (`action` = `list` | `inspect` | `call` | `decline`) is on the provider-visible surface for every execution setting (`light` | `balanced` | `delivery`).
+`use_capability` (`action` = `list` | `inspect` | `call` | `decline`) is on the provider-visible surface for every execution setting (`balanced` | `delivery`).
 
 Optional tools stay registered for host dispatch but are not expanded into the top-level provider schema; the model reaches them through `use_capability` without cache-breaking schema churn.
 
@@ -124,6 +151,8 @@ coding tools, background-shell lifecycle tools, and the stable capability proxy:
 `use_capability`.
 
 The host-control tools ride the same surface at every setting: `todo_write` and `complete_step` for the task list, and `ask` and `await_user` for the turns that end on the model's terms.
+
+`setting` finds the user's settings and asks the user to confirm a change. A refusal that a setting would lift ends with `(fix: setting ...)`.
 
 `conclude_blocked` is registered but not yet on this surface, so it is reachable only through `use_capability` even where the host names it as a way out of an unfinished turn.
 

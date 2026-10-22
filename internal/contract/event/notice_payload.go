@@ -6,7 +6,8 @@ import "encoding/json"
 // sentence is worded from, so a sink that prints Text must not append it again.
 func DetailIsPayload(code string) bool {
 	return code == NoticeCodeUnappliedSteer || code == NoticeCodeExtensionSkipped || code == NoticeCodeInboxRecovered ||
-		code == NoticeCodePermissionRulesDormant || code == NoticeCodeJobFinished || code == NoticeCodeJobKilled || code == NoticeCodeJobFailed
+		code == NoticeCodeInboxUnrecovered ||
+		code == NoticeCodePermissionRulesDormant || code == NoticeCodeSubagentWaiting || code == NoticeCodeContextComposition || code == NoticeCodeJobFinished || code == NoticeCodeJobKilled || code == NoticeCodeJobFailed || code == NoticeCodeJobStalled
 }
 
 // ExtensionSkipReasonNoLiveSidecar: the extension's companion process is not running.
@@ -64,6 +65,32 @@ func DecodeInboxRecovered(detail string) (InboxRecovered, bool) {
 	return p, true
 }
 
+// InboxUnrecovered is the Detail payload of NoticeCodeInboxUnrecovered: the
+// queue directory whose bodies could not be read, so the queue is paused with
+// contents that are unknown rather than empty.
+type InboxUnrecovered struct {
+	Dir string `json:"dir"`
+}
+
+// Encode renders the payload as the notice's Detail.
+func (p InboxUnrecovered) Encode() string {
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+// DecodeInboxUnrecovered reads the payload back; ok is false for a Detail that
+// is not one, so a caller keeps the kernel's English.
+func DecodeInboxUnrecovered(detail string) (InboxUnrecovered, bool) {
+	var p InboxUnrecovered
+	if err := json.Unmarshal([]byte(detail), &p); err != nil || p.Dir == "" {
+		return InboxUnrecovered{}, false
+	}
+	return p, true
+}
+
 // JobNotice is the Detail payload of the three NoticeCodeJob* notices:
 // which background job ended, by kind, id and the label it was started with.
 type JobNotice struct {
@@ -76,6 +103,8 @@ type JobNotice struct {
 	// knew: Signal is the signal number that ended it, zero when none did.
 	ExitCode *int `json:"exitCode,omitempty"`
 	Signal   int  `json:"signal,omitempty"`
+	// QuietSeconds is how long the job's own output has been silent, on a stalled notice only.
+	QuietSeconds int `json:"quietSeconds,omitempty"`
 }
 
 // Encode renders the payload as the notice's Detail.
@@ -112,6 +141,61 @@ type PermissionRulesDormant struct {
 
 // Encode renders the payload as the notice's Detail.
 func (p PermissionRulesDormant) Encode() string {
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+// ContextPart is one class of what the prompt holds and the tokens it costs.
+type ContextPart struct {
+	Name   string `json:"name"`
+	Tokens int    `json:"tokens"`
+}
+
+// ContextItem is one message among the largest the prompt holds. Tool is the
+// producing tool's name for a tool result; Active says it belongs to the turn
+// still running, which a fold cannot take.
+type ContextItem struct {
+	Role   string `json:"role"`
+	Tool   string `json:"tool,omitempty"`
+	Tokens int    `json:"tokens"`
+	Active bool   `json:"active,omitempty"`
+}
+
+// ContextComposition is the Detail payload of NoticeCodeContextComposition: what
+// holds the tokens of a prompt that is over its compaction threshold. Parts are
+// the six classes by size, largest first; Largest is the biggest single messages.
+type ContextComposition struct {
+	Total   int           `json:"total"`
+	At      int           `json:"at"`
+	Active  int           `json:"active"`
+	Parts   []ContextPart `json:"parts"`
+	Largest []ContextItem `json:"largest,omitempty"`
+}
+
+// Encode renders the payload as the notice's Detail.
+func (p ContextComposition) Encode() string {
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+// SubagentWaiting is the Detail payload of NoticeCodeSubagentWaiting: which
+// sub-agent is held back, whose write claim holds it (empty when that run gave
+// no name), and whether it is the two whole-workspace claims of writers that
+// declared no write_paths.
+type SubagentWaiting struct {
+	Task  string `json:"task,omitempty"`
+	By    string `json:"by,omitempty"`
+	Whole bool   `json:"whole,omitempty"`
+}
+
+// Encode renders the payload as the notice's Detail.
+func (p SubagentWaiting) Encode() string {
 	raw, err := json.Marshal(p)
 	if err != nil {
 		return ""

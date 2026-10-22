@@ -27,7 +27,7 @@ type untrustedFolderRun struct {
 
 func newUntrustedFolderRun(t *testing.T) *untrustedFolderRun {
 	t.Helper()
-	if !sandbox.Available() {
+	if !sandbox.ConfinesByDefault() {
 		t.Skip("no OS sandbox backend: the default posture asks here for a different reason")
 	}
 	r := &untrustedFolderRun{}

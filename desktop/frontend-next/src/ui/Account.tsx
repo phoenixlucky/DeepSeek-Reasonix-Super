@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { t } from "../i18n";
+import { reason } from "../i18n/kernel";
 import type { AccountState, AgentPort } from "../port/port";
 
 // App owns the account read so the panel and sidebar show the same state.
@@ -34,9 +35,9 @@ export function Account({ port, state, unread, reload }: { port: AgentPort; stat
         }
         if (res.slowDown) wait += 5000;
       }
-      if (!cancelled.current) setError("这次登录请求已过期，再试一次。");
+      if (!cancelled.current) setError(t("这次登录请求已过期，再试一次。"));
     } catch (e) {
-      setError(String(e));
+      setError(reason(e));
     } finally {
       setBusy(false);
       setCode(null);
@@ -55,7 +56,7 @@ export function Account({ port, state, unread, reload }: { port: AgentPort; stat
       await port.accountLogout();
       reload();
     } catch (e) {
-      setError(String(e));
+      setError(reason(e));
     } finally {
       setBusy(false);
     }

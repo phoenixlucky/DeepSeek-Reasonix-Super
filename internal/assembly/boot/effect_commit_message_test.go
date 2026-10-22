@@ -117,7 +117,7 @@ model = "x"
 	writeFile(t, dir, ".env", "TOKEN=hunter2-plain\n")
 	git("add", "x.go", ".env")
 
-	prop, err := ctrl.ProposeCommit(context.Background())
+	prop, err := ctrl.ProposeCommit(context.Background(), "")
 	if err != nil {
 		t.Fatalf("ProposeCommit: %v", err)
 	}
@@ -174,7 +174,7 @@ model = "x"
 
 	writeFile(t, dir, "big.txt", strings.Repeat("filler line of text\n", 4000))
 	git("add", "big.txt")
-	big, err := ctrl.ProposeCommit(context.Background())
+	big, err := ctrl.ProposeCommit(context.Background(), "")
 	if err != nil || !big.Truncated {
 		t.Fatalf("a diff the model only partly saw must say so: truncated=%v err=%v", big.Truncated, err)
 	}

@@ -1,25 +1,40 @@
+import { useBranchSession } from "./useBranchSession";
+import { CompositionNewContext } from "./CompositionNewContext";
+import { keepSame } from "./stable";
+import { usePaneCallbacks } from "./usePaneCallbacks";
 import { watchTreeWake } from "./treewake";
 import { usePinnedSessions } from "./usePinnedSessions";
 import { AutoArchiveNotice } from "./AutoArchiveNotice";
+import { LevelUpNotice } from "./LevelUpNotice";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { reason } from "../i18n/kernel";
 import { t } from "../i18n";
 import type { AccountState, AgentPort, ProviderSetup } from "../port/port";
-import type { HubPort, RuntimeView, TreeWorkspace } from "../port/hub";
+import type { HubPort, RuntimeView } from "../port/hub";
+import { workspaceContains } from "../port/hub";
 import { Chrome } from "./Chrome";
-import { useLaunchHealth } from "./launchhealth";
+import { RailToggle } from "./RailToggle";
+import { useFirstRunRead, useLaunchHealth } from "./launchhealth";
 import { Nav } from "./Nav";
 import { useTreeWindow, type TreePaging } from "./treewindow";
 import { useNavRail } from "./navrail";
 import { feedbackEntryTab } from "./feedbackentry";
+import { ErrorBar } from "./ErrorBar";
+import { noteFault } from "./fault";
+import { ToastStack } from "./ToastStack";
 import { useLinkRouting } from "./links";
 import { Pane, type PaneReport } from "./Pane";
 import { clearDraftForSession } from "./drafts";
 import { DOCK, Gutter, RAIL, dockMax, keepWidth, widthOf } from "./Gutter";
 import { useWindowKeys, type Shortcut } from "./windowkeys";
+import { useEscStop } from "../state/escstop";
+import { startUpdateWatch } from "../state/updatewatch";
+import { StopHint } from "./StopHint";
+import { useFindAsk } from "./usefindask";
 import { folded as roomGaveUp, onRoomWidth } from "./viewport";
 import { useFoldAway } from "./foldaway";
 import { useDrawerCloses } from "./drawer";
+import { RenameSession } from "./RenameSession";
 import { RemoteAsk } from "./RemoteAsk";
 import { useFeedbackUnread } from "./useFeedbackUnread";
 import { Feedback, type FeedbackTab } from "./Feedback";
@@ -33,17 +48,25 @@ import { usePaint } from "./paint";
 import { useZoomKeys } from "./zoomkeys";
 import { rememberActivePane, savedActivePane } from "./activepane";
 import { Sidebar } from "./Sidebar";
+import { PeerThreadsProvider } from "./peerthreads";
 import { Sky } from "./Sky";import { useAddWorkspace } from "./addws";
 import { AddWorkspacePrompt } from "./AddWorkspacePrompt";
 import { PaneTabs } from "./PaneTabs";
+import { paneReader } from "../state/paneread";
 import { onShowsSessionTabsChange, showsSessionTabs } from "../state/prefs";
-import { isUnread, useViewed } from "./unread";
-import { Onboarding } from "./Onboarding";
+import { useLiveGrace } from "./useLiveGrace";
+import { isUnread, useViewed, useUnreadBadge } from "./unread";
+import { useFirstRun } from "./useFirstRun";
 import { Welcome } from "./Welcome";
 import { useSessionSwitch } from "./sessionswitch";
 import { singleFlight } from "./singleflight";
+import { useTreeRead } from "./useTreeRead";
 import { useOpenPane } from "./useOpenPane";
+import { useOpenRemotePane } from "./useOpenRemotePane";
+import { useNewConversation } from "./useNewConversation";
 import { markSettled } from "../boot/gate";
+import type { PaneView } from "../state/paneview";
+import { usePaneSessionRefs } from "./usePaneSessionRefs";
 
 // Start fetching the settings chunk with the shell instead of waiting for the
 // first click. It remains a separate chunk (and keeps its failure boundary),
@@ -69,6 +92,9 @@ const NO_REPORT: PaneReport = {
   context: null,
   mcp: [],
   wallet: "",
+  view: "flow",
+  rows: 0,
+  surfaces: 0,
 };
 
 // App is the window around the panes, not a session itself: the workspace tree,
@@ -80,10 +106,8 @@ export function App({ hub }: { hub: HubPort }) {
   const [runtimes, setRuntimes] = useState<RuntimeView[]>([]);
   const [panesRead, setPanesRead] = useState(false);
   const [active, setActive] = useState(savedActivePane);
-  const [tree, setTree] = useState<TreeWorkspace[]>([]);
-  // An empty tree before the first read settles is an unread one, not a
-  // machine with no folders; only the kernel's answer can say the latter.
-  const [treeRead, setTreeRead] = useState(false);
+  const treeWindow = useTreeWindow();
+  const { tree, treeRead, answered, readTree, reloadTree, retryTree } = useTreeRead(hub, treeWindow);
   // Null until asked, and null again where this kernel refuses remote panes —
   // which is what keeps the section out of a browser rather than drawing a
   // heading over a feature that cannot work there.
@@ -103,15 +127,17 @@ export function App({ hub }: { hub: HubPort }) {
   const [dockW, setDockW] = useState(() => widthOf(DOCK));
   const [dockLimit, setDockLimit] = useState(() => dockMax(document.body.clientWidth));
   const [report, setReport] = useState<PaneReport>(NO_REPORT);
-  const [findPulse, setFindPulse] = useState(0);
   const [filesRequests, setFilesRequests] = useState<Record<string, number>>({});
+  const [viewRequests, setViewRequests] = useState<Record<string, { to: PaneView; n: number }>>({});
+  const [sessionRefs, referenceSession] = usePaneSessionRefs(active, (id) => panePorts.has(id));
   const [error, setError] = useState("");
+  const [renaming, setRenaming] = useState<{ path: string; title: string } | null>(null);
   // false = closed, true = open at its last section, a string = open there.
   const [settings, setSettings] = useState<string | boolean>(false);
+  const find = useFindAsk(settings, setSettings);
   const [feedback, setFeedback] = useState<FeedbackTab | null>(null);
   const [feedbackUnread, setFeedbackUnread] = useState(0);
   const [browser, setBrowser] = useState(false);
-  const [browserAsk, setBrowserAsk] = useState(0);
   const [setup, setSetup] = useState<ProviderSetup | null | undefined>(undefined);
   // undefined until asked; false means the opening sequence is still owed.
   const [welcomed, setWelcomed] = useState<boolean | undefined>(undefined);
@@ -133,13 +159,20 @@ export function App({ hub }: { hub: HubPort }) {
   const runsRef = useRef(runs);
   runsRef.current = runs;
 
-  const fail = useCallback((e: unknown) => setError(reason(e)), []);
+  const fail = useCallback((e: unknown) => {
+    const shown = reason(e);
+    noteFault(e, shown);
+    setError(shown);
+  }, []);
   // Asked at the moment a confirmation opens, never subscribed to: runs moves
   // on every usage round, and handing the sidebar that would rebuild a tree of
   // a few hundred sessions each frame — which is what its memo is there for.
   const liveIds = useCallback((ids: string[]) => ids.filter((id) => runsRef.current[id]?.live), []);
 
+  const { listedIds, noteReport } = useLiveGrace(runsRef, runs);
+
   const onReport = useCallback((id: string, next: PaneReport) => {
+    noteReport(id, next.live);
     setRuns((prev) =>
       prev[id]?.run === next.run && prev[id]?.live === next.live ? prev : { ...prev, [id]: { run: next.run, live: next.live } },
     );
@@ -149,7 +182,7 @@ export function App({ hub }: { hub: HubPort }) {
     // cost of a window render per background beat.
     reportsRef.current[id] = next;
     if (id === activeRef.current) setReport(next);
-  }, []);
+  }, [noteReport]);
 
   // The window's title, run pill and status belong to the pane in front. They
   // were only ever written when a pane reported, so switching to an idle pane
@@ -160,16 +193,6 @@ export function App({ hub }: { hub: HubPort }) {
     setReport(reportsRef.current[active] ?? NO_REPORT);
   }, [active]);
 
-  const treeWindow = useTreeWindow();
-  const readTree = useMemo(
-    () => singleFlight(() =>
-      hub
-        .tree(treeWindow.current())
-        .then(setTree)
-        .finally(() => setTreeRead(true))),
-    [hub, treeWindow],
-  );
-  const reloadTree = useCallback(() => readTree().catch(() => {}), [readTree]);
   const paging = useMemo<TreePaging>(
     () => ({
       more: (root) => treeWindow.grow(root, readTree),
@@ -184,8 +207,9 @@ export function App({ hub }: { hub: HubPort }) {
 
   // Panes and tree move together: opening a session marks its row live, closing
   // one hands the row back.
+  const readPanes = useMemo(() => paneReader(() => hub.runtimes()), [hub]);
   const reloadPanes = useCallback(async () => {
-    const list = await hub.runtimes().catch(() => [] as RuntimeView[]);
+    const list = await readPanes(); if (!list) return;
     // Setup and the welcome are read through a pane's port. With none open
     // there is nothing to ask, and waiting on them would leave the window
     // blank; the next pane to open reads both again.
@@ -193,12 +217,12 @@ export function App({ hub }: { hub: HubPort }) {
       setSetup((cur) => (cur === undefined ? null : cur));
       setWelcomed((cur) => cur ?? true);
     }
-    setRuntimes(list);
+    setRuntimes((cur) => keepSame(cur, list));
     setPanesRead(true);
     setActive((cur) => (list.some((rt) => rt.id === cur) ? cur : (list[0]?.id ?? "")));
     await reloadTree();
     void reloadRemoteTrees();
-  }, [hub, reloadTree, reloadRemoteTrees]);
+  }, [hub, readPanes, reloadTree, reloadRemoteTrees]);
   const refreshPanes = useMemo(() => singleFlight(reloadPanes), [reloadPanes]);
 
   useEffect(() => {
@@ -246,21 +270,7 @@ export function App({ hub }: { hub: HubPort }) {
     [hub],
   );
 
-  const openRemotePane = useCallback(
-    async (host: string, workspace?: string, sessionPath?: string) => {
-      setOpening((n) => n + 1);
-      try {
-        const view = await hub.openRemote({ host, workspace, sessionPath });
-        await reloadPanes();
-        sw.cancel();
-        setActive(view.id);
-      } finally {
-        setOpening((n) => n - 1);
-        void reloadRemotes();
-      }
-    },
-    [hub, reloadPanes, reloadRemotes, sw.cancel],
-  );
+  const openRemotePane = useOpenRemotePane({ hub, reloadPanes, reloadRemotes, sw, setActive, setOpening });
 
   // One port per pane, held across renders — a fresh instance would resubscribe
   // the event stream and drop the frames in between.
@@ -279,19 +289,10 @@ export function App({ hub }: { hub: HubPort }) {
 
   // Asked on open, on focus (at most every 30 s) and every 10 min while a report
   // is unsettled, never otherwise; a failed refresh stays silent and backs off.
+  useEffect(() => startUpdateWatch(machinePort), [machinePort]);
   useFeedbackUnread(machineRt ? machinePort : null, machineRt?.id ?? "", feedbackUnread, setFeedbackUnread, feedback !== null);
 
-  useEffect(() => {
-    if (!activePort) return;
-    let alive = true;
-    activePort.providerSetup().then((v) => alive && setSetup(v)).catch(() => alive && setSetup(null));
-    // A machine that cannot answer has met the app before as far as we care:
-    // the sequence must never be what stands between someone and their session.
-    activePort.welcomeSeen().then((v) => alive && setWelcomed(v)).catch(() => alive && setWelcomed(true));
-    return () => {
-      alive = false;
-    };
-  }, [activePort]);
+  useFirstRunRead(activePort, setSetup, setWelcomed);
 
   // A kernel that does not carry sign-in refuses this with a code and a
   // sentence. Dropping it left the panel saying "checking…" for the rest of
@@ -324,7 +325,8 @@ export function App({ hub }: { hub: HubPort }) {
   // Transition made a simple sidebar click pay for a full-page texture before
   // the active id changed. Selection feedback should be immediate.
   const reloadBooks = useCallback(() => Promise.all([reloadTree(), reloadRemoteTrees()]), [reloadTree, reloadRemoteTrees]);
-  const viewed = useViewed({ runtimes, ports: panePorts, active, tree, remote: remoteTrees, reload: reloadBooks });
+  const viewed = useViewed({ runtimes, ports: panePorts, active: settings || feedback ? "" : active, tree, remote: remoteTrees, reload: reloadBooks });
+  useUnreadBadge(viewed.tree, viewed.remote);
   const focusPane = useCallback(
     (id: string) => {
       sw.cancel();
@@ -355,6 +357,12 @@ export function App({ hub }: { hub: HubPort }) {
     setFilesRequests((requests) => ({ ...requests, [active]: (requests[active] ?? 0) + 1 }));
   }, [active, panePorts, hidePrefs]);
 
+  const showView = useCallback((to: PaneView) => {
+    if (!panePorts.has(active)) return;
+    hidePrefs();
+    setViewRequests((requests) => ({ ...requests, [active]: { to, n: (requests[active]?.n ?? 0) + 1 } }));
+  }, [active, panePorts, hidePrefs]);
+
   const openPane = useOpenPane({ hub, runtimes, panePorts, active, reportsRef, runsRef, setRuntimes, setActive, setTakeover, reloadPanes: refreshPanes, sw });
 
   // Awaitable because deleting a conversation has to close its pane first and
@@ -370,10 +378,14 @@ export function App({ hub }: { hub: HubPort }) {
     [hub, reloadPanes],
   );
 
-  const adder = useAddWorkspace(hub, reloadTree, fail);
+  const openPeerSession = useCallback((path: string) => void openPane({ sessionPath: path }).catch(fail), [openPane, fail]);
+  const adder = useAddWorkspace(hub, reloadTree, fail, (workspace) => openPane({ root: workspace.root }));
   // 每个窗口都有一个根 —— 没选过项目时那是它碰巧启动的地方。两者读起来一样，
   // 于是「从哪加项目」这句问题永远问不出口；只有内核说的 remembered 分得开。
   const [claimed, setClaimed] = useState(() => localStorage.getItem("rx-claim") === "off");
+  const { focusFor, openProject, keepHere, openSettings, openFeedback, openSessionFor } = usePaneCallbacks({
+    focusPane, setRail, addFolder: () => adder.add(), setClaimed, showPrefs, setFeedback, runtimes, openPane, fail,
+  });
   const needsProject = treeRead && !claimed && tree.every((ws) => !ws.remembered);
 
   useFoldAway("rail", setRail);
@@ -387,13 +399,6 @@ export function App({ hub }: { hub: HubPort }) {
 
   useLinkRouting(activePort, useCallback(() => setBrowser(true), []), fail);
 
-  // Settings cover the conversation, so a find opened under them is one nobody
-  // sees: asking for it leaves them.
-  const openFind = useCallback(() => {
-    setSettings(false);
-    setFindPulse((n) => n + 1);
-  }, []);
-
   // The window's shortcuts, named by the action each one performs — the same
   // identity the control on screen carries, because they are the same thing
   // asked for two ways. Written out rather than branched so the census can read
@@ -403,14 +408,19 @@ export function App({ hub }: { hub: HubPort }) {
     () => [
       { chord: "\\", fields: true, action: "rail.toggle", run: () => setRail((v) => !v) },
       { chord: ",", fields: true, action: "chrome.settings", run: showPrefs },
-      { chord: "f", action: "transcript.find", run: openFind },
+      { chord: "f", action: "transcript.find", run: find.open },
+      { chord: "1", fields: true, action: "pane.view", run: () => showView("flow") },
+      { chord: "2", fields: true, action: "pane.view", run: () => showView("analysis") },
+      { chord: "3", fields: true, action: "pane.view", run: () => showView("browser") },
       ...zoomKeys,
     ],
-    [showPrefs, openFind, zoomKeys],
+    [showPrefs, find.open, showView, zoomKeys],
   );
   const closeBrowser = useCallback(() => setBrowser(false), []);
   const stopTurn = useCallback(() => activePort?.cancel(), [activePort]);
-  useWindowKeys(shortcuts, { browser, settings: !!settings, running, closeBrowser, stop: stopTurn });
+  const escMode = useEscStop();
+  const [stopArmed, setStopArmed] = useState(false);
+  useWindowKeys(shortcuts, { browser, settings: !!settings, running, confirm: escMode === "confirm", closeBrowser, stop: stopTurn, onArm: setStopArmed });
 
   // A setting changed in the pane is a fact about the session behind it, and
   // the pane is what holds that fact. Without a nudge it keeps polling only
@@ -431,15 +441,16 @@ export function App({ hub }: { hub: HubPort }) {
   // "新会话" — with several open, identical labels are the same as no labels.
   const titleFor = useCallback(
     (rt: RuntimeView, at: number) => {
-      for (const ws of tree) {
+      for (const ws of rt.host ? viewed.remote[rt.host] ?? [] : tree) {
         for (const session of ws.sessions) {
           // An unwritten one has only a file name; the numbered fallback reads better.
-          if (session.runtimeId === rt.id && (session.title || session.turns)) return session.title || session.name;
+          const held = rt.host ? workspaceContains(ws, rt.root) && session.path === rt.sessionPath : session.runtimeId === rt.id;
+          if (held && (session.title || session.turns)) return session.title || session.name;
         }
       }
       return at === 0 ? t("新会话") : t("新会话 {n}", { n: at + 1 });
     },
-    [tree],
+    [tree, viewed.remote],
   );
 
   const tabs = useMemo(
@@ -459,17 +470,14 @@ export function App({ hub }: { hub: HubPort }) {
   // A failed request floats above the composer of the pane in front, where the
   // eye already is; with no pane on screen it takes the main area's corner.
   const activePaneShown = !!activeRuntime && panePorts.has(activeRuntime.id);
-  const errorBar = error ? (
-    <div className="errbar" role="alert">
-      <span>{error}</span>
-      <button onClick={() => setError("")}>{t("知道了")}</button>
-    </div>
-  ) : null;
-  const bar = errorBar ?? <AutoArchiveNotice tree={tree} />;
-  const activeWorkspace = tree.find((ws) => ws.root === activeRuntime?.root) ?? tree[0];
-  // The folder a new session opens in is the one the switcher above names —
-  // the window's, not whichever project happens to sit first in the tree.
+  const errorBar = useMemo(() => (error ? <ErrorBar text={error} onDismiss={() => setError("")} onReport={() => setFeedback("send")} /> : null), [error]);
+  const bar = useMemo(
+    () => errorBar ?? <LevelUpNotice port={machineRt ? machinePort : null} tick={feedback === null ? 0 : 1} fallback={<AutoArchiveNotice tree={tree} />} />,
+    [errorBar, tree, machineRt, machinePort, feedback],
+  );
+  const activeWorkspace = tree.find((ws) => !activeRuntime?.host && workspaceContains(ws, activeRuntime?.root)) ?? tree[0];
   const newSessionRoot = activeWorkspace?.root;
+  const startConversation = useNewConversation(active, runtimes, newSessionRoot, openPane, openRemotePane);
 
   usePaneForSheets({
     settings: !!settings,
@@ -495,12 +503,11 @@ export function App({ hub }: { hub: HubPort }) {
   // so a refusal has to land in the error bar rather than in a caller.
   const dropPanes = useCallback((ids: string[]) => void closePanes(ids).catch(fail), [closePanes, fail]);
 
-  // One rename for both surfaces: the tab renames by the pane's session path,
-  // the sidebar by the row's — the same file either way.
   const renameSession = useCallback(
-    (path: string, title: string) => {
+    (path: string, title: string, mode: "inline" | "dialog" = "dialog") => {
       if (!path) return;
-      void hub.renameSession(path, title).then(reloadTree).catch(fail);
+      if (mode === "inline") void hub.renameSession(path, title).then(reloadTree).catch(fail);
+      else setRenaming({ path, title });
     },
     [hub, reloadTree, fail],
   );
@@ -516,23 +523,12 @@ export function App({ hub }: { hub: HubPort }) {
     [closePanes, hub, reloadTree, unpinSession],
   );
 
+  const branchSession = useBranchSession({ panePorts, runtimes, runsRef, openPane });
+
+  const first = useFirstRun({ port: activePort, setup, welcomed, setSetup, setWelcomed, reloadPanes });
+
   if (setup === undefined || welcomed === undefined) return <div className="app" data-run="idle" />;
-  if (setup?.required && activePort) {
-    return (
-      <Onboarding
-        port={activePort}
-        setup={setup}
-        onDone={() => {
-          setSetup(null);
-          if (!welcomed) {
-            setWelcomed(true);
-            void activePort.markWelcomed().catch(() => {});
-          }
-          void reloadPanes();
-        }}
-      />
-    );
-  }
+  if (first.gate) return first.gate;
   if (!welcomed && activePort) {
     return (
       <Welcome
@@ -547,6 +543,8 @@ export function App({ hub }: { hub: HubPort }) {
   }
 
   return (
+    <CompositionNewContext.Provider value={(id) => {const rt=runtimes.find((v)=>v.id===active);void (rt?.host?openRemotePane(rt.host,rt.root,undefined,id):openPane({root:newSessionRoot,agentComposition:id})).catch(fail);}}>
+    <PeerThreadsProvider port={activePort} hub={hub} onOpen={openPeerSession}>
     <div
       className="app"
       data-run={report.run}
@@ -569,17 +567,11 @@ export function App({ hub }: { hub: HubPort }) {
         title={tabs.find((tab) => tab.rt.id === active)?.title ?? report.title}
         steer={report.steer}
         onSettings={showPrefs}
-        onBrowser={() => {
-          if (!browser) setBrowserAsk((n) => n + 1);
-          setBrowser((value) => !value);
-        }}
-        browser={browser}
         account={account}
-        rail={rail}
         theme={scheme}
-        onRail={() => setRail((v) => !v)}
         onTheme={() => setTheme(scheme === "dark" ? "light" : "dark")}
-        onFind={openFind}
+        onFind={find.toggle}
+        view={report.view} rows={report.rows} surfaces={report.surfaces} onView={showView}
         hub={hub} onError={fail}
       />
 
@@ -594,6 +586,10 @@ export function App({ hub }: { hub: HubPort }) {
             onHome={hidePrefs}
             onRail={() => setRail((v) => !v)}
             onFeedback={() => setFeedback(feedbackEntryTab(feedbackUnread))}
+            onNew={() => {
+              hidePrefs();
+              void startConversation().catch(fail);
+            }}
             feedbackUnread={feedbackUnread}
             shown={navRail.shown}
           />
@@ -604,11 +600,13 @@ export function App({ hub }: { hub: HubPort }) {
           navShown={navRail.shown}
           tree={viewed.tree}
           treeRead={treeRead}
+          answered={answered}
           runtimes={runtimes}
           runs={runs}
           active={active}
           activeWorkspace={activeWorkspace}
           liveIds={liveIds}
+          listedIds={listedIds}
           pinned={pinnedSessions}
           onPin={togglePinnedSession}
           remotes={remotes}
@@ -617,14 +615,17 @@ export function App({ hub }: { hub: HubPort }) {
           reloadRemoteTrees={reloadRemoteTrees}
           readRemoteTree={readRemoteTree}
           reloadTree={reloadTree}
+          retryTree={retryTree}
           paging={paging}
           adder={adder}
           opening={sw.path}
           onOpen={openPane}
+          onNew={startConversation}
           onOpenRemote={openRemotePane}
           onFocusPane={focusPane}
           onClosePanes={closePanes}
           onPause={(runtimeId) => void panePorts.get(runtimeId)?.cancel()}
+          onBranch={branchSession}
           onArchive={archiveSession}
           onRename={renameSession}
           onCollapse={() => setRail(false)}
@@ -633,9 +634,11 @@ export function App({ hub }: { hub: HubPort }) {
           wallet={report.wallet}
           onSettings={showPrefs}
           onFiles={openFiles}
+          onView={showView}
+          onReferenceSession={panePorts.has(active) ? referenceSession : undefined}
           onFeedback={(tab) => setFeedback(tab ?? "send")}
           feedbackUnread={feedbackUnread}
-          onFind={openFind}
+          onFind={find.open}
           onError={fail}
         />
 
@@ -659,7 +662,7 @@ export function App({ hub }: { hub: HubPort }) {
               showRoot={manyRoots}
               onFocus={focusPane}
               onClose={dropPanes}
-              onRename={(rt, title) => renameSession(rt.sessionPath ?? "", title)}
+              onRename={(rt, title, mode) => renameSession(rt.sessionPath ?? "", title, mode)}
             />
           )}
 
@@ -671,11 +674,12 @@ export function App({ hub }: { hub: HubPort }) {
                   key={`${rt.id}:${takeover[rt.id] ?? 0}`}
                   rt={rt}
                   port={port}
+                  hub={hub}
                   title={tabs.find((tab) => tab.rt.id === rt.id)?.title ?? t("新会话")}
                   active={rt.id === active}
                   sideHost={null}
                   side={false}
-                  onFocus={() => focusPane(rt.id)}
+                  onFocus={focusFor(rt.id)}
                   visible={rt.id === active}
                   onReport={onReport}
                   onTurnDone={viewed.turnDone}
@@ -684,26 +688,24 @@ export function App({ hub }: { hub: HubPort }) {
                   // looks blank — the next history row would take it over.
                   onSessionChanged={refreshPanes}
                   pulse={settingsPulse}
-                  findPulse={findPulse}
+                  findPulse={find.pulse}
+                  findTogglePulse={find.togglePulse}
                   filesPulse={filesRequests[rt.id] ?? 0}
+                  viewRequest={viewRequests[rt.id]}
+                  sessionRef={sessionRefs[rt.id]}
                   alert={rt.id === active ? bar : undefined}
+                  connect={first.connect}
                   needsProject={needsProject}
-                  onOpenProject={() => {
-                    setRail(true);
-                    adder.add();
-                  }}
-                  onKeepHere={() => {
-                    localStorage.setItem("rx-claim", "off");
-                    setClaimed(true);
-                  }}
-                  onSettings={(section) => section ? showPrefs(section) : showPrefs()}
-                  onOpenSession={(path) => void openPane({ root: rt.root, sessionPath: path }).catch(fail)}
+                  onOpenProject={openProject}
+                  onKeepHere={keepHere}
+                  onSettings={openSettings}
+                  onFeedback={openFeedback}
+                  onOpenSession={openSessionFor(rt.id)}
                   theme={scheme}
                   dockW={shownDockW}
                   dockMax={dockLimit}
                   onDockW={onDockW}
                   manualBrowser={rt.id === active && browser}
-                  browserAsk={browserAsk}
                   onManualBrowser={setBrowser}
                 />
               ) : null;
@@ -724,7 +726,7 @@ export function App({ hub }: { hub: HubPort }) {
                 ) : (
                   <>
                     <p className="h">{t("从左栏选择，或在当前文件夹新建")}</p>
-                    <button data-action="session.new" onClick={() => void openPane({ root: newSessionRoot }).catch(fail)}>{t("新建会话")}</button>
+                    <button data-action="session.new" onClick={() => void startConversation().catch(fail)}>{t("新建会话")}</button>
                   </>
                 )}
               </div>
@@ -737,6 +739,12 @@ export function App({ hub }: { hub: HubPort }) {
       </div>
 
       {adder.pathOpen && <AddWorkspacePrompt busy={adder.busy} onSubmit={adder.addPath} onClose={adder.closePath} />}
+      {renaming && (
+        <RenameSession session={renaming} hub={hub} onClose={() => setRenaming(null)}
+          onSaved={() => { setRenaming(null); void reloadTree().catch(fail); }} />
+      )}
+
+      <ToastStack onFeedback={() => setFeedback("send")} port={machinePort} idle={!running} look={look} onLook={onLook} />
 
       {feedback && activePort && (
         <Feedback port={machinePort} tab={feedback} onClose={() => setFeedback(null)} onError={setError} onUnread={setFeedbackUnread} />
@@ -774,6 +782,10 @@ export function App({ hub }: { hub: HubPort }) {
         </Suspense>
         </Boundary>
       )}
+      <RailToggle rail={rail} onRail={() => setRail((v) => !v)} />
+      <StopHint armed={stopArmed} />
     </div>
+    </PeerThreadsProvider>
+    </CompositionNewContext.Provider>
   );
 }

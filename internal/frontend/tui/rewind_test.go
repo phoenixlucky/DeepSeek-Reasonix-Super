@@ -50,6 +50,37 @@ func TestRewindPickerRestoresTheChosenTurn(t *testing.T) {
 	}
 }
 
+// A restore the checkpoint covers only partly asks once more: Esc steps back
+// without restoring, and Enter or y commits.
+func TestRewindPartialCoverageWaitsForConfirmation(t *testing.T) {
+	for _, confirm := range []string{"y", "enter"} {
+		t.Run(confirm, func(t *testing.T) {
+			m, k := testModel(t)
+			k.partialCoverage = true
+			restoreCode := func() {
+				_, cmd := m.Update(tea.KeyPressMsg{Code: 'd', Text: "d"})
+				run(m, cmd)
+			}
+			typeText(m, "/rewind")
+			run(m, press(m, "enter"))
+			run(m, press(m, "enter"))
+			restoreCode()
+			if !strings.Contains(bottomText(m), i18n.M.RewindCoverageTitle) || calledWith(k, "POST /rewind/commit") {
+				t.Fatalf("partial coverage did not stop for confirmation:\n%s\n%s", bottomText(m), strings.Join(k.seen(), "\n"))
+			}
+			run(m, press(m, "esc"))
+			if strings.Contains(bottomText(m), i18n.M.RewindCoverageTitle) || calledWith(k, "POST /rewind/commit") {
+				t.Fatalf("Esc did not step back without restoring:\n%s\n%s", bottomText(m), strings.Join(k.seen(), "\n"))
+			}
+			restoreCode()
+			run(m, press(m, confirm))
+			if !calledWith(k, `POST /rewind/commit {"planId":"p-1"}`) {
+				t.Fatalf("%s did not confirm the restore:\n%s", confirm, strings.Join(k.seen(), "\n"))
+			}
+		})
+	}
+}
+
 // /clear deletes the transcript, so it asks, and the answer starts on Cancel.
 func TestClearAsksBeforeClearing(t *testing.T) {
 	m, k := testModel(t)

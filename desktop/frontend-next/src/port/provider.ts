@@ -60,6 +60,17 @@ export interface ProviderEntry {
   // it inherits when it declares none.
   modelLimits?: Record<string, ModelLimit>;
   inheritedLimits?: Record<string, ModelLimit>;
+  // Per model: the price per million tokens it declares for itself. A model
+  // with none is absent, which means unknown, not zero.
+  modelPrices?: Record<string, ModelRate>;
+  // payg, or subscription_equivalent where the figures are an API-priced estimate
+  // of a plan rather than what is billed.
+  billingMode?: string;
+  // A vendor's own endpoint: its table can say whether a stored price is its own.
+  officialPricing?: boolean;
+  // How the latest plain test of this saved entry ended, in this kernel process.
+  // Absent when none ran or the entry changed since.
+  lastCheck?: { at: number; ok: boolean; code?: string };
   // Removing the one in use would leave the session on a model that no longer
   // resolves, so the row offers no delete.
   inUse: boolean;
@@ -74,6 +85,13 @@ export interface ProviderEntry {
   idleTimeoutSeconds?: number;
   // What a source without one waits; the kernel owns the number.
   idleTimeoutDefault?: number;
+  // The wallet endpoint and the format its answer is read in. impliedBalanceFormat
+  // is what the saved address's own host implies when none is declared, empty for
+  // a relay, which must declare one; balanceFormats is the closed set to offer.
+  balanceUrl?: string;
+  balanceFormat?: string;
+  impliedBalanceFormat?: string;
+  balanceFormats?: string[];
   headers?: Record<string, string>;
   extraBody?: Record<string, unknown>;
 }
@@ -150,6 +168,14 @@ export interface ProviderRemoval {
   movedTo: string;
   moved: string[];
   cleared: string[];
+}
+
+/** The form's unsaved state, laid over the saved entry for one check. Blank
+ *  means what is saved. Nothing in it is written anywhere. */
+export interface ProviderCheckDraft {
+  baseUrl?: string;
+  apiKey?: string;
+  kind?: string;
 }
 
 export interface ProviderCheck {
@@ -233,11 +259,19 @@ export interface ProviderEdit {
   maxOutputTokens?: number;
   // 0 is the built-in default; omitted leaves the stored value alone.
   idleTimeoutSeconds?: number;
+  // The wallet endpoint and its format; omitted leaves them alone, an empty
+  // address removes the readout and its format.
+  balanceUrl?: string;
+  balanceFormat?: string;
   headers?: Record<string, string>;
   extraBody?: Record<string, unknown>;
   // Which request shape controls thinking here. "" is auto — no declaration,
   // which leaves the registry in charge. Omitted still means "leave it alone".
   reasoningProtocol?: string;
+  // Whether to use the endpoint-executed search tool, and how context reaches
+  // the next turn ("" is auto). Omitted leaves the stored choice alone.
+  webSearch?: boolean;
+  continuation?: string;
   // An empty list clears the declared vocabulary; omitted leaves it alone.
   supportedEfforts?: string[];
   defaultEffort?: string;
@@ -247,6 +281,23 @@ export interface ProviderEdit {
   // The whole per-model answer for the listed models: a model left out, or sent
   // empty, inherits the connection's limits again. Omitted leaves every model alone.
   modelLimits?: Record<string, ModelLimit>;
+  // The whole per-model answer for the listed models: a model sent null has no
+  // price of its own again. Omitted leaves every model alone.
+  modelPrices?: Record<string, ModelRate | null>;
+}
+
+// One model's price per million tokens, zeros included: free is a price.
+export interface ModelRate {
+  input: number;
+  output: number;
+  cacheHit: number;
+  currency: string;
+  // Where the price was read and on what UTC date (YYYY-MM-DD). They describe the
+  // price and take no part in quoting it.
+  sourceUrl?: string;
+  checked?: string;
+  // True when the card is one the vendor's table has; sent by the kernel, never back.
+  official?: boolean;
 }
 
 // One model's own context window and output cap; an absent field inherits.
@@ -291,6 +342,8 @@ export interface ProviderDraft {
 // /provider-setup 404s once one exists, so null means "ready".
 export interface ProviderSetup {
   required: boolean;
+  // The runtime started with no provider at all: there is no model whose key could be missing.
+  noProvider?: boolean;
   provider?: string;
   model?: string;
   modelRef?: string;

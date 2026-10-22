@@ -103,6 +103,21 @@ func (st CompactionState) Foreign() bool {
 	return st.SchemaVersion > CompactionStateSchemaCurrent
 }
 
+// SaveCompactionState publishes the sidecar under this session's write
+// authority — the permit a transcript save presents, exactly as save.go uses
+// it. Without it a controller whose Save is refused would still install and
+// publish a fold, replacing the owner's digest and paying twice for one span.
+// Additional to the caller's CAS; a never-bound session keeps the legacy path.
+func (s *Session) SaveCompactionState(sessionPath string, st CompactionState) error {
+	releaseAuth, err := s.requireWriteAuthorityForSave(sessionPath)
+	if err != nil {
+		return err
+	}
+	defer releaseAuth()
+	// Raw writers carry no writer identity; controller paths use this method.
+	return SaveCompactionState(sessionPath, st)
+}
+
 // SaveCompactionState writes the sidecar via strict atomic publish (temp +
 // file fsync + rename + best-effort parent-dir fsync). Checkpoint sidecars are
 // commit pointers: EXDEV/copy fallbacks that can tear an existing file are

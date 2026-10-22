@@ -1,8 +1,13 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"reasonix/internal/base/testenv"
 )
 
 func trialResult(id string, trial int, passed bool) result {
@@ -66,5 +71,85 @@ func TestTrialsLineHasNoPassKWhenNoTaskRanEveryTrial(t *testing.T) {
 func TestTrialsLineIsSilentWithoutTrials(t *testing.T) {
 	if got := trialsLine([]result{{task: task{ID: "a"}, Attempt: 1, Passed: true}}); got != "" {
 		t.Fatalf("line = %q, want nothing for a run without trials", got)
+	}
+}
+
+// trajectoryAgent stands in for the reasonix binary and writes a one-record
+// trajectory wherever --trajectory points, so a test can see which files a run
+// leaves behind.
+func trajectoryAgent(t *testing.T) string {
+	t.Helper()
+	requireShellStub(t)
+	bin := filepath.Join(testenv.TempDir(t), "fake-agent")
+	script := `#!/usr/bin/env bash
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trajectory) printf '{"ts":1,"event":{"kind":"turn_done"}}\n' > "$2"; shift 2;;
+    --metrics) printf '{"steps":1,"complete":true}' > "$2"; shift 2;;
+    *) shift;;
+  esac
+done
+exit 0
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+// Each trial records its own trajectory: a shared name would leave only the
+// last trial's file, and every digest of the earlier ones would read it.
+func TestTrialsKeepOneTrajectoryPerTrial(t *testing.T) {
+	dir, taskDir := testenv.TempDir(t), testenv.TempDir(t)
+	if err := os.WriteFile(filepath.Join(taskDir, "prompt.md"), []byte("p"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := suiteConfig{bin: trajectoryAgent(t), trials: 2, trajDir: dir}
+	total := 0
+	results := runTrials(cfg, task{ID: "demo", Prompt: "p", MaxSteps: 4, TimeoutSec: 60, dir: taskDir}, &total)
+	if len(results) != 2 {
+		t.Fatalf("results = %d, want 2", len(results))
+	}
+	got, err := filepath.Glob(filepath.Join(dir, "*.trajectory.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range got {
+		got[i] = filepath.Base(got[i])
+	}
+	slices.Sort(got)
+	want := []string{"demo.trial-1.trajectory.jsonl", "demo.trial-2.trajectory.jsonl"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("trajectory files = %v, want %v", got, want)
+	}
+	for _, r := range results {
+		if r.Trajectory == nil || filepath.Base(r.Trajectory.Path) != want[r.Trial-1] {
+			t.Errorf("trial %d digest = %+v, want it read from %s", r.Trial, r.Trajectory, want[r.Trial-1])
+		}
+	}
+}
+
+// A single trial keeps the name every reader already knows.
+func TestSingleTrialKeepsTheTaskTrajectoryName(t *testing.T) {
+	if got := trajectoryStem("demo", 1, 1); got != "demo" {
+		t.Fatalf("stem = %q, want demo", got)
+	}
+	if got := trajectoryStem("demo", 0, 0); got != "demo" {
+		t.Fatalf("stem = %q, want demo", got)
+	}
+}
+
+// Readers that need the task behind a file strip the trial and segment marks.
+func TestTrajectoryTaskIDReadsEveryFileShape(t *testing.T) {
+	for name, want := range map[string]string{
+		"demo.trajectory.jsonl":              "demo",
+		"demo.trial-2.trajectory.jsonl":      "demo",
+		"demo.seg3.trajectory.jsonl":         "demo",
+		"demo.trial-2.seg3.trajectory.jsonl": "demo",
+		"a.b.trial-10.trajectory.jsonl":      "a.b",
+	} {
+		if got := trajectoryTaskID(filepath.Join("d", name)); got != want {
+			t.Errorf("trajectoryTaskID(%s) = %q, want %q", name, got, want)
+		}
 	}
 }

@@ -5,27 +5,34 @@
 export const STREAM_SILENCE_MS = 45_000;
 const CHECK_MS = 5_000;
 
+/** The disposer of a live stream, which can also give its connection back and
+ *  take one again. A paused stream keeps whatever cursor `url` reads, so the
+ *  connection that replaces it asks for exactly what went by in between. */
+export type LiveStream = (() => void) & { pause: () => void; resume: () => void; holdsConnection?: () => boolean };
+
 /** Holds one EventSource open and replaces it once it has gone silent. `url`
  *  names where to resume, so a replacement asks for what the dead one missed.
  *  Timers stop while a phone sleeps, so waking and coming back online check at
  *  once rather than on the next tick. */
-export function openLiveStream(url: () => string, onData: (raw: string) => void, silenceMs = STREAM_SILENCE_MS): () => void {
-  let es: EventSource;
+export function openLiveStream(url: () => string, onData: (raw: string) => void, silenceMs = STREAM_SILENCE_MS): LiveStream {
+  let es: EventSource | null = null;
+  let paused = false;
   let heard = 0;
   const open = () => {
     heard = Date.now();
-    es = new EventSource(url(), { withCredentials: true });
-    es.onopen = () => {
+    const next = new EventSource(url(), { withCredentials: true });
+    es = next;
+    next.onopen = () => {
       heard = Date.now();
     };
-    es.onmessage = (m) => {
+    next.onmessage = (m) => {
       heard = Date.now();
       onData(m.data);
     };
   };
   const check = () => {
-    if (Date.now() - heard < silenceMs) return;
-    es.close();
+    if (paused || Date.now() - heard < silenceMs) return;
+    es?.close();
     open();
   };
   const wake = () => {
@@ -38,12 +45,28 @@ export function openLiveStream(url: () => string, onData: (raw: string) => void,
     document.addEventListener("visibilitychange", wake);
     addEventListener("online", check);
   }
-  return () => {
-    clearInterval(timer);
-    if (dom) {
-      document.removeEventListener("visibilitychange", wake);
-      removeEventListener("online", check);
-    }
-    es.close();
-  };
+  const stop: LiveStream = Object.assign(
+    () => {
+      clearInterval(timer);
+      if (dom) {
+        document.removeEventListener("visibilitychange", wake);
+        removeEventListener("online", check);
+      }
+      es?.close();
+    },
+    {
+      pause: () => {
+        if (paused) return;
+        paused = true;
+        es?.close();
+        es = null;
+      },
+      resume: () => {
+        if (!paused) return;
+        paused = false;
+        open();
+      },
+    },
+  );
+  return stop;
 }

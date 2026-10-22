@@ -8,29 +8,37 @@ const fs = require("node:fs/promises");
 const { existsSync } = require("node:fs");
 const path = require("node:path");
 const { start, shouldRetry, HANDSHAKE_TIMEOUT_MS } = require("./host");
+const { startEmbedded, createQuitGate } = require("./cua");
 const { showStarting } = require("./starting");
 const { StudioHost } = require("./hostclient");
 const { installTray } = require("./tray");
 const { instanceID, profileFor } = require("./instance");
+const { watchLauncher, consoleEcho } = require("./launcher");
 const { installApplicationMenu, installContextMenu } = require("./menu");
 const { uiLanguage } = require("./uilang");
 const { installFullScreenKey } = require("./fullscreen");
 const { installReload } = require("./reload");
 const { externalTarget } = require("./links");
-const { reveal, revealWorkspace, revealLogs } = require("./reveal");
+const { reveal, revealWorkspace, revealLogs, openWorkspace, openFile } = require("./reveal");
 const { appIcon } = require("./appicon");
+const { setUnreadBadge } = require("./badge");
 const layout = require("./layout");
+const { folderAnswer } = require("./folderpanel");
 const { offerCleanup } = require("./legacy");
 const { stripPackageGrants, unpaintedWindowCause } = require("./packagegrants");
 const { BrowserProtocol } = require("./browserprotocol");
 const { BrowserViews } = require("./browserviews");
 const { startBrowserRelay } = require("./browserrelay");
-const { groundFor } = require("./ground");
+const { groundFor, themeSourceFor } = require("./ground");
 const { loadPrefs, prefsFile, registerPrefs } = require("./prefs");
 const { stateFile, openWindow } = require("./windowstate");
 const { accelerationOff, shouldDisableGpu, graphicsHandler } = require("./graphics");
+const { processMemoryHandler } = require("./procmem");
+const { captureHandler } = require("./capture");
 const { createPowerGuard, keepsAwake } = require("./powerguard");
 const { openLogs, redactArgv, failStartup } = require("./shelllog");
+const { raise } = require("./raise");
+const { keepCredential } = require("./credential");
 const { actHandler } = require("./acts");
 const { crashDir, recordHostExit, pendingHostExit, clearHostExit, hostExitNotice } = require("./hostexit");
 
@@ -63,11 +71,13 @@ const where = {
   env: process.env,
 };
 const hostBinary = layout.hostBinary(where);
-const computerHelper = layout.computerHelper(where);
+const computerDriver = layout.computerDriver(where);
 const pageDir = layout.pageDir(where);
 
-const acts = actHandler({ app, showWindow: () => showWindow() });
+const acts = actHandler({ app, showWindow: () => showWindow(), log: (line) => logs?.shell.line(line) });
+const toConsole = consoleEcho(process.stderr);
 let kernel = null;
+let cua = null;
 let win = null;
 let origin = "";
 let quitting = false;
@@ -118,7 +128,7 @@ async function launchKernel(args) {
       },
       onStderr: (text) => {
         logs.host.raw(text);
-        process.stderr.write(text);
+        toConsole(text);
       },
       onExit: (code, signal) => {
         logs.shell.line(`host: exited code=${code} signal=${signal}${handshaken ? "" : " before its handshake"}`);
@@ -133,6 +143,7 @@ async function launchKernel(args) {
       onAct: (act) => acts(act),
     });
     const current = kernel;
+    logs.shell.line(`host: pid ${current.child.pid ?? "(none)"}`);
     current.child.on("error", (err) => logs.shell.line(`host: spawn failed: ${err.message}`));
     current.child.stderr.on("close", () => logs.host.flush());
     try {
@@ -156,7 +167,14 @@ async function boot() {
   // falls back to Electron's own, which named a Studio that never shipped and
   // ranked it ahead of every published release.
   const args = ["-page", pageDir, "-crash-dir", crashDir(logs.dir)];
-  if (computerHelper && existsSync(computerHelper)) args.push("-computer-helper", computerHelper);
+  if (computerDriver && existsSync(computerDriver)) {
+    if (process.platform === "darwin") {
+      const contract = JSON.parse(await fs.readFile(layout.computerDriverContract(where), "utf8"));
+cua = await startEmbedded(computerDriver, contract, text => logs.host.raw(text));
+      args.push("-computer-socket", cua.socket, "-computer-abort-socket", cua.abortSocket);
+    }
+    args.push("-cua-driver", computerDriver);
+  }
   if (app.isPackaged) {
     args.push("-studio-version", app.getVersion());
     // The other half the kernel cannot work out: which file the application
@@ -183,6 +201,7 @@ async function boot() {
   session.defaultSession.webRequest.onCompleted({ urls: [`${ready.origin}/*submit`] }, (details) => {
     if (details.method === "POST" && details.statusCode < 300) void powerGuard?.refresh();
   });
+  followTheme();
   win = createWindow();
   closeStarting();
   guard(win.webContents);
@@ -266,7 +285,7 @@ function cleanUpLegacyInstalls() {
 // it, Strict because no cross-site navigation ever needs to carry it, and no
 // expiry so it dies with this session rather than outliving the launch.
 async function armCredential(ready) {
-  await session.defaultSession.cookies.set({
+  const cookie = {
     url: ready.origin + "/",
     name: TOKEN_COOKIE,
     value: ready.token,
@@ -274,7 +293,9 @@ async function armCredential(ready) {
     httpOnly: true,
     secure: false,
     sameSite: "strict",
-  });
+  };
+  await session.defaultSession.cookies.set(cookie);
+  keepCredential(session.defaultSession, cookie, (line) => logs.shell.line(line));
 }
 
 // The close button hides where an icon can bring the window back, and quits
@@ -293,8 +314,7 @@ function showWindow() {
   if (quitting || !win || win.isDestroyed()) return;
   if (win.isMinimized()) win.restore();
   reload?.revive();
-  win.show();
-  win.focus();
+  logs?.shell.line(`shell: window raised; focused=${raise(win)}`);
 }
 
 // A window larger than the display it opens on puts its own title bar off
@@ -307,7 +327,11 @@ function fitted() {
   };
 }
 
-const ground = () => groundFor(loadPrefs(prefsFile(app.getPath("userData"))), nativeTheme.shouldUseDarkColors);
+const storedPrefs = () => loadPrefs(prefsFile(app.getPath("userData")));
+const ground = () => groundFor(storedPrefs(), nativeTheme.shouldUseDarkColors);
+const followTheme = () => {
+  nativeTheme.themeSource = themeSourceFor(storedPrefs());
+};
 
 function createWindow() {
   const mac = process.platform === "darwin";
@@ -366,6 +390,7 @@ function fromWindow(event) {
 const uiLang = () => uiLanguage(loadPrefs(prefsFile(app.getPath("userData"))), app.getPreferredSystemLanguages()[0] ?? app.getLocale());
 registerPrefs(ipcMain, () => prefsFile(app.getPath("userData")), fromWindow, () => {
   installApplicationMenu(uiLang);
+  followTheme();
   if (win && !win.isDestroyed()) win.setBackgroundColor(ground());
   void powerGuard?.refresh();
 });
@@ -374,6 +399,12 @@ nativeTheme.on("updated", () => {
 });
 
 ipcMain.handle("shell:graphics", (event) => graphicsHandler(app, fromWindow, gpuLaunch)(event));
+ipcMain.handle("shell:process-memory", (event) => processMemoryHandler(app, fromWindow)(event));
+
+ipcMain.handle("window:unread-badge", (event, unread) => {
+  const target = fromWindow(event);
+  if (target && typeof unread === "boolean") setUnreadBadge(unread, target);
+});
 
 ipcMain.handle("window:minimise", (event) => {
   fromWindow(event)?.minimize();
@@ -385,6 +416,7 @@ ipcMain.handle("window:toggle-maximise", (event) => {
   else target.maximize();
 });
 ipcMain.handle("window:is-maximised", (event) => fromWindow(event)?.isMaximized() ?? false);
+ipcMain.handle("window:capture", (event) => captureHandler(fromWindow)(event));
 ipcMain.handle("window:close", (event) => {
   fromWindow(event)?.close();
 });
@@ -418,8 +450,14 @@ ipcMain.handle("shell:reveal-workspace", (event, root) =>
 ipcMain.handle("shell:reveal-logs", (event) =>
   fromWindow(event) ? revealLogs(shell, logs?.dir) : { error: "no window" },
 );
+ipcMain.handle("shell:open-workspace", (event, root) =>
+  fromWindow(event) && client ? openWorkspace(client, shell, String(root)) : { code: "", error: "no window" },
+);
 ipcMain.handle("shell:reveal", (event, base, rel) =>
   fromWindow(event) && client ? reveal(client, shell, String(base), String(rel)) : { code: "", error: "no window" },
+);
+ipcMain.handle("shell:open-file", (event, base, rel) =>
+  fromWindow(event) && client ? openFile(client, shell, String(base), String(rel)) : { code: "", error: "no window" },
 );
 
 // A dismissed dialog answers with "", which is what the page reads as "they
@@ -443,16 +481,18 @@ ipcMain.handle("dialog:save-bytes", (event, name, bytes) =>
 // createDirectory is the half that carries meaning: a panel that can only open
 // what exists reads as an app that cannot start a project, which is what the
 // Wails picker was reported as before it said so. A dismissed panel answers ""
-// like the save dialogs, and startIn is dropped when it names nothing.
+// like the save dialogs, a panel that could not be drawn answers null, and startIn
+// is dropped when it names nothing.
 ipcMain.handle("dialog:pick-folder", async (event, startIn) => {
   const target = fromWindow(event);
   if (!target) return "";
+  const shownAt = Date.now();
   const picked = await dialog.showOpenDialog(target, {
     defaultPath: startIn || undefined,
-    properties: ["openDirectory", "createDirectory"],
+    // Tools keep their working folders behind a leading dot, so those are listed too.
+    properties: ["openDirectory", "createDirectory", "showHiddenFiles"],
   });
-  if (picked.canceled || !picked.filePaths.length) return "";
-  return picked.filePaths[0];
+  return folderAnswer(picked, Date.now() - shownAt, process.platform);
 });
 
 // Named before any path is derived from it: userData hangs off the app name,
@@ -476,7 +516,7 @@ if (gpuLaunch.launchedOff) app.disableHardwareAcceleration();
 logs = openLogs(app.getPath("userData"));
 logs.shell.line(
   `shell: start version=${app.getVersion()} packaged=${app.isPackaged} platform=${process.platform}/${process.arch} ` +
-    `instance=${identity || "(unknown)"} argv=${JSON.stringify(redactArgv(process.argv))}`,
+    `instance=${identity || "(unknown)"} pid=${process.pid} argv=${JSON.stringify(redactArgv(process.argv))}`,
 );
 const primary = app.requestSingleInstanceLock();
 if (!primary) {
@@ -487,6 +527,13 @@ if (!primary) {
   app.on("second-instance", showWindow);
   // macOS reopens an existing app through activation, without a second process.
   app.on("activate", showWindow);
+  watchLauncher({
+    packaged: app.isPackaged,
+    onLost: () => {
+      logs.shell.line("shell: launcher gone; quitting");
+      app.quit();
+    },
+  });
   grants = stripPackageGrants(hostBinary, { ...where, execPath: process.execPath });
   if (grants?.stripped.length) {
     const note = `removed app-package grants that stop sandboxed processes loading: ${grants.stripped.join(", ")}`;
@@ -541,9 +588,11 @@ app.on("window-all-closed", () => {
 // than a copy of it.
 module.exports = { current: () => ({ win, tray, client, origin }) };
 
-app.on("before-quit", () => {
+const drainCua = createQuitGate(() => cua, () => app.quit(), error => logs.shell.line(`CUA cleanup: ${error.message}`));
+app.on("before-quit", event => {
   quitting = true;
   logs.shell.line("shell: quitting");
+  drainCua(event);
   browserRelay?.stop();
   powerGuard?.close();
   tray?.close();

@@ -138,4 +138,39 @@ describe("find in the conversation", () => {
     await waitFor(() => expect(bar()).not.toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(field()));
   });
+  it("closes from the title bar button that opened it, and opens again on the next press", async () => {
+    await openWindow();
+    const button = () => screen.getByRole("button", { name: "在这段对话里查找" });
+    await userEvent.click(button());
+    await waitFor(() => expect(bar()).not.toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(field()));
+
+    await userEvent.click(button());
+    await waitFor(() => expect(bar()).toBeNull());
+
+    await userEvent.click(button());
+    await waitFor(() => expect(bar()).not.toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(field()));
+  });
+
+  it("keeps the query box open and takes focus back when the chord is pressed again", async () => {
+    const { composer } = await openWindow();
+    chordF(composer);
+    await waitFor(() => expect(bar()).not.toBeNull());
+    composer.focus();
+    chordF(composer);
+    await waitFor(() => expect(document.activeElement).toBe(field()));
+    expect(bar()).not.toBeNull();
+  });
+
+  it("asks from the palette for an open bar rather than closing it", async () => {
+    await openWindow();
+    await userEvent.click(screen.getByRole("button", { name: "在这段对话里查找" }));
+    await waitFor(() => expect(bar()).not.toBeNull());
+    await act(async () => void fireEvent.keyDown(window, { key: "k", code: "KeyK", ctrlKey: true }));
+    const palette = await screen.findByRole("dialog", { name: "搜索与快捷操作" });
+    await userEvent.click([...palette.querySelectorAll("button")].find((b) => b.textContent?.includes("在这段对话里查找"))!);
+    await waitFor(() => expect(document.activeElement).toBe(field()));
+    expect(bar()).not.toBeNull();
+  });
 });

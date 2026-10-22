@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ReadsCard } from "./ReadsCard";
 import { ToolCard } from "./ToolCard";
+import { openCards } from "./openCards";
 
 afterEach(cleanup);
 
@@ -32,17 +33,34 @@ describe("tool outcome cards", () => {
   // exists; it is not the person being shown one.
   it("shows what the call showed the model, and enlarges one on request", () => {
     const shot = "data:image/jpeg;base64,AAAA";
-    const { container } = render(
+    render(
       <ToolCard tool={{ id: "shot", name: "computer_read", output: "Notes: front window\n[image: screenshot]", images: [shot], readOnly: false }} running={false} />,
     );
-    const thumb = container.querySelector<HTMLButtonElement>('[data-action="tool.image-open"]');
+    openCards();
+    const thumb = screen.getByRole("button", { name: "查看图片 工具截图 1" });
     expect(thumb?.querySelector("img")?.getAttribute("src")).toBe(shot);
-    expect(container.querySelector(".tshot-full")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
     act(() => thumb!.click());
-    expect(container.querySelector<HTMLImageElement>(".tshot-full img")?.getAttribute("src")).toBe(shot);
+    expect(screen.getByRole("dialog").querySelector("img")?.getAttribute("src")).toBe(shot);
     // A picture that fills the window has to close without a mouse.
     act(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })); });
-    expect(container.querySelector(".tshot-full")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  // A video handed to the model natively is a file the person cannot see in the
+  // transcript; the card names it, its size and length, and where it went.
+  it("names a video the call handed to the model natively", () => {
+    const { container } = render(
+      <ToolCard tool={{ id: "vid", name: "read_video", output: "video clip.mp4: 4096 bytes", readOnly: true,
+        videos: [{ name: "clip.mp4", size: 4_194_304, durationMs: 12_000, model: "qwen-vl" }] }} running={false} />,
+    );
+    openCards(container);
+    const note = container.querySelector(".tvideo");
+    expect(note?.textContent).toContain("clip.mp4");
+    expect(note?.textContent).toContain("qwen-vl");
+    expect(note?.textContent).toContain("12.0s");
+    expect(note?.textContent).toMatch(/4(\.0)? ?MB/);
+    expect(container.querySelector(".tshots")).toBeNull();
   });
 
   it("says nothing where a call showed nothing", () => {
@@ -94,7 +112,7 @@ describe("tool outcome cards", () => {
         running={false}
       />,
     );
-    fireEvent.click(container.querySelector("details.tool-disclosure summary")!);
+    openCards(container);
     const rows = container.querySelectorAll(".dl");
     expect(rows.length).toBeGreaterThan(0);
     expect([...rows].some((r) => r.getAttribute("data-d") === "+" && r.textContent?.includes("new"))).toBe(true);
@@ -112,7 +130,7 @@ describe("tool outcome cards", () => {
     );
     expect(screen.getByText("read_file")).toBeTruthy();
     const disclosure = container.querySelector("details.tool-disclosure") as HTMLDetailsElement;
-    fireEvent.click(disclosure.querySelector("summary")!);
+    openCards(container);
     expect(disclosure.open).toBe(true);
     expect(screen.getByText("调用 ample123")).toBeTruthy();
     expect(screen.getByText("输入")).toBeTruthy();
@@ -173,11 +191,13 @@ describe("a command that redraws its own line", () => {
 
   it("keeps what a shorter frame does not cover, as a terminal would", () => {
     const { container } = render(<ToolCard tool={{ id: "dl", name: "bash", output: "downloading 100%\rdone\n", readOnly: false }} running={false} />);
+    openCards(container);
     expect(terms(container)).toEqual(["doneloading 100%\n"]);
   });
 
   it("treats a CRLF line ending as a line ending", () => {
     const { container } = render(<ToolCard tool={{ id: "win", name: "bash", output: "one\r\ntwo\r\n", readOnly: false }} running={false} />);
+    openCards(container);
     expect(terms(container)).toEqual(["one\ntwo\n"]);
   });
 

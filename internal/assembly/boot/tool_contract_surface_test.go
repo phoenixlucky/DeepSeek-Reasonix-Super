@@ -26,6 +26,7 @@ func stableBootToolNames() []string {
 		"edit_file",
 		"read_file",
 		"recall",
+		"setting",
 		"todo_write",
 		"use_capability",
 		"write_file",

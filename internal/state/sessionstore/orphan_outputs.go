@@ -63,7 +63,8 @@ func reconcileOrphanOutputs(dir string) error {
 
 // sweepScratchOutputs ages out the last-resort spills. They belong to no
 // transcript by construction, so there is no owner to test them against and
-// nothing else will ever collect them.
+// nothing else will ever collect them. The directory itself stays: another
+// session may be about to write into it, and an empty one costs nothing.
 func sweepScratchOutputs() error {
 	dir := ScratchOutputsDir()
 	entries, err := os.ReadDir(dir)
@@ -74,20 +75,14 @@ func sweepScratchOutputs() error {
 		return err
 	}
 	var errs []error
-	remaining := 0
 	for _, e := range entries {
 		info, err := e.Info()
 		if err != nil || time.Since(info.ModTime()) < orphanOutputsGrace {
-			remaining++
 			continue
 		}
 		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !os.IsNotExist(err) {
 			errs = append(errs, err)
-			remaining++
 		}
-	}
-	if remaining == 0 {
-		_ = os.Remove(dir)
 	}
 	return errors.Join(errs...)
 }

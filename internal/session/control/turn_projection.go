@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"errors"
+	"reasonix/internal/contract/config"
 	"strings"
 
 	"reasonix/internal/contract/ablation"
@@ -40,20 +41,36 @@ func projectTurn(blocks []turnBlock, text, tail string) string {
 	return strings.TrimRight(b.String(), "\n") + "\n\n" + tail
 }
 
+// Tags a once-delivered block is registered under. The visibility question and
+// the renderer share them, so the two cannot drift apart.
+const (
+	availableSkillsTag     = "available-skills"
+	projectInstructionsTag = "project-instructions"
+	projectRulesTag        = "project-rules"
+	scopedRulesTag         = "scoped-rules"
+)
+
 // turnBlocksFor is the whole set a turn can carry, in projection order. Adding
 // a kind of dynamic state means one entry here, not a new prepend site — which
 // is what this replaced: eight of them, whose order was the order they happened
 // to be written in, reversed.
 func (c *Controller) turnBlocksFor(source string, includeOwed bool, notes []string, plan bool, goal, goalStatus, responseLanguage, reasoningLanguage string) []turnBlock {
 	var blocks []turnBlock
+	var always, scoped string
 	if includeOwed {
+		if res, ok := c.loadRules(); ok {
+			always, scoped = c.rules.owedAlways(res), c.rules.owedScoped(res, c.skills.pathHits)
+		}
 		// Drained for a real turn only: a synthetic one must not consume what
 		// the user's next message is owed.
 		blocks = append(blocks,
 			turnBlock{hookContextTag, c.drainHookContextBlock()},
 			turnBlock{currentDateTag, wrapTurnBlock(currentDateTag, c.date.owed())},
-			turnBlock{"available-skills", wrapTurnBlock("available-skills", c.skills.owedCatalog())},
-			turnBlock{"project-instructions", wrapTurnBlock("project-instructions", c.memory.owedInstructions())},
+			turnBlock{sessionScratchTag, wrapTurnBlock(sessionScratchTag, c.scratch.owed())},
+			turnBlock{availableSkillsTag, wrapTurnBlock(availableSkillsTag, c.skills.owedCatalog())},
+			turnBlock{projectInstructionsTag, wrapTurnBlock(projectInstructionsTag, c.memory.owedInstructions())},
+			turnBlock{projectRulesTag, wrapTurnBlock(projectRulesTag, always)},
+			turnBlock{scopedRulesTag, wrapTurnBlock(scopedRulesTag, scoped)},
 			turnBlock{"mcp-prompt-failure", wrapTurnBlock("mcp-prompt-failure", c.mcp.promptFailures.owed())},
 			turnBlock{"refused-calls", c.refusedCallsBlock()},
 		)
@@ -63,6 +80,7 @@ func (c *Controller) turnBlocksFor(source string, includeOwed bool, notes []stri
 		turnBlock{"background-jobs", c.backgroundJobsBlock()},
 		turnBlock{"memory-update", memoryUpdateBlock(notes)},
 		turnBlock{"reasoning-language", langpref.ReasoningLanguageBlock(langpref.ResolveReasoningLanguage(reasoningLanguage, source))},
+		turnBlock{"turn-narration", langpref.TurnNarrationBlock(c.TurnNarration() == config.TurnNarrationDetailed, langpref.ResolveResponseLanguage(responseLanguage, source))},
 		turnBlock{"response-language", langpref.ResponseLanguageBlock(langpref.ResolveResponseLanguage(responseLanguage, source))},
 		turnBlock{"", planModeMarkerBlock(plan)},
 		turnBlock{"active-goal", c.activeGoalTurnBlock(goal, goalStatus)},
@@ -115,19 +133,23 @@ func (c *Controller) activeGoalTurnBlock(goal, goalStatus string) string {
 	return c.activeGoalBlockForTurn(goal)
 }
 
-// recallTail is the one block that follows the user's text rather than
-// preceding it: retrieved facts answer the request, so they sit with it. An
-// out-of-band write already supplied the new fact verbatim, so that turn
-// records why it did not retrieve instead of retrieving again.
+// recallTail is the one block after the user's text: retrieved facts answer the
+// request. A carried note already supplied the new fact verbatim, so every
+// outcome — note, ablation switch, real search — records and audits one decision.
 func (c *Controller) recallTail(source string, hasNotes bool) string {
+	query := strings.TrimSpace(source)
 	if hasNotes {
-		c.memory.recordRecall(memory.RecallResult{
-			Query:      strings.TrimSpace(source),
-			Suppressed: "memory update already supplies the new fact",
-		})
+		suppressed := memory.RecallResult{Query: query}
+		suppressed.Suppress(memory.SuppressCarriedNote, "memory update already supplies the new fact")
+		c.memory.recordRecall(suppressed)
+		event.RecordMemoryRecall(c.sink, memoryRecallAudit(suppressed))
 		return ""
 	}
 	if c.ablation.Off(ablation.Retrieval) {
+		ablated := memory.RecallResult{Query: query}
+		ablated.Suppress(memory.SuppressRetrievalOff, "automatic recall is switched off for this turn")
+		c.memory.recordRecall(ablated)
+		event.RecordMemoryRecall(c.sink, memoryRecallAudit(ablated))
 		return ""
 	}
 	result := c.memory.recall(source)
@@ -135,31 +157,20 @@ func (c *Controller) recallTail(source string, hasNotes bool) string {
 	return result.Block()
 }
 
-// runSettled hands the composed turn to the runner and settles what it carried.
-// Settling happens here and nowhere earlier: between composing and this line a
-// turn can still be refused by an extension or blocked by a hook, and a debt
-// cleared by one of those leaves the model holding state nobody sent it.
-func (c *Controller) runSettled(ctx context.Context, input string) error {
-	c.settleTurnProjections()
-	return c.runWithRunner(ctx, input)
-}
-
 // ErrNoRunner reports a turn started on a controller assembled without a
 // runner. Returned instead of calling through the nil interface: that fault is
 // a hardware exception on Windows, recovered or not.
 var ErrNoRunner = errors.New("controller has no runner")
 
+// runWithRunner hands the composed turn to the runner. Whether the model holds a
+// projected block is asked of the model-visible history, so a refusal, a cancel
+// or a failed send needs no compensating bookkeeping. The exception is the
+// opening restatement of a rebuilt runtime (see projection_debt.go): this
+// hand-off ends that one-turn state.
 func (c *Controller) runWithRunner(ctx context.Context, input string) error {
 	if c.runner == nil {
 		return ErrNoRunner
 	}
+	c.settleProjection()
 	return c.runner.Run(ctx, input)
-}
-
-func (c *Controller) settleTurnProjections() {
-	c.date.debt.settle()
-	c.skills.catalog.settle()
-	c.memory.instructions.settle()
-	c.mcp.promptFailures.settle()
-	c.refused.settle()
 }

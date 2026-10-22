@@ -351,3 +351,35 @@ func TestRemoteProviderModeDefaultsToLocal(t *testing.T) {
 		})
 	}
 }
+
+func TestPlaceRemoteHostOrdersTheBook(t *testing.T) {
+	var c Config
+	for _, name := range []string{"a", "b", "c"} {
+		if err := c.UpsertRemoteHost(RemoteHostEntry{Name: name, Host: "10.0.0.1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	order := func() string {
+		var out strings.Builder
+		for _, h := range c.Remote.Hosts {
+			out.WriteString(h.Name)
+		}
+		return out.String()
+	}
+	for _, step := range []struct {
+		name, before string
+		changed      bool
+		want         string
+	}{
+		{"c", "a", true, "cab"},
+		{"c", "a", false, "cab"},
+		{"c", "", true, "abc"},
+		{"a", "a", false, "abc"},
+		{"a", "missing", false, "abc"},
+		{"missing", "a", false, "abc"},
+	} {
+		if got := c.PlaceRemoteHost(step.name, step.before); got != step.changed || order() != step.want {
+			t.Fatalf("place %s before %q = %v, order %s; want %v, %s", step.name, step.before, got, order(), step.changed, step.want)
+		}
+	}
+}

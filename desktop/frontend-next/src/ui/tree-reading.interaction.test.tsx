@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import "./testkit";
-import { TreeReading, Workspaces } from "./Workspaces";
+import { TreeReading } from "./TreeReading";
+import { Workspaces } from "./Workspaces";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
@@ -10,7 +11,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function draw(treeRead: boolean) {
+function draw(treeRead: boolean, retry?: () => void) {
   return (
     <Workspaces
       hub={{} as never}
@@ -21,6 +22,7 @@ function draw(treeRead: boolean) {
       folded={new Set()}
       onFold={() => {}}
       reload={async () => {}}
+      retry={retry}
       onOpen={async () => {}}
       onFocus={() => {}}
       onClose={async () => {}}
@@ -66,4 +68,35 @@ it("clears its interval on unmount", () => {
   expect(vi.getTimerCount()).toBe(1);
   unmount();
   expect(vi.getTimerCount()).toBe(0);
+});
+
+it("says nothing about a retry while the read is young", () => {
+  render(draw(false, () => {}));
+  act(() => vi.advanceTimersByTime(14_000));
+  expect(screen.queryByRole("button", { name: "重试" })).toBeNull();
+});
+
+it("after fifteen seconds says it is still reading and offers a retry, once", () => {
+  const retry = vi.fn();
+  render(draw(false, retry));
+  act(() => vi.advanceTimersByTime(15_000));
+  expect(screen.getByText(/仍在读取/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "重试" }));
+  expect(retry).toHaveBeenCalledTimes(1);
+});
+
+it("restarts its clock when the retry is pressed, so the wait it describes is the new request's", () => {
+  render(draw(false, () => {}));
+  act(() => vi.advanceTimersByTime(16_000));
+  fireEvent.click(screen.getByRole("button", { name: "重试" }));
+  expect(screen.queryByRole("button", { name: "重试" })).toBeNull();
+  expect(screen.queryByText(/仍在读取/)).toBeNull();
+  act(() => vi.advanceTimersByTime(15_000));
+  expect(screen.getByRole("button", { name: "重试" })).toBeTruthy();
+});
+
+it("offers no retry where the window has none to run", () => {
+  render(draw(false));
+  act(() => vi.advanceTimersByTime(20_000));
+  expect(screen.queryByRole("button", { name: "重试" })).toBeNull();
 });

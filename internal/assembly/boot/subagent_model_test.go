@@ -1,6 +1,7 @@
 package boot
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"reasonix/internal/base/netclient"
@@ -446,7 +447,7 @@ func TestSkillEffortUsesResolvedInheritedDefault(t *testing.T) {
 		resolveProvider: sub.resolveProvider,
 	}
 
-	_, _, _, modelRef, effortRef, err := runner.resolveModel(skill.Skill{Name: "review", RunAs: skill.RunSubagent})
+	_, _, _, modelRef, effortRef, err := runner.resolveModel(context.Background(), skill.Skill{Name: "review", RunAs: skill.RunSubagent})
 	if err != nil {
 		t.Fatalf("skill without own effort should use provider default: %v", err)
 	}
@@ -454,7 +455,7 @@ func TestSkillEffortUsesResolvedInheritedDefault(t *testing.T) {
 		t.Fatalf("skill resolution = %q/%q, selections=%+v; want no override", modelRef, effortRef, resolver.selections)
 	}
 
-	_, _, _, _, _, err = runner.resolveModel(skill.Skill{Name: "review", RunAs: skill.RunSubagent, Effort: "max"})
+	_, _, _, _, _, err = runner.resolveModel(context.Background(), skill.Skill{Name: "review", RunAs: skill.RunSubagent, Effort: "max"})
 	if err == nil {
 		t.Fatal("explicit skill effort should remain strict")
 	}

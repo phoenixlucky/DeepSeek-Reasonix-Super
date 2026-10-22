@@ -22,10 +22,16 @@ func (h *Hub) paneRunningKnown(ctx context.Context, rt *Runtime) (running, known
 	}
 	ep := rt.remote.ep
 	var st struct {
-		Running bool `json:"running"`
+		Running bool  `json:"running"`
+		Busy    *bool `json:"busy"`
 	}
 	if err := farRequest(ctx, ep, http.MethodGet, ep.Base+"/status", nil, &st); err != nil {
 		return false, false
+	}
+	// A guard reads what refuses a turn, not what a window shows; a kernel that
+	// predates the field answers with running alone.
+	if st.Busy != nil {
+		return *st.Busy, true
 	}
 	return st.Running, true
 }

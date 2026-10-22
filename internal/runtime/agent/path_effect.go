@@ -312,12 +312,13 @@ func (a *Agent) observeBeforeMutation(ctx context.Context, plan *toolCallPlan) {
 	// one observer's branch — a build with no mutation observer still may not
 	// move its own criteria silently.
 	var change diff.Change
-	if pv, ok := plan.execTool.(tool.Previewer); ok {
-		if c, perr := pv.Preview(ctx, plan.execArgs); perr == nil {
+	if _, ok := plan.runTool.(tool.Previewer); ok {
+		if c, described := tool.PreviewChange(ctx, plan.runTool, plan.runArgs); described {
 			change = c
 			plan.criteriaRewritten = evidence.RewrittenTestCriteria(c.Path, c.OldText, c.NewText)
 			a.captureRewrittenCriteria(c, plan.criteriaRewritten)
 		}
+		a.publishToolPreview(ctx, plan, change)
 	}
 	obs := a.svc.mutationObserver
 	if obs != nil {
@@ -351,20 +352,22 @@ func (a *Agent) observeBeforeMutation(ctx context.Context, plan *toolCallPlan) {
 
 // observeAfterMutation records the after fingerprint when a concrete path was
 // known before execution, regardless of tool success or failure.
-func (a *Agent) observeAfterMutation(plan *toolCallPlan) {
+func (a *Agent) observeAfterMutation(plan *toolCallPlan) error {
 	if a == nil || plan == nil || a.svc.mutationObserver == nil {
-		return
+		return nil
 	}
+	var err error
 	toolName := plan.evidenceName
 	if toolName == "" {
 		toolName = plan.call.Name
 	}
 	if plan.mutationPath != "" {
-		a.svc.mutationObserver.AfterMutation(plan.mutationPath, toolName)
+		err = errors.Join(err, a.svc.mutationObserver.AfterMutation(plan.mutationPath, toolName))
 	}
 	for _, p := range plan.declaredPaths {
-		a.svc.mutationObserver.AfterMutation(p, toolName)
+		err = errors.Join(err, a.svc.mutationObserver.AfterMutation(p, toolName))
 	}
+	return err
 }
 
 // workspaceScanLimit bounds the walk. Past it the scan reports itself

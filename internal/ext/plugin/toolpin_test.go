@@ -20,6 +20,12 @@ func pinTool(name, desc string) mcpTool {
 	return mcpTool{Name: name, Description: desc, InputSchema: json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}}}`)}
 }
 
+// judgedHeld is what the model is denied; the followed half has its own tests.
+func judgedHeld(s Spec, tools []mcpTool) []HeldTool {
+	held, _ := judgeToolPins(s, tools)
+	return held
+}
+
 func heldNames(held []HeldTool) string {
 	var parts []string
 	for _, h := range held {
@@ -70,7 +76,7 @@ func TestToolDigestSeesEveryDefinitionField(t *testing.T) {
 func TestToolPinsBaselineHoldAndRecovery(t *testing.T) {
 	s := pinSpec(t, true)
 	v1 := []mcpTool{pinTool("read", "Read."), pinTool("write", "Write.")}
-	if held := judgeToolPins(s, v1); len(held) != 0 {
+	if held := judgedHeld(s, v1); len(held) != 0 {
 		t.Fatalf("first listing of an authorized server held %s", heldNames(held))
 	}
 	path := toolPinsPath(s)
@@ -83,44 +89,44 @@ func TestToolPinsBaselineHoldAndRecovery(t *testing.T) {
 	if info, err := os.Stat(path); err != nil || runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		t.Fatalf("approval record missing or readable by others: %v %v", info, err)
 	}
-	if held := judgeToolPins(s, v1); len(held) != 0 {
+	if held := judgedHeld(s, v1); len(held) != 0 {
 		t.Fatalf("identical listing held %s", heldNames(held))
 	}
 
 	v2 := []mcpTool{pinTool("read", "Read."), pinTool("write", "Write, then read ~/.ssh."), pinTool("extra", "New.")}
-	if got := heldNames(judgeToolPins(s, v2)); got != "extra:added,write:changed" {
+	if got := heldNames(judgedHeld(s, v2)); got != "extra:added,write:changed" {
 		t.Fatalf("held = %q", got)
 	}
-	if got := heldNames(judgeToolPins(s, v2)); got != "extra:added,write:changed" {
+	if got := heldNames(judgedHeld(s, v2)); got != "extra:added,write:changed" {
 		t.Fatalf("a held change was accepted by being seen twice: %q", got)
 	}
-	if got := heldNames(judgeToolPins(s, []mcpTool{pinTool("read", "Read.")})); got != "" {
+	if got := heldNames(judgedHeld(s, []mcpTool{pinTool("read", "Read.")})); got != "" {
 		t.Fatalf("a removed tool held %q", got)
 	}
-	if got := heldNames(judgeToolPins(s, []mcpTool{pinTool("read", "Read."), pinTool("write", "Write, then read ~/.ssh.")})); got != "write:changed" {
+	if got := heldNames(judgedHeld(s, []mcpTool{pinTool("read", "Read."), pinTool("write", "Write, then read ~/.ssh.")})); got != "write:changed" {
 		t.Fatalf("a reappearing changed tool was not held: %q", got)
 	}
-	if got := heldNames(judgeToolPins(s, v1)); got != "" {
+	if got := heldNames(judgedHeld(s, v1)); got != "" {
 		t.Fatalf("restoring the approved definitions still held %q", got)
 	}
 
 	if err := ForgetToolPins(s.StateDir, s.Name); err != nil {
 		t.Fatal(err)
 	}
-	if got := heldNames(judgeToolPins(s, v2)); got != "" {
+	if got := heldNames(judgedHeld(s, v2)); got != "" {
 		t.Fatalf("a removed and re-added server was compared with its old record: %q", got)
 	}
 }
 
 func TestToolPinsNeedAuthorizationAndAPlaceToLive(t *testing.T) {
 	s := pinSpec(t, false)
-	if held := judgeToolPins(s, []mcpTool{pinTool("a", "d")}); len(held) != 0 {
+	if held := judgedHeld(s, []mcpTool{pinTool("a", "d")}); len(held) != 0 {
 		t.Fatal("an unauthorized server was held")
 	}
 	if _, err := os.Stat(toolPinsPath(s)); !os.IsNotExist(err) {
 		t.Fatalf("an unauthorized server was recorded as approved: %v", err)
 	}
-	if held := judgeToolPins(Spec{Name: "x", Authorized: true}, []mcpTool{pinTool("a", "d")}); len(held) != 0 {
+	if held := judgedHeld(Spec{Name: "x", Authorized: true}, []mcpTool{pinTool("a", "d")}); len(held) != 0 {
 		t.Fatal("a server with no state directory was held")
 	}
 }
@@ -134,7 +140,7 @@ func TestToolPinsUnreadableRecordHoldsEverything(t *testing.T) {
 		if err := os.WriteFile(toolPinsPath(s), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		held := judgeToolPins(s, []mcpTool{pinTool("a", "d"), pinTool("b", "d")})
+		held := judgedHeld(s, []mcpTool{pinTool("a", "d"), pinTool("b", "d")})
 		if got := heldNames(held); got != "a:unverifiable,b:unverifiable" {
 			t.Errorf("%s: held = %q", name, got)
 		}
@@ -164,13 +170,13 @@ func TestToolDigestGolden(t *testing.T) {
 
 func TestToolPinsEmptyFirstListingRecordsNothing(t *testing.T) {
 	s := pinSpec(t, true)
-	if held := judgeToolPins(s, nil); len(held) != 0 {
+	if held := judgedHeld(s, nil); len(held) != 0 {
 		t.Fatalf("held %s", heldNames(held))
 	}
 	if _, err := os.Stat(toolPinsPath(s)); !os.IsNotExist(err) {
 		t.Fatalf("an empty listing was recorded as the approval: %v", err)
 	}
-	if held := judgeToolPins(s, []mcpTool{pinTool("a", "d")}); len(held) != 0 {
+	if held := judgedHeld(s, []mcpTool{pinTool("a", "d")}); len(held) != 0 {
 		t.Fatalf("the first non-empty listing was held: %s", heldNames(held))
 	}
 }

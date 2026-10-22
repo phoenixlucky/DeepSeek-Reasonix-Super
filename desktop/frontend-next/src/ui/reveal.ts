@@ -25,16 +25,17 @@ export function useRevealed(text: string, streaming?: boolean): string {
       setShown(want.current);
       return;
     }
+    // Replaced rather than appended (session switch, history restore): the
+    // cursor has to come back with the text, or every later growth below the
+    // old length is short-circuited below and the reveal never animates again.
+    if (at.current > want.current) {
+      at.current = want.current;
+      setShown(want.current);
+    }
     if (at.current >= want.current) return;
     let raf = 0;
     const step = () => {
       const target = want.current;
-      // Replaced rather than appended (session switch, history restore).
-      if (target < at.current) {
-        at.current = target;
-        setShown(target);
-        return;
-      }
       if (at.current >= target) return;
       at.current = Math.min(target, at.current + Math.max(1, Math.ceil((target - at.current) / DRAIN)));
       setShown(at.current);

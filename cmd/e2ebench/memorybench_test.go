@@ -17,15 +17,16 @@ func TestScanMemoryRecallCountsAndPointOfUse(t *testing.T) {
 		`{"seq":1,"event":{"kind":"tool_result","tool":{"args":"{\"command\":\"make check-fast --tag=MEMKEY-EARLY\"}"}}}`,
 		`{"seq":2,"memory_recall":{"hits":[{"id":"a"},{"id":"b"}],"used_chars":420}}`,
 		`{"seq":3,"event":{"kind":"tool_result","tool":{"args":"{\"path\":\"answer.txt\",\"content\":\"make check-fast --tag=MEMKEY-USED\"}"}}}`,
-		`{"seq":4,"memory_recall":{"suppressed":"generic user turn"}}`,
+		`{"seq":4,"memory_recall":{"suppression_code":"generic-turn","suppressed":"generic-turn: generic user turn"}}`,
 		`{"seq":5,"event":{"kind":"text","text":"done, MEMKEY-TEXT too"}}`,
+		`{"seq":6,"memory_recall":{"suppressed":"generic user turn"}}`,
 	}
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	stats := scanMemoryRecall(path, []string{"MEMKEY-USED", "MEMKEY-TEXT", "MEMKEY-EARLY", "MEMKEY-NEVER"}, false)
-	if stats.RecallEvents != 1 || stats.RecallHits != 2 || stats.RecallChars != 420 || stats.Suppressed != 1 {
-		t.Fatalf("stats = %+v, want 1 event / 2 hits / 420 chars / 1 suppressed", stats)
+	if stats.RecallEvents != 1 || stats.RecallHits != 2 || stats.RecallChars != 420 || stats.Suppressed != 2 {
+		t.Fatalf("stats = %+v, want 1 event / 2 hits / 420 chars / 2 suppressed", stats)
 	}
 	// MEMKEY-EARLY appears only BEFORE the recall: not point-of-use evidence.
 	if stats.MarkersUsed != 2 {

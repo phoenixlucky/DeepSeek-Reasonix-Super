@@ -18,7 +18,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"reasonix/internal/ext/modhost"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -32,10 +34,12 @@ import (
 	"reasonix/internal/contract/provider"
 	"reasonix/internal/contract/surface"
 	"reasonix/internal/frontend/remotehost"
+	"reasonix/internal/frontend/schedulerun"
 	"reasonix/internal/frontend/serve"
 	"reasonix/internal/frontend/traystate"
 	"reasonix/internal/platform/account"
 	"reasonix/internal/platform/appupdate"
+	"reasonix/internal/platform/computer"
 	"reasonix/internal/platform/crashreport"
 	"reasonix/internal/platform/feedback"
 	"reasonix/internal/platform/instanceid"
@@ -46,6 +50,7 @@ import (
 	// Kinds register from init, so a binary builds only what it links. Without
 	// these every Anthropic model answers "unknown kind" at switch time.
 	_ "reasonix/internal/model/anthropic"
+	_ "reasonix/internal/model/gemini"
 	_ "reasonix/internal/model/openai"
 	_ "reasonix/internal/model/responses"
 )
@@ -119,6 +124,10 @@ func main() {
 	if handled, code := update.MaybeRunTreeHandoff(os.Args[1:]); handled {
 		os.Exit(code)
 	}
+	// A scheduled run is this same binary started by the in-kernel ticker.
+	if scheduleChildArgs(os.Args[1:]) {
+		os.Exit(schedulerun.Exec(os.Args[3:]))
+	}
 	page := flag.String("page", "", "directory holding the built Studio page")
 	identity := flag.Bool("instance-id", false, "print the Studio instance this data home belongs to, and exit")
 	// The shell around this process knows which build it is; this process does
@@ -129,13 +138,17 @@ func main() {
 	// replace it.
 	studioApp := flag.String("studio-app", "", "the application executable this host runs inside")
 	studioAppPID := flag.Int("studio-app-pid", 0, "the process id of that application")
-	computerHelper := flag.String("computer-helper", "", "the native helper that operates this machine's applications")
+	computerDriver := flag.String("cua-driver", "", "the pinned CUA Driver executable")
+	computerAbortSocket := flag.String("computer-abort-socket", "", "the private Studio CUA interruption endpoint")
+	computerSocket := flag.String("computer-socket", "", "the private embedded CUA socket owned by Studio")
 	crashDir := flag.String("crash-dir", "", "the directory a fatal runtime error is written to")
 	stripGrants := flag.Bool("strip-package-grants", false, "remove app-package grants from the directory -studio-app runs from, print what changed, and exit")
 	flag.Parse()
 	if *stripGrants {
 		os.Exit(stripPackageGrants(os.Stdout, os.Stderr, *studioApp))
 	}
+	// Studio's own binary runs a Claude Code mod's module as Node.
+	modhost.SetEmbedder(*studioApp, os.Environ())
 	// Which launches are the same Studio is Reasonix's question, not a shell's:
 	// the answer is the canonicalized data home, and a shell asks for it rather
 	// than working it out from an environment it does not resolve.
@@ -143,16 +156,57 @@ func main() {
 		fmt.Fprintln(os.Stdout, instanceid.Current())
 		return
 	}
-	boot.SetComputerHelper(*computerHelper)
+	var driver *computer.Driver
+	if *computerDriver != "" {
+		if *computerSocket != "" {
+			driver = computer.NewEmbeddedDriver(*computerDriver, *computerSocket, *computerAbortSocket, os.Environ())
+		} else {
+			driver = computer.NewDriver(*computerDriver, os.Environ())
+		}
+	}
+
 	shell := shellIdentity{version: *studioVersion, exe: *studioApp, pid: *studioAppPID, logsDir: logsDirOf(*crashDir)}
-	releaseFatalLog := crashreport.InstallFatalLog(*crashDir, defaultVersion(shell.version))
-	code := run(parentLease(os.Stdin), os.Stdout, os.Stderr, *page, shell)
-	releaseFatalLog()
+	releaseFatalLog, exitedFatalLog := crashreport.InstallFatalLog(*crashDir, defaultVersion(shell.version))
+	logs := &lastLine{w: os.Stderr}
+	code := run(parentLease(os.Stdin), os.Stdout, logs, *page, shell, driver)
+	if code == 0 {
+		releaseFatalLog()
+	} else {
+		exitedFatalLog(code, logs.last())
+	}
 	os.Exit(code)
 }
 
 // logsDirOf is the shell's logs directory: the crash directory it passed is
 // the "crash" folder inside it.
+// lastLine passes everything through and remembers the last line written, which
+// is where run says why it is returning a failure code.
+type lastLine struct {
+	w    io.Writer
+	mu   sync.Mutex
+	line string
+}
+
+func (l *lastLine) Write(p []byte) (int, error) {
+	for line := range strings.SplitSeq(strings.TrimRight(string(p), "\r\n"), "\n") {
+		if strings.HasPrefix(line, "reasonix-studio-host:") {
+			l.mu.Lock()
+			l.line = strings.TrimSpace(line)
+			l.mu.Unlock()
+		}
+	}
+	return l.w.Write(p)
+}
+
+func (l *lastLine) last() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.line == "" {
+		return "no reason was reported"
+	}
+	return l.line
+}
+
 func logsDirOf(crashDir string) string {
 	if strings.TrimSpace(crashDir) == "" {
 		return ""
@@ -171,7 +225,10 @@ func defaultVersion(stated string) string {
 // the handshake first and then one line per act a handover asks of the shell,
 // because that pipe is the only channel pointing that way; every log goes to
 // logs, which is why no line there can be mistaken for one of these.
-func run(lease io.Reader, handshakeTo, logs io.Writer, page string, shell shellIdentity) int {
+func run(lease io.Reader, handshakeTo, logs io.Writer, page string, shell shellIdentity, driver *computer.Driver) int {
+	if driver != nil {
+		defer driver.Close()
+	}
 	phases := newStartupPhases(logs, time.Now)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -194,7 +251,7 @@ func run(lease io.Reader, handshakeTo, logs io.Writer, page string, shell shellI
 		fmt.Fprintln(logs, "reasonix-studio-host: no built page found; serving the kernel only")
 	}
 
-	hub, err := assemble(ctx, logs, handshakeTo, shell, served, phases)
+	hub, err := assemble(ctx, logs, handshakeTo, shell, served, phases, driver)
 	if err != nil {
 		fmt.Fprintln(logs, "reasonix-studio-host:", err)
 		return 1
@@ -202,6 +259,7 @@ func run(lease io.Reader, handshakeTo, logs io.Writer, page string, shell shellI
 	// After the socket has drained, never before: a pane torn down under a live
 	// request answers it with a half-closed kernel.
 	defer hub.Shutdown()
+	startScheduleTicker(ctx, lease != nil, hub, logs)
 
 	bound, err := bind(hub.Handler())
 	phases.mark(startupBind)
@@ -312,7 +370,7 @@ func resolveKernelLanguage(cfg *config.Config) string {
 
 // assemble builds the hub this host serves: one pane on the workspace it was
 // launched in, carrying the capabilities a local window may exercise.
-func assemble(ctx context.Context, logs, handshakeTo io.Writer, shell shellIdentity, page fs.FS, phases *startupPhases) (*serve.Hub, error) {
+func assemble(ctx context.Context, logs, handshakeTo io.Writer, shell shellIdentity, page fs.FS, phases *startupPhases, driver *computer.Driver) (*serve.Hub, error) {
 	// The one-time upgrades belong to whichever entry point starts first; a
 	// person who only ever opens the window would otherwise never get them.
 	if _, err := config.ApplyUserConfigUpgradesOnStartup(config.UserConfigPath()); err != nil {
@@ -328,7 +386,7 @@ func assemble(ctx context.Context, logs, handshakeTo io.Writer, shell shellIdent
 	// This window is the only client of its kernel, so a system notification
 	// reaches the person who asked for it. Every pane gets the same wrapper,
 	// not just the one the launch started with.
-	notifications, notifySet := hostNotifications(cfg)
+	notifications, notifySet, phoneLink := hostNotifications(cfg)
 	// One fold behind the status icon: every pane's events on the way through,
 	// so the tray surface answers from what the panes did rather than from a
 	// count the shell kept for itself.
@@ -347,20 +405,7 @@ func assemble(ctx context.Context, logs, handshakeTo io.Writer, shell shellIdent
 	phases.mark(startupSinks)
 	root := launchWorkspace(shell.exe)
 	phases.mark(startupWorkspace)
-	built, err := boot.BuildRuntime(ctx, boot.Options{
-		Version:         version,
-		WorkspaceRoot:   root,
-		SessionDir:      serve.SessionDirFor(root),
-		Sink:            paneSink,
-		Stderr:          logs,
-		OnPhase:         phases.boot,
-		StatsSource:     surface.Desktop,
-		FeedbackSurface: feedback.SurfaceStudio,
-		// A stale default_model must not keep the window from opening to fix it.
-		OpenOnFallbackModel: true,
-
-		CleanupPendingReconciler: serve.BackgroundCleanupReconciler,
-	})
+	built, err := boot.BuildRuntime(ctx, runtimeOptions(root, paneSink, logs, phases, driver))
 	phases.mark(startupRuntime)
 	if err != nil {
 		return nil, err
@@ -373,37 +418,51 @@ func assemble(ctx context.Context, logs, handshakeTo io.Writer, shell shellIdent
 	browserHost := serve.NewBrowserHost()
 	boot.SetBrowserHost(browserHost.Dial)
 	hubCfg := hostServeConfig(cfg.Serve)
-	// Shut until the person at the window opens it; the context ending closes
-	// it with the rest of the kernel, unpairing every device.
+	// Shut until the person at the window opens it; the context ending stops it
+	// with the rest of the kernel, keeping the phones this machine already adopted.
 	share := serve.NewDeviceShare(page)
 	share.RestorePort(cfg.SharePort())
 	go func() {
 		<-ctx.Done()
-		share.Close()
+		share.Shutdown()
 	}()
 	owner := &shellOwner{to: handshakeTo}
 	// A toast the user clicks is answered here, in the process that sent it, and
 	// the shell is the one that can bring its window forward.
-	notify.OnActivate(showOnToastClick(owner))
+	notify.OnActivate(showOnToastClick(owner, logs))
+	// A toast that did not go out is invisible to the person it was for, so the
+	// reason belongs in the log the shell keeps.
+	notify.OnSendFailure(func(err error) { fmt.Fprintf(logs, "notify: %v\n", err) })
 	hub := serve.NewHub(serve.HubOptions{
-		Serve:         hubCfg,
-		Surface:       surface.Desktop,
-		Page:          page,
-		Grant:         grantHostCapabilities,
-		DecorateSink:  decorate,
-		Tray:          &studioTray{tracker: tracker},
-		Notifications: notifySet,
-		NotifySender:  notify.NewPlatformSender(),
-		BrowserHost:   browserHost,
-		Asks:          asks,
-		Remote:        remotehost.New(ctx, version, asks),
-		OnClose:       func(rt *serve.Runtime) { tracker.Drop(paneKey(rt.Events)) },
-		Install:       studioInstall(shell),
-		Update:        studioUpdateHost(shell, owner),
-		Share:         share,
-		LogsDir:       shell.logsDir,
+		NativeSurfaces: true,
+		ComputerDriver: driver,
+		Serve:          hubCfg,
+		Surface:        surface.Desktop,
+		Page:           page,
+		Grant:          grantHostCapabilities,
+		DecorateSink:   decorate,
+		Tray:           &studioTray{tracker: tracker},
+		Notifications:  notifySet,
+		NotifySender:   startDiskWatch(ctx, notifySet, []string{root, serve.SessionDirFor(root)}),
+		BrowserHost:    browserHost,
+		Asks:           asks,
+		Remote:         remotehost.New(ctx, version, asks),
+		OnClose:        func(rt *serve.Runtime) { tracker.Drop(paneKey(rt.Events)) },
+		Install:        studioInstall(shell),
+		Update:         studioUpdateHost(shell, owner),
+		Share:          share,
+		LogsDir:        shell.logsDir,
 	})
 	share.Attach(hub.Handler())
+	// A share the person had open reopens where it was: the phone that paired
+	// against that address keeps its cookie. An address that is gone falls back
+	// to one this machine now offers, at the cost of one fresh scan.
+	state := share.RestoreState()
+	if state.Open {
+		if _, err := share.Reopen(state.Address); err != nil {
+			fmt.Fprintln(logs, "reasonix-studio-host: could not reopen phone access:", err)
+		}
+	}
 	srv := serve.New(built.Controller, bc, hubCfg)
 	srv.SetPaneSink(paneSink)
 	srv.AdoptRuntime(built)
@@ -415,12 +474,33 @@ func assemble(ctx context.Context, logs, handshakeTo io.Writer, shell shellIdent
 		return nil, err
 	}
 	hub.StartRecoveryGC(ctx)
-	startCloudRemote(ctx, cfg, logs, hub)
+	startCloudRemote(ctx, cfg, logs, hub, phoneLink)
 	phases.mark(startupBackground)
 	return hub, nil
 }
 
-func startCloudRemote(ctx context.Context, cfg *config.Config, logs io.Writer, tasks remotecloud.TaskService) {
+// runtimeOptions is what the one pane this host launches with is built from.
+func runtimeOptions(root string, sink event.Sink, logs io.Writer, phases *startupPhases, driver *computer.Driver) boot.Options {
+	return boot.Options{
+		ComputerDriver:  driver,
+		Version:         version,
+		WorkspaceRoot:   root,
+		SessionDir:      serve.SessionDirFor(root),
+		Sink:            sink,
+		NativeSurfaces:  true,
+		Stderr:          logs,
+		OnPhase:         phases.boot,
+		StatsSource:     surface.Desktop,
+		FeedbackSurface: feedback.SurfaceStudio,
+		AccountsURL:     os.Getenv("REASONIX_ACCOUNTS_URL"),
+		// A stale default_model must not keep the window from opening to fix it.
+		OpenOnFallbackModel: true,
+
+		CleanupPendingReconciler: serve.BackgroundCleanupReconciler,
+	}
+}
+
+func startCloudRemote(ctx context.Context, cfg *config.Config, logs io.Writer, tasks remotecloud.TaskService, phones *notify.PhoneLink) {
 	httpClient, err := netclient.NewHTTPClient(cfg.NetworkProxySpec(), netclient.TransportOptions{})
 	if err != nil {
 		fmt.Fprintf(logs, "remote cloud: %v\n", err)
@@ -448,6 +528,12 @@ func startCloudRemote(ctx context.Context, cfg *config.Config, logs io.Writer, t
 				DeviceID: status.DeviceID, Name: status.Name, Online: status.Online, Error: status.Error, Reason: string(status.Reason),
 			}
 		})
+	}
+	// Phone notifications leave through this connection, under this Studio's own
+	// device credential.
+	phones.Set(host)
+	if registrar, ok := tasks.(interface{ SetCloudPhones(serve.CloudPhones) }); ok {
+		registrar.SetCloudPhones(host)
 	}
 	go host.Run(ctx)
 }
@@ -493,13 +579,17 @@ func hostServeConfig(cfg config.ServeConfig) config.ServeConfig {
 // says today, because deciding here would make "notify me" mean "notify me
 // after a restart". The shared [notifications] config is the one setting this
 // window and the CLI both answer to.
-func hostNotifications(cfg *config.Config) (func(event.Sink) event.Sink, *notify.Settings) {
+func hostNotifications(cfg *config.Config) (func(event.Sink) event.Sink, *notify.Settings, *notify.PhoneLink) {
 	set := notify.NewSettings(config.NotificationsConfig{})
 	if cfg != nil {
 		set.Store(cfg.Notifications)
 	}
 	sender := notify.NewPlatformSender()
-	return func(sink event.Sink) event.Sink { return notify.NewSink(sink, sender, i18n.M, set) }, set
+	// One reporter for every runtime, so a burst across panes folds into one
+	// report; its sender is the account connection, attached once that is up.
+	link := &notify.PhoneLink{}
+	phone := notify.NewPhone(link)
+	return func(sink event.Sink) event.Sink { return notify.NewSink(sink, sender, i18n.M, set).WithPhone(phone) }, set, link
 }
 
 // studioTray answers for a shell that can put an icon back whenever the setting

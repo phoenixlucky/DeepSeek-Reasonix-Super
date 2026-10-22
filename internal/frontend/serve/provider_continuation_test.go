@@ -37,6 +37,11 @@ api_key_env = "RELAY_API_KEY"
 
 func newContinuationServer(t *testing.T) *httptest.Server {
 	t.Helper()
+	return newContinuationServerRunning(t, "relay/alpha")
+}
+
+func newContinuationServerRunning(t *testing.T, modelRef string) *httptest.Server {
+	t.Helper()
 	t.Setenv("REASONIX_HOME", testenv.TempDir(t))
 	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
 	if _, err := config.SetCredential("RELAY_API_KEY", "sk-relay"); err != nil {
@@ -51,7 +56,7 @@ func newContinuationServer(t *testing.T) *httptest.Server {
 	}
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{
-		Sink: bc, Label: "alpha", ModelRef: "relay/alpha", SessionDir: testenv.TempDir(t),
+		Sink: bc, Label: "alpha", ModelRef: modelRef, SessionDir: testenv.TempDir(t),
 	})
 	s := New(ctrl, bc, config.ServeConfig{})
 	s.AllowProviderEdit()
@@ -96,11 +101,11 @@ func TestContinuationPinSurvivesToTheConfig(t *testing.T) {
 		t.Fatalf("initial canSet/mode = %v/%q, want true/auto", canSet, mode)
 	}
 
-	resp := postProvider(t, srv.URL, "/providers/continuation", `{"name":"relay","mode":"stateless"}`)
+	resp := postProvider(t, srv.URL, "/providers/edit", `{"name":"relay","models":["alpha"],"default":"alpha","continuation":"stateless"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
 		b, _ := readAllString(resp)
-		t.Fatalf("POST /providers/continuation = %d: %s", resp.StatusCode, b)
+		t.Fatalf("POST /providers/edit = %d: %s", resp.StatusCode, b)
 	}
 
 	cfg, err := config.Load()
@@ -118,7 +123,7 @@ func TestContinuationPinSurvivesToTheConfig(t *testing.T) {
 		t.Fatalf("the list reports %q after the pin", mode)
 	}
 
-	back := postProvider(t, srv.URL, "/providers/continuation", `{"name":"relay","mode":""}`)
+	back := postProvider(t, srv.URL, "/providers/edit", `{"name":"relay","models":["alpha"],"default":"alpha","continuation":""}`)
 	defer back.Body.Close()
 	if back.StatusCode != http.StatusNoContent {
 		t.Fatalf("returning to auto = %d", back.StatusCode)
@@ -143,7 +148,7 @@ func TestContinuationIsRefusedWhereTheWireHasNoState(t *testing.T) {
 		t.Fatal("a chat-completions entry offered the continuation choice")
 	}
 
-	resp := postProvider(t, srv.URL, "/providers/continuation", `{"name":"plain","mode":"stateless"}`)
+	resp := postProvider(t, srv.URL, "/providers/edit", `{"name":"plain","models":["beta"],"default":"beta","continuation":"stateless"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("POST for a stateless wire = %d, want 400", resp.StatusCode)
@@ -164,7 +169,7 @@ func TestContinuationIsRefusedWhereTheWireHasNoState(t *testing.T) {
 // opposite.
 func TestContinuationRefusesAnUnknownMode(t *testing.T) {
 	srv := newContinuationServer(t)
-	resp := postProvider(t, srv.URL, "/providers/continuation", `{"name":"relay","mode":"websocket-v2"}`)
+	resp := postProvider(t, srv.URL, "/providers/edit", `{"name":"relay","models":["alpha"],"default":"alpha","continuation":"websocket-v2"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown mode = %d, want 400", resp.StatusCode)

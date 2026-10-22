@@ -24,7 +24,7 @@ func TestSubAgentAnswerLeadsWithAdjudicatedStatus(t *testing.T) {
 	}}
 
 	answer, err := agent.RunSubAgentWithSession(context.Background(), prov, reg, sessionstore.NewSession("sys"),
-		"fix the parser", agent.Options{}, event.Discard)
+		"fix the parser", agent.Options{CheckTargetAccess: allowTestFileAccess}, event.Discard)
 	if err != nil {
 		t.Fatalf("RunSubAgentWithSession: %v", err)
 	}

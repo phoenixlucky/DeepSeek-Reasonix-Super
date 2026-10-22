@@ -15,5 +15,9 @@
   "internal/safety/egress/**": 77.1,
   "internal/safety/sandbox/**": 78.1,
   "internal/base/shellparse/**": 64.5,
-  "internal/safety/shellsafe/**": 81.6
+  "internal/safety/shellsafe/**": 81.6,
+  "internal/platform/gitpush/**": 84.0,
+  "internal/session/control/git_push.go": 100.0,
+  "internal/frontend/serve/git_push.go": 77.0,
+  "internal/frontend/serve/host_routes.go": 93.0
 }

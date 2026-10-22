@@ -155,6 +155,9 @@ func (t Transport) resume(ctx context.Context, url string, expectedSize int64, s
 		if err == nil {
 			return nil
 		}
+		if errors.Is(err, ErrStalled) && t.OnStall != nil {
+			t.OnStall()
+		}
 		if s.Size() <= before {
 			failures++
 		}

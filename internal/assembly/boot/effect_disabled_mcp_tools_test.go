@@ -90,6 +90,11 @@ disabled_tools = ["write"]
 				if len(configured) != 1 || configured[0].Entry.Name != "filtered" {
 					t.Fatalf("%s: configured MCP servers = %+v, want filtered", phase, configured)
 				}
+				// Boot discovers a cold catalog and preconnects always-loaded servers.
+				// Observe that connection before the explicit registration step.
+				if phase == "fresh" || load == "always" {
+					waitForMCPServer(t, ctrl.Host(), "filtered")
+				}
 				if _, err := ctrl.ConnectMCPServer(configured[0].Entry); err != nil {
 					t.Fatal(err)
 				}
@@ -98,7 +103,8 @@ disabled_tools = ["write"]
 					t.Fatal(err)
 				}
 				if len(tools) != 1 || tools[0].Name() != "mcp__filtered__read" {
-					t.Fatalf("%s: live tools = %v; want only read", phase, tools)
+					held, _ := ctrl.Host().HeldTools("filtered")
+					t.Fatalf("%s: live tools = %v; want only read; servers=%+v; held=%+v", phase, tools, ctrl.Host().Servers(), held)
 				}
 				if got := ctrl.MCPCatalogTools()["filtered"]; got != 1 {
 					t.Fatalf("%s: catalog tools=%d, want 1", phase, got)

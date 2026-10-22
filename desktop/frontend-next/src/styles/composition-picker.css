@@ -1,0 +1,15 @@
+.compose-context {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  min-height: 28px;
+  margin: -3px 0 4px;
+}
+.compose-context > .studio-runstate { margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+.composition-picker { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; min-width: 0; max-width: 100%; }
+.composition-picker > .picker { min-width: 0; max-width: 100%; }
+.composition-trigger { max-width: 100%; }
+.composition-trigger .nm { max-width: 180px; }
+.composition-trigger > .studio-icon { width: 12px; height: 12px; flex: none; }
+.composition-picker [role="alert"] { overflow-wrap: anywhere; }

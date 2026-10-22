@@ -16,7 +16,7 @@ permissions:
 
 concurrency:
   group: studio-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   frontend:
@@ -138,9 +138,140 @@ jobs:
           node perf/intrinsic.mjs
           node perf/firstscreen-fonts.mjs
           node perf/contrast.mjs
+          node perf/stickyfold.mjs
+          node perf/crumb.mjs
+          node perf/hoverradius.mjs
+          node perf/jump-ends.mjs
+          node perf/modelrows.mjs
+          node perf/explorersize.mjs
+          node perf/git-panel.mjs
+          node perf/session-move-to.mjs
+          node perf/shell-refused.mjs
+          node perf/external-origin.mjs
+          node perf/rail-search-hold.mjs
+          node perf/rail-toggle-panes.mjs
+          node perf/session-move.mjs
+          node perf/session-ref.mjs
+          node perf/browser-full.mjs
+          node perf/mod-ui.mjs
+          node perf/codeeditor-size.mjs
+          node perf/action-icons.mjs
+          node perf/rowhit.mjs
+          node perf/tab-pip.mjs
+          node perf/context-card-hover.mjs
+          node perf/sessquick.mjs
+          node perf/sessionrows.mjs
+          node perf/session-row-marker.mjs
+          node perf/session-selected-row.mjs
           node perf/wheel.mjs
           node perf/branch-tooltip.mjs
+          node perf/branch-alignment.mjs
+          node perf/branch-menu.mjs
+          node perf/image-preview.mjs
+          node perf/user-images.mjs
+          node perf/toast-anchor.mjs
+          node perf/addfolder-rest.mjs
+          node perf/scroll-jump.mjs
+          node perf/add-project-selects.mjs
+          node perf/project-header.mjs
+          node perf/setup-defer.mjs
+          node perf/narrow.mjs
+          node perf/settings-rows.mjs
+          node perf/narrow-steps.mjs
+          node perf/job-names.mjs
+          node perf/mcp-actions.mjs
+          node perf/web-access.mjs
+          node perf/peers-settings.mjs
+          node perf/output-cap.mjs
+          node perf/changes-cap.mjs
+          node perf/session-menu-fit.mjs
+          node perf/progress-tail.mjs
+          node perf/trust-wait.mjs
+          node perf/nest-nodes.mjs
+          node perf/provider-ports.mjs
+          node perf/peer-threads.mjs
+          node perf/text-size.mjs
+          node perf/fs-scale.mjs
+          node perf/composer-feel.mjs
+          node perf/side-panel.mjs
+          node perf/card-shell.mjs
+          node perf/line-cards.mjs
+          node perf/detail-panel.mjs
+          node perf/brand-lockup.mjs
+          node perf/notice-line.mjs
+          node perf/brought-line.mjs
+          node perf/modal-focus.mjs
+          node perf/focus-ring.mjs
+          node perf/narrow-forms.mjs
+          node perf/i18n-rendered.mjs
+          node perf/narrow-rail.mjs
           node perf/selfcheck.mjs branch-tooltip
+
+  # What a hosted page does over the relay, end to end: the production bundle,
+  # the real Studio host and kernel, a real Chromium; only the accounts API and
+  # the relay are stand-ins (tools/relayfake). Event-transport changes are
+  # judged here, because a unit test of one side cannot see the other.
+  relay-harness:
+    name: relay harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Transport changed?
+        id: scope
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          paths="desktop/frontend-next internal/frontend/serve internal/platform/remotecloud internal/platform/account tools/relayfake cmd/reasonix-studio-host"
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ] &&
+             git diff --quiet "origin/$BASE_REF...HEAD" -- $paths; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.scope.outputs.run == 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - if: steps.scope.outputs.run == 'true'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10
+          run_install: false
+
+      - if: steps.scope.outputs.run == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: desktop/frontend-next/pnpm-lock.yaml
+
+      - if: steps.scope.outputs.run == 'true'
+        name: Build the host, the stand-ins and the page
+        run: |
+          go build -o desktop/frontend-next/relay/bin/studio-host ./cmd/reasonix-studio-host
+          go build -o desktop/frontend-next/relay/bin/relayfake ./tools/relayfake
+          cd desktop/frontend-next
+          pnpm install --frozen-lockfile
+          pnpm exec vite build --outDir dist-relay --emptyOutDir
+          pnpm exec playwright install --with-deps chromium
+
+      - if: steps.scope.outputs.run == 'true'
+        name: Scenarios (hosted page over the relay; local page on a flapping network)
+        working-directory: desktop/frontend-next
+        env:
+          RELAY_HOST_BIN: ${{ github.workspace }}/desktop/frontend-next/relay/bin/studio-host
+          RELAY_FAKE_BIN: ${{ github.workspace }}/desktop/frontend-next/relay/bin/relayfake
+          RELAY_DIST: ${{ github.workspace }}/desktop/frontend-next/dist-relay
+        run: |
+          node relay/live.mjs
+          node relay/storm.mjs
 
   # A pull request with no platform-relevant change (scripts/ci-platform-scope.sh)
   # moves the Windows and macOS legs onto an ubuntu runner with every step
@@ -181,6 +312,31 @@ jobs:
         if: env.RUN_STEPS == 'true'
         run: go test ./...
 
+      - if: env.RUN_STEPS == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "24"
+
+      - name: CUA process and packaging contracts
+        if: env.RUN_STEPS == 'true'
+        timeout-minutes: 2
+        run: node --test --test-name-pattern=CUA electron/test/unit.mjs
+
+      - name: Install Linux native CUA fixture dependencies
+        if: env.RUN_STEPS == 'true' && runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb openbox dbus-x11 libgtk-3-dev at-spi2-core
+
+      - name: Native CUA application acceptance
+        if: env.RUN_STEPS == 'true'
+        timeout-minutes: 6
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            dbus-run-session -- xvfb-run -a sh -c 'openbox >/tmp/reasonix-openbox.log 2>&1 & export NO_AT_BRIDGE=0 GTK_MODULES=gail:atk-bridge; node electron/test/cua-native.mjs'
+          else
+            node electron/test/cua-native.mjs
+          fi
+
       # The host sits in the main module and nothing else builds it, so its
       # dependency closure is checked here: it must stay CGO-free and
       # platform-neutral or the Electron bundle cannot ship it. Cross-compiling
@@ -190,7 +346,9 @@ jobs:
         working-directory: .
         run: |
           for os in windows linux darwin; do
-            CGO_ENABLED=0 GOOS=$os GOARCH=amd64 go build -o /dev/null ./cmd/reasonix-studio-host
+            for arch in amd64 arm64; do
+              CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -o /dev/null ./cmd/reasonix-studio-host
+            done
           done
 
   # The ARM64 leg queues on a scarcer runner pool, so a pull request runs it
@@ -220,7 +378,7 @@ jobs:
             arm64=false
             platform=$(git diff -z --name-only --no-renames "$BASE_SHA" HEAD | bash scripts/ci-platform-scope.sh)
             if git diff --name-only --no-renames "$BASE_SHA" HEAD |
-              grep -qE '^(desktop/electron/|desktop/cmd/studio-manifest/|desktop/go\.(mod|sum)$|cmd/reasonix-studio-host/|internal/platform/(update|appupdate)/|go\.(mod|sum)$|scripts/(windows-signing-lib|verify-windows-package|verify-windows-authenticode|install-smoke)\.ps1$|\.github/workflows/(studio|release-studio)\.yml$)'; then
+              grep -qE '^(desktop/electron/|desktop/packaging/|desktop/cmd/update-helper/|desktop/cmd/studio-manifest/|desktop/go\.(mod|sum)$|cmd/reasonix-studio-host/|internal/platform/(update|appupdate)/|go\.(mod|sum)$|scripts/(linux-install-smoke|verify-linux-package|verify-linux-appimage|verify-studio-artifacts)\.sh$|scripts/(windows-signing-lib|verify-windows-package|verify-windows-authenticode|install-smoke)\.ps1$|\.github/workflows/(studio|release-studio)\.yml$)'; then
               arm64=true
             fi
           fi
@@ -232,7 +390,7 @@ jobs:
           if [ "$platform" = false ]; then
             legs="$(jq -c 'map(select(.platform == "linux"))' <<<"$legs")"
           elif [ "$arm64" = true ]; then
-            legs="$(jq -c '. + [{"os":"windows-11-arm","arch":"arm64","platform":"windows","ebarch":"arm64"}]' <<<"$legs")"
+            legs="$(jq -c '. + [{"os":"windows-11-arm","arch":"arm64","platform":"windows","ebarch":"arm64"},{"os":"ubuntu-22.04-arm","arch":"arm64","platform":"linux"}]' <<<"$legs")"
           else
             legs="$(jq -c . <<<"$legs")"
           fi
@@ -282,7 +440,16 @@ jobs:
       # to rpmbuild for the .rpm.
       - name: Install Linux packaging deps
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y fakeroot rpm
+        run: sudo apt-get update && sudo apt-get install -y fakeroot rpm cpio xvfb xauth policykit-1
+
+      # The fpm electron-builder carries is an x86_64 program, so on an ARM64
+      # runner the .deb and .rpm are built with one installed from RubyGems.
+      - name: Use a native fpm on ARM64 Linux
+        if: runner.os == 'Linux' && runner.arch == 'ARM64'
+        run: |
+          sudo apt-get install -y ruby ruby-dev build-essential
+          sudo gem install --no-document fpm -v 1.16.0
+          echo "USE_SYSTEM_FPM=true" >> "$GITHUB_ENV"
 
       - name: Build the SPA
         working-directory: desktop/frontend-next
@@ -295,7 +462,8 @@ jobs:
         working-directory: desktop/electron
         env:
           REASONIX_GOARCH: ${{ matrix.platform == 'windows' && matrix.arch || '' }}
-        run: pnpm install --frozen-lockfile && pnpm run build:host
+          REASONIX_VERSION: v0.0.0-ci
+        run: pnpm install --frozen-lockfile && pnpm test && pnpm run build:host
 
       # The .deb's absolute-path payload. A no-op off Linux, so it is not
       # guarded here: the one place it must not be forgotten is the one place
@@ -311,7 +479,7 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
           ELECTRON_BUILDER_7Z_FILTER: ${{ matrix.platform == 'windows' && matrix.arch == 'arm64' && 'BCJ' || '' }}
-        run: pnpm run build:dist ${{ matrix.ebarch && format('--{0}', matrix.ebarch) || '' }}
+        run: pnpm run build:dist ${{ matrix.ebarch && format('--{0}', matrix.ebarch) || '' }} -c.extraMetadata.version=0.0.0-ci
 
       # The release vocabulary is GOARCH. electron-builder's own is not, and the
       # rename that reconciles them runs here rather than in the manifest.
@@ -446,82 +614,17 @@ jobs:
           echo "page:   ${page:-<missing>}"
           test -n "$host" -a -n "$page"
 
-      # Read off the package rather than off the config that describes it. Both
-      # of these went wrong the same way once: electron-builder names a package
-      # after package.json unless told, and fpm records the owner it finds on
-      # disk. Either one leaves a Studio that cannot update itself on Linux and
-      # says nothing about it until a user asks.
-      - name: The .deb is Studio's own package and carries what updates it
+      - name: Linux packages carry their declared architecture and update payload
         if: runner.os == 'Linux'
-        run: |
-          deb=$(ls dist/ReasonixStudio-linux-*.deb)
-          name=$(dpkg-deb -f "$deb" Package)
-          if [ "$name" != "reasonix-studio" ]; then
-            echo "::error::the package is $name; dpkg holds that beside the installed reasonix-studio instead of upgrading it, and update.StudioLine asks for it by name"
-            exit 1
-          fi
-          # The helper in the package accepts one package name, compiled in. It has
-          # to be the one the package carries, or every in-app update is refused
-          # as a different package after the download and signature succeed.
-          dpkg-deb --fsys-tarfile "$deb" | tar -xO ./usr/lib/reasonix-studio/reasonix-studio-update-helper > "$RUNNER_TEMP/update-helper"
-          chmod +x "$RUNNER_TEMP/update-helper"
-          accepts=$("$RUNNER_TEMP/update-helper" package)
-          if [ "$accepts" != "$name" ]; then
-            echo "::error::the update helper in the package accepts $accepts but the package is $name"
-            exit 1
-          fi
-          dpkg-deb -c "$deb" > contents.txt
-          # The path is the polkit action's exec.path annotation, so it is the
-          # only one authorization is granted for; root because polkit will not
-          # run a helper the invoking user could have written. Either spelling
-          # of root: dpkg-deb prints the numeric ids it cannot map, and which
-          # one it prints is a property of the machine reading the package
-          # rather than of the package.
-          if ! grep -qE '^-rwxr-xr-x (root/root|0/0) +[0-9]+ .* \./usr/lib/reasonix-studio/reasonix-studio-update-helper$' contents.txt; then
-            echo "::error::no root-owned executable update helper at the path the polkit action names"
-            grep reasonix-studio-update-helper contents.txt || echo "(not in the package at all)"
-            exit 1
-          fi
-          if ! grep -q './usr/share/polkit-1/actions/io.reasonix.studio.update.policy$' contents.txt; then
-            echo "::error::the polkit action is not in the package, so pkexec has nothing to authorize against"
-            exit 1
-          fi
+        run: bash scripts/verify-linux-package.sh "dist/ReasonixStudio-linux-${{ matrix.arch }}.deb" "dist/ReasonixStudio-linux-${{ matrix.arch }}.rpm" "${{ matrix.arch }}"
 
-      # The .rpm is read back for the same two properties as the .deb: it is the
-      # package update.StudioLine names, and the helper pkexec runs as root is
-      # owned by root and writable by no one else, or any local user could
-      # replace it.
-      - name: The .rpm is Studio's own package and carries what updates it
+      - name: The Linux package installs, runs, reinstalls and uninstalls
         if: runner.os == 'Linux'
-        run: |
-          rpm=$(ls dist/ReasonixStudio-linux-*.rpm)
-          name=$(rpm -qp --qf '%{NAME}' "$rpm")
-          if [ "$name" != "reasonix-studio" ]; then
-            echo "::error::the package is $name; rpm holds that beside the installed reasonix-studio instead of upgrading it"
-            exit 1
-          fi
-          rpm -qp --qf '[%{FILEMODES:perms} %{FILEUSERNAME} %{FILEGROUPNAME} %{FILENAMES}\n]' "$rpm" > contents.txt
-          if ! grep -qxE -- '-rwxr-xr-x root root /usr/lib/reasonix-studio/reasonix-studio-update-helper' contents.txt; then
-            echo "::error::no root-owned, executable, not-writable update helper at the path the polkit action names"
-            grep reasonix-studio-update-helper contents.txt || echo "(not in the package at all)"
-            exit 1
-          fi
-          if ! grep -qE -- '^-r[w-][x-]r-[x-]r-[x-] root root /usr/share/polkit-1/actions/io.reasonix.studio.update.policy$' contents.txt; then
-            echo "::error::the polkit action is missing, or is not a root-owned file no one else can write"
-            grep polkit contents.txt || echo "(not in the package at all)"
-            exit 1
-          fi
+        run: bash scripts/linux-install-smoke.sh "dist/ReasonixStudio-linux-${{ matrix.arch }}.deb" "${{ matrix.arch }}" 0.0.0-ci
 
-      # The Electron shell sets the package's glibc floor; a Go binary linked
-      # with cgo would raise it to the runner's own.
-      - name: The .deb's Go binaries are statically linked
+      - name: The AppImage carries its architecture, the kernel and the page
         if: runner.os == 'Linux'
-        run: |
-          deb=$(ls dist/ReasonixStudio-linux-*.deb)
-          dpkg-deb -x "$deb" "$RUNNER_TEMP/deb"
-          host=$(find "$RUNNER_TEMP/deb" -type f -path '*/resources/bin/reasonix-studio-host')
-          test -n "$host"
-          node desktop/electron/packaging/elf.js "$host" "$RUNNER_TEMP/deb/usr/lib/reasonix-studio/reasonix-studio-update-helper"
+        run: bash scripts/verify-linux-appimage.sh "dist/ReasonixStudio-linux-${{ matrix.arch }}.AppImage" "${{ matrix.arch }}"
 
       # Recorded, not asserted: the real bundle layout, so later work argues
       # from what electron-builder produced rather than from its documentation.

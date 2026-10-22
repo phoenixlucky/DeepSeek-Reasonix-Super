@@ -14,6 +14,7 @@ export class SseLook extends SseHttp {
       language: look.language ?? "",
       zoom: look.zoom ?? 0,
       readSize: look.readSize ?? 0,
+      textSize: look.textSize ?? 0,
       fontUi: look.fontUi ?? "",
       fontMono: look.fontMono ?? "",
       width: look.width ?? "",
@@ -30,21 +31,9 @@ export class SseLook extends SseHttp {
   // cross-site form from posting here at all.
   async uploadWallpaper(blob: Blob) {
     guardUpload(blob.size, UPLOAD_LIMIT_MB.wallpaper, tooLarge("wallpaper.too_large", "limit"));
-    const res = await fetch(this.base + "/appearance/wallpaper", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      credentials: "same-origin",
-      body: JSON.stringify({ mime: blob.type, data: await base64Of(blob) }),
-    });
-    const body = (await res.json().catch(() => ({}))) as Appearance & { error?: string };
-    if (!res.ok) throw new Error(body.error || `/appearance/wallpaper: ${res.status}`);
-    return body;
+    return this.post0<Appearance>("/appearance/wallpaper", { mime: blob.type, data: await base64Of(blob) });
   }
-  async clearWallpaper() {
-    const res = await fetch(this.base + "/appearance/wallpaper", {
-      method: "DELETE",
-      credentials: "same-origin",
-    });
-    if (!res.ok) throw new Error(`/appearance/wallpaper: ${res.status}`);
+  clearWallpaper() {
+    return this.del("/appearance/wallpaper");
   }
 }

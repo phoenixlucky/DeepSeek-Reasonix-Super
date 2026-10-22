@@ -69,11 +69,13 @@ models = ["m"]
 default = "m"
 api_key_env = "KEYED_EFFECT_KEY"
 balance_url = "`+home.URL+`/balance"
+balance_format = "deepseek"
 
 [[providers]]
 name = "decider"
 kind = "typesafe"
 balance_url = "`+home.URL+`/balance"
+balance_format = "deepseek"
 base_url = "`+home.URL+`"
 models = ["system-one"]
 api_key_env = "KEYED_EFFECT_KEY"

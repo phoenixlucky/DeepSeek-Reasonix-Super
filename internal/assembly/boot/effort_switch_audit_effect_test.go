@@ -39,6 +39,7 @@ func TestEffectChildEffortSelection(t *testing.T) {
 			var mu sync.Mutex
 			var sent []any
 			var profiles []event.Profile
+			var ran []event.Profile
 			var failures int
 			args, err := json.Marshal(map[string]any{
 				"action": "call", "capability_id": "task:subagent",
@@ -91,6 +92,11 @@ default_effort = "low"
 					profiles = append(profiles, *e.Tool.Profile)
 					mu.Unlock()
 				}
+				if e.Kind == event.ToolProgress && e.Tool.Name == event.SubagentProgressStatusName && e.Tool.Profile != nil {
+					mu.Lock()
+					ran = append(ran, *e.Tool.Profile)
+					mu.Unlock()
+				}
 			})})
 			if err != nil {
 				t.Fatal(err)
@@ -109,8 +115,27 @@ default_effort = "low"
 			} else if len(sent) < 3 || sent[0] != "high" || sent[1] != tc.want || sent[len(sent)-1] != "high" {
 				t.Errorf("parent/child/parent efforts = %v, want high/%s/high", sent, tc.want)
 			}
-			if len(profiles) == 0 || profiles[0].Effort != tc.effort || profiles[0].Model != tc.model {
-				t.Errorf("dispatch profiles = %+v, want selection %s/%s", profiles, tc.model, tc.effort)
+			if !tc.rejected {
+				wantModel := "relay/parent"
+				if tc.model == "relay/child" {
+					wantModel = tc.model
+				}
+				if len(profiles) == 0 {
+					t.Fatal("child dispatch did not report its selection")
+				}
+				for _, profile := range profiles {
+					if profile.Model != tc.model || profile.Effort != tc.effort {
+						t.Errorf("dispatch selection = %+v, want %s/%s", profile, tc.model, tc.effort)
+					}
+				}
+				if len(ran) == 0 {
+					t.Fatal("child status did not report its runtime identity")
+				}
+				for _, profile := range ran {
+					if profile.Model != wantModel || profile.Effort != tc.want {
+						t.Errorf("status runtime = %+v, want %s/%s", profile, wantModel, tc.want)
+					}
+				}
 			}
 			parent := strings.TrimSuffix(filepath.Base(ctrl.SessionPath()), ".jsonl")
 			children, err := sessionstore.ListSubagentsByParent(ctrl.SessionDir(), parent)

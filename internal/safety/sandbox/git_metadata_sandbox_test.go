@@ -15,7 +15,7 @@ import (
 
 func requireConfinedGit(t *testing.T) {
 	t.Helper()
-	if !Available() {
+	if !AvailableFor(Spec{Mode: "enforce"}) {
 		t.Skip("no usable OS sandbox backend")
 	}
 	requireGit(t)

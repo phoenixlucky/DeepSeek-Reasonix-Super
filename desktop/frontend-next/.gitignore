@@ -1,5 +1,8 @@
 node_modules
 dist
-dist-perf
+dist-perf*
 *.png
+!public/icons/*.png
 tsconfig.tsbuildinfo
+dist-relay*
+relay/bin

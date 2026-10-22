@@ -60,11 +60,26 @@ func CaptureFatalDumps(home, version string) {
 	}
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(strings.TrimSuffix(entry.Name(), fatalSuffix))
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), fatalSuffix) || err != nil ||
-			pid <= 0 || pid == os.Getpid() || processAlive(pid) {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), fatalSuffix) || err != nil || pid <= 0 {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
+		// Liveness alone reads a recycled pid as a live writer, which left the
+		// file here on every start; the program behind the pid settles it.
+		live := pid == os.Getpid() || (processAlive(pid) && sameBinary(pid))
+		// The file is created when a process starts and written only if it dies
+		// fatally, so an empty one whose writer is gone was reaped, not crashed.
+		if info, statErr := entry.Info(); statErr == nil && info.Size() == 0 {
+			if !live {
+				_ = os.Remove(path)
+			}
+			continue
+		}
+		// Bytes may still be arriving: a process killed mid-dump leaves a
+		// truncated file, and only the liveness check tells it from a report.
+		if live {
+			continue
+		}
 		if captureFatalDump(home, version, path) == nil {
 			_ = os.Remove(path)
 		}

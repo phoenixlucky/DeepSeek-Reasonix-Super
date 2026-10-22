@@ -30,6 +30,7 @@ func (c *Config) namedRoleModelRefs() []roleModelRef {
 		{"vision", &c.Agent.VisionModel}, {"guardian", &c.Agent.GuardianModel},
 		{"recovery", &c.Agent.RecoveryModel}, {"triage", &c.Agent.TriageModel},
 		{"decision", &c.Agent.DecisionModel}, {"advisor", &c.Agent.AdvisorModel},
+		{"title", &c.Agent.TitleModel},
 	}
 }
 

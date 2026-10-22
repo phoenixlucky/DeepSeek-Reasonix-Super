@@ -72,6 +72,10 @@ type Pricing struct {
 	Input    float64 `toml:"input"`     // per 1M uncached prompt tokens
 	Output   float64 `toml:"output"`    // per 1M completion tokens
 	Currency string  `toml:"currency"`
+	// SourceURL and Checked say where a price was read and on what UTC date. They
+	// describe the price and take no part in quoting it.
+	SourceURL string `toml:"source_url"`
+	Checked   string `toml:"checked"`
 }
 
 // Cost estimates the spend for a usage record. Compatibility adapter only —

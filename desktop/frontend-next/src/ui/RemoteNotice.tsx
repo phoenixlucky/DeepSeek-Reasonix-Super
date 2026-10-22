@@ -8,9 +8,11 @@ interface Props {
   onAction: () => void;
   waitS?: number;
   retryWhenOnline?: boolean;
+  // Not a failure: the dot is the accent colour instead of the error one.
+  info?: boolean;
 }
 
-export function RemoteNotice({ title, body, action, onAction, waitS = 0, retryWhenOnline = false }: Props) {
+export function RemoteNotice({ title, body, action, onAction, waitS = 0, retryWhenOnline = false, info = false }: Props) {
   const [left, setLeft] = useState(waitS);
   useEffect(() => {
     setLeft(waitS);
@@ -24,7 +26,7 @@ export function RemoteNotice({ title, body, action, onAction, waitS = 0, retryWh
     return () => removeEventListener("online", onAction);
   }, [retryWhenOnline, onAction]);
   return (
-    <div className="remote-closed" role="alert" aria-label={title}>
+    <div className={info ? "remote-closed info" : "remote-closed"} role="alert" aria-label={title}>
       <span aria-hidden="true" />
       <div>
         <b>{title}</b>

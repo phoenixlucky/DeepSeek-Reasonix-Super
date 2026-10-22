@@ -382,3 +382,28 @@ func TestBashOutputListingIsFailSafeAndBounded(t *testing.T) {
 		t.Fatalf("without a session the listing must be empty, got %q, %v", noSession, err)
 	}
 }
+
+// A wait shows the work it waits on: what the job writes reaches the call's
+// live progress, the channel a running bash already streams through.
+func TestWaitStreamsTheJobOutputAsProgress(t *testing.T) {
+	m := jobs.NewManager(event.Discard)
+	defer m.Close()
+	release := make(chan struct{})
+	j := m.Start("bash", "build", func(ctx context.Context, w io.Writer) (string, error) {
+		<-release
+		_, _ = io.WriteString(w, "step 1\nstep 2\n")
+		return "", nil
+	})
+	var live strings.Builder
+	ctx := tool.WithProgress(jobs.WithManager(context.Background(), m), func(chunk string) { live.WriteString(chunk) })
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		close(release)
+	}()
+	if _, err := (waitJob{}).Execute(ctx, []byte(`{"job_ids":["`+j.ID+`"]}`)); err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	if live.String() != "step 1\nstep 2\n" {
+		t.Fatalf("progress = %q, want the job's lines", live.String())
+	}
+}

@@ -1,0 +1,16 @@
+[
+  {
+    "schemaVersion": 1, "id": "builtin:general", "name": "日常搭档", "description": "写代码、查资料、理清思路，和你一起把事情做好。沿用你的工具与配置，按需检索、编辑和运行。",
+    "persona": {"prefix": "", "suffix": "", "include_runtime_context": true},
+    "tools": {"mode":"inherit","members":[]}, "skills": {"mode":"inherit","members":[]},
+    "mcp": {"mode":"inherit","members":[]}, "extensions": {"mode":"inherit","members":[]},
+    "hooks": {"mode":"inherit","members":[]}, "commands": {"mode":"inherit","members":[]}
+  },
+  {
+    "schemaVersion": 1, "id": "builtin:minimal", "name": "轻装搭档", "description": "带上终端和看图工具，轻装开工。和你一起处理小任务、快速试验，也方便对比模型表现。",
+    "persona": {"prefix": "You are a helpful software engineer assistant.", "suffix": "", "include_runtime_context": false},
+    "tools": {"mode":"select","members":[{"id":"bash"},{"id":"view_image"}]},
+    "skills": {"mode":"select","members":[]}, "mcp": {"mode":"select","members":[]},
+    "extensions": {"mode":"select","members":[]}, "hooks": {"mode":"select","members":[]}, "commands": {"mode":"select","members":[]}
+  }
+]

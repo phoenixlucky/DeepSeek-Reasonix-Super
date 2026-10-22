@@ -3,6 +3,7 @@ package delegation
 import (
 	"context"
 	"fmt"
+	"reasonix/internal/runtime/writeclaim"
 	"slices"
 	"strings"
 	"time"
@@ -275,4 +276,32 @@ func parallelOutcomeDelta(parentID string, state agentgraph.NodeState, states []
 		items = append(items, node)
 	}
 	return fanOutOutcomeDelta(parentID, state, items)
+}
+
+// waitingNotice tells the person which sub-agent is held back and by whose write
+// claim. The graph already carries the cause; this is the sentence for the one
+// case a person can do something about, and it never refuses.
+func waitingNotice(sink event.Sink, task string) func(writeclaim.Held) {
+	return func(h writeclaim.Held) {
+		if sink == nil || h.Cause != agentgraph.WaitClaim {
+			return
+		}
+		payload := event.SubagentWaiting{Task: task, By: h.By, Whole: h.Whole}
+		sink.Emit(event.Event{
+			Kind: event.Notice, Level: event.LevelInfo, Code: event.NoticeCodeSubagentWaiting,
+			Detail: payload.Encode(), Text: waitingSentence(payload),
+		})
+	}
+}
+
+func waitingSentence(p event.SubagentWaiting) string {
+	who := "another sub-agent"
+	if p.By != "" {
+		who = fmt.Sprintf("%q", p.By)
+	}
+	why := "both want to write the same path"
+	if p.Whole {
+		why = "neither declared write_paths, so each is treated as writing the whole workspace"
+	}
+	return fmt.Sprintf("Sub-agent %q is waiting for %s to finish: %s.", p.Task, who, why)
 }

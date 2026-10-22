@@ -139,13 +139,19 @@ func (a *contextWindow) compactTrigger() int {
 }
 
 // hardInputCeiling is a physical input-safety boundary, not another user
-// compaction threshold. Reply budgets are resolved independently at send time.
+// compaction threshold. On a provider whose reply shares the window it stops
+// where the send-time output check stops, so a prompt the check would refuse is
+// one the fold has already been told it must free.
 func (a *contextWindow) hardInputCeiling() int {
 	window := a.effectiveContextWindow()
 	if window <= 0 {
 		return 0
 	}
-	return max(1, window-protocolReserveTokens)
+	reserve := protocolReserveTokens
+	if sharesContextWindow(a.svc.prov) && a.configuredOutputBudget(0) > 0 {
+		reserve = max(reserve, outputBudgetReserveFor(window))
+	}
+	return max(1, window-reserve)
 }
 
 // recentTailBudget is the content-construction budget for the recent verbatim
@@ -353,11 +359,20 @@ func (a *contextWindow) keepIndexes(region []provider.Message, policy KeepPolicy
 			policyStart = i + 1
 		}
 	}
-	// Retention applies only to messages since the latest digest; older kept
-	// messages are allowed to fold on the next pass so they cannot grow forever.
+	// Retention applies only to messages since the latest digest. A failed tool
+	// result is bounded by its own budget, since last fold's survivors sit past
+	// the digest and would otherwise be kept again.
+	var failures, marked []int
 	for i, m := range region {
 		if i >= policyStart && shouldKeepMessage(m, policy) {
-			keep[i] = true
+			switch m.Role {
+			case provider.RoleTool:
+				failures = append(failures, i)
+			case provider.RoleUser:
+				marked = append(marked, i)
+			default:
+				keep[i] = true
+			}
 		}
 		// The request that began the running turn states the work the rest of
 		// the turn is executing. Its closed transactions may fold; it may not.
@@ -365,7 +380,10 @@ func (a *contextWindow) keepIndexes(region []provider.Message, policy KeepPolicy
 			keep[i] = true
 		}
 	}
+	a.keepFailuresWithinBudget(region, keep, failures)
+	markedDropped, markedTokens := a.keepMarkedWithinBudget(region, keep, marked)
 	retention := a.keepUserTurns(region, keep)
+	retention.MarkedDropped, retention.MarkedDroppedTokens = markedDropped, markedTokens
 	pinned := slices.Clone(keep)
 	for i, m := range region {
 		if !pinned[i] {
@@ -604,21 +622,21 @@ func (a *contextWindow) summarize(ctx context.Context, region []provider.Message
 // cap that cannot exceed above is refused with errNoOutputHeadroom before any
 // request is made. Named returns so defer can attach RequestCount.
 func (a *contextWindow) summarizeAt(ctx context.Context, region []provider.Message, instructions string, limit, above int) (summary string, usage *provider.Usage, err error) {
+	return a.summarizeAtMode(ctx, region, instructions, limit, above, true)
+}
+
+func (a *contextWindow) summarizeAtMode(ctx context.Context, region []provider.Message, instructions string, limit, above int, allowPrefix bool) (summary string, usage *provider.Usage, err error) {
 	parent := ctx
 	bounds := SummaryBounds
 	ctx, cancel := context.WithTimeoutCause(ctx, bounds.Ceiling, errSummaryCeiling)
 	defer cancel()
-	ctx = provider.WithRequestAttemptCounter(ctx)
+	ctx = provider.WithIndependentRequestAttemptCounter(ctx)
 	defer func() {
 		if err != nil && parent.Err() == nil && errors.Is(context.Cause(ctx), errSummaryCeiling) {
 			err = summaryCeilingHit(bounds.Ceiling)
 		}
 		err = classifySummaryError(parent, err)
 	}()
-	sys := summarySystemPrompt
-	if strings.TrimSpace(instructions) != "" {
-		sys += "\n\nAdditional focus for this compaction (prioritize keeping this):\n" + strings.TrimSpace(instructions)
-	}
 	defer func() {
 		usage = provider.UsageWithRequestAttemptCount(ctx, usage)
 		if usage != nil && (usage.TotalTokens > 0 || usage.RequestCount > 0) {
@@ -633,16 +651,7 @@ func (a *contextWindow) summarizeAt(ctx context.Context, region []provider.Messa
 	if a.maxOutputTokens > 0 && a.maxOutputTokens < maxOut {
 		maxOut = a.maxOutputTokens
 	}
-	req := provider.Request{
-		Messages: []provider.Message{
-			{Role: provider.RoleSystem, Content: sys},
-			{Role: provider.RoleUser, Content: renderTranscript(region) + summaryClosingInstruction},
-		},
-		MaxTokens:      maxOut,
-		EffortOverride: summaryEffort,
-		Summary:        true,
-		Temperature:    provider.OptionalTemperature(a.temperature),
-	}
+	req, reused := a.summaryRequest(region, instructions, maxOut, allowPrefix)
 	if budget, clipped, budgetErr := a.effectiveOutputBudget(req); budgetErr != nil {
 		return "", usage, budgetErr
 	} else if clipped {
@@ -677,14 +686,8 @@ func (a *contextWindow) summarizeAt(ctx context.Context, region []provider.Messa
 		case chunk, ok := <-ch:
 			idle.Reset(bounds.Idle)
 			if !ok {
-				if usage != nil && usage.FinishReason == "length" {
-					return "", usage, &summaryTruncation{Cap: req.MaxTokens}
-				}
-				s := strings.TrimSpace(b.String())
-				if s == "" {
-					return "", usage, fmt.Errorf("summarizer returned empty output")
-				}
-				return s, usage, nil
+				s, err := summaryAtEOF(ctx, b.String(), usage, req.MaxTokens, reused)
+				return s, usage, err
 			}
 			switch chunk.Type {
 			case provider.ChunkText:

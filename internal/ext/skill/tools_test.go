@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -666,5 +667,44 @@ func TestReadSkillRejectsSubagent(t *testing.T) {
 
 	if _, err := tl.Execute(context.Background(), json.RawMessage(`{"name":"dig"}`)); err == nil || !strings.Contains(err.Error(), "run_skill") {
 		t.Fatalf("read_skill on a subagent skill should point to run_skill, got %v", err)
+	}
+}
+
+// A skill sub-agent's row says what it was asked, as a task sub-agent's does: the
+// first line of the task, never in place of the skill's name.
+func TestSkillSubagentProfileCarriesTheTaskAsItsLabel(t *testing.T) {
+	home := testenv.TempDir(t)
+	writeSkill(t, home, ".reasonix/skills/deep.md", "---\ndescription: deep\nrunAs: subagent\n---\nbody")
+	store := New(Options{HomeDir: home})
+	resolve := func(tl tool.Tool, args string) *event.Profile {
+		t.Helper()
+		pr, ok := tl.(interface {
+			ResolveProfile(json.RawMessage) *event.Profile
+		})
+		if !ok {
+			t.Fatalf("%s should expose ResolveProfile", tl.Name())
+		}
+		return pr.ResolveProfile(json.RawMessage(args))
+	}
+	task := "Find where the config loader is defined\nthen list its callers"
+	for name, got := range map[string]*event.Profile{
+		"run_skill":       resolve(NewRunSkillTool(store, nil), `{"name":"deep","arguments":`+strconv.Quote(task)+`}`),
+		"read_only_skill": resolve(NewReadOnlySkillTool(store, nil), `{"name":"deep","arguments":`+strconv.Quote(task)+`}`),
+	} {
+		if got == nil || got.Name != "deep" || got.Label != "Find where the config loader is defined" {
+			t.Errorf("%s profile = %+v, want name deep and the task's first line as label", name, got)
+		}
+	}
+	for _, tl := range BuiltinSubagentTools(store, nil) {
+		if tl.Name() != "explore" {
+			continue
+		}
+		got := resolve(tl, `{"task":`+strconv.Quote(task)+`}`)
+		if got == nil || got.Name != "explore" || got.Label != "Find where the config loader is defined" {
+			t.Errorf("explore profile = %+v, want name explore and the task's first line as label", got)
+		}
+	}
+	if got := resolve(NewRunSkillTool(store, nil), `{"name":"deep"}`); got == nil || got.Label != "" || got.Name != "deep" {
+		t.Errorf("a call with no task has profile %+v, want the name and no label", got)
 	}
 }

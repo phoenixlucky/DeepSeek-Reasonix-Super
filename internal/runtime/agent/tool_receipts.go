@@ -16,7 +16,7 @@ func (a *Agent) recordToolReceipts(ctx context.Context, plan *toolCallPlan, resu
 		return
 	}
 	call := plan.call
-	args := json.RawMessage(call.Arguments)
+	args := json.RawMessage(call.ExecutionArguments())
 	switch {
 	case call.Name == "complete_step":
 		rec := evidence.ReceiptFromToolCall(call.Name, args, err == nil, plan.facts())

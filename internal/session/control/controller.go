@@ -83,11 +83,18 @@ var errNoSessionPath = errors.New("session has content but no session path; conv
 // Controller drives one chat session. Construct with New; drive with the command
 // methods; observe through the Sink passed in Options.
 type Controller struct {
+	composition           *compositionControl
+	compositionMutationMu sync.Mutex
+	idleObserver          func()
+	surfacePublications   liveSurfacePublications
 	controllerDeps
 
 	guardianPath string // persisted guardian session file ("" when disabled)
 	systemPrompt string
 	commands     atomic.Pointer[[]command.Command]
+	// restateProjection answers "not visible" until a turn is handed to the
+	// runner; a model switch sets it. See projection_debt.go.
+	restateProjection atomic.Bool
 	// hookContexts carries one-shot lifecycle hook context into the next real
 	// user turn without changing the cache-stable system prompt.
 	hookContexts []string
@@ -193,6 +200,10 @@ type Controller struct {
 	// inbox is the durable session-level instruction queue. Disk I/O never
 	// runs under c.mu; the store owns its own lock.
 	inbox inboxState
+	// peers is this controller's side of messages between sessions; nil-safe off.
+	peers *peerMail
+	// settings counts the setting proposals of the current turn.
+	settings settingsState
 }
 
 type approvalReply struct {
@@ -311,12 +322,16 @@ type Options struct {
 	SystemPrompt        string
 	SessionDir          string
 	SessionPath         string
-	Host                *plugin.Host
-	Commands            []command.Command
-	Skills              []skill.Skill
-	AllSkills           []skill.Skill
-	SkillStore          *skill.Store
-	AllSkillStore       *skill.Store
+	// Peers opens this session to messages from other sessions; zero is off.
+	Peers PeersOptions
+	// Settings, when set, is bound to this controller so the setting tool can reach it.
+	Settings      *tool.SettingsLink
+	Host          *plugin.Host
+	Commands      []command.Command
+	Skills        []skill.Skill
+	AllSkills     []skill.Skill
+	SkillStore    *skill.Store
+	AllSkillStore *skill.Store
 	// Clock is the host's wall clock for the date the model is told; nil means
 	// the model is told none.
 	Clock func() time.Time
@@ -328,19 +343,22 @@ type Options struct {
 	// Plan itself is a workflow instruction and uses SkillRunner with the shared
 	// Permissions/Sandbox gate. SkillProfile supplies model/effort display
 	// metadata for the synthetic top-level run_skill event.
+	SideFactory         SideFactory // opens a read-only side conversation; nil = none
 	SkillRunner         skill.SubagentRunner
 	ReadOnlySkillRunner skill.SubagentRunner
 	SkillProfile        skill.ProfileResolver
 	Hooks               *hook.Runner
 	Memory              *memory.Set
 	Cleanup             func()
-	// Balance reads the active provider's optional wallet endpoint. Nil, or a
-	// cache built on an empty URL, means the provider declares none. Hosts that
-	// build several runtimes hand every pane the same cache.
+	// Balance reads the active provider's optional wallet endpoint; nil or an empty
+	// URL means none. Hosts that build several runtimes share one cache across panes.
 	Balance  *billing.Cache
+	Tariff   TariffSource
 	Feedback FeedbackOptions // nil service refuses every feedback call
 	// Jobs is the session-scoped background-job manager (nil disables background jobs).
 	Jobs *jobs.Manager
+	// Subagents reads the runs the delegation tools persist; nil lists none.
+	Subagents SubagentReader
 	// TaskStore remains a FileStore-compatible authority. Desktop injects one
 	// observed instance so recorder and task-control APIs share post-commit
 	// projection hints; nil preserves the ordinary FileStore.
@@ -377,6 +395,8 @@ type Options struct {
 	ResponseLanguage string
 	// ReasoningLanguage controls the visible reasoning language; empty/auto follows the conversation.
 	ReasoningLanguage string
+	// TurnNarration is brief (default) or detailed; see config.TurnNarration.
+	TurnNarration string
 	// DisableColdResumePrune suppresses the cold-resume cache-state notice.
 	// Resume never rewrites history regardless of this flag.
 	DisableColdResumePrune bool
@@ -464,6 +484,9 @@ func New(opts Options) *Controller {
 		providerResolver:   opts.ProviderResolver,
 		runtimeGeneration:  opts.RuntimeGeneration,
 	}
+	if c.executor != nil {
+		c.bindProjectionSeer(c.deliveredNewest, c.deliveredSees)
+	}
 	c.adoptSessionResources(opts)
 	c.publishPerProjectContext(opts)
 	if opts.Extensions != nil {
@@ -476,7 +499,10 @@ func New(opts Options) *Controller {
 	// Checkpoints: bind a store to the session and route writer pre-edits into it.
 	c.rebindCheckpoints(opts.SessionPath)
 	c.setActiveJobSession(opts.SessionPath)
+	c.peers = newPeerMail(opts.Peers)
 	c.rebindInbox()
+	c.startPeers()
+	c.startSettings(opts.Settings)
 	// Observe Steer / unapplied-steer for durable inbox state transitions.
 	// Must wrap both the controller sink and the executor sink: agent.Steer
 	// emits on the executor path, TurnDone on the controller path.
@@ -637,6 +663,11 @@ const SandboxEscapeApprovalTool = "sandbox_escape"
 // may reach a host outside [sandbox] allowed_domains; the subject is the host.
 const NetworkEgressApprovalTool = permission.NetworkEgress
 
+// PaidSearchApprovalTool is the internal Tool name used to ask whether
+// web_search may use a backend the vendor charges for; the subject is the
+// backend.
+const PaidSearchApprovalTool = permission.PaidSearch
+
 // ManagedConfigWriteApprovalTool is the internal Tool name used for per-write
 // approval when a file tool targets a Reasonix-managed config file outside the
 // workspace write roots. It is a fresh human decision: config files control
@@ -652,6 +683,9 @@ type preparedInvocationTurn struct {
 	composed         string
 	subagents        []skill.Skill
 	inlineSkillNames []string
+	// task stands in for the typed text when none was given and every subagent
+	// chosen has a default scope of its own.
+	task string
 }
 
 // prometheusPrompt is the strategic planner system prompt.
@@ -711,7 +745,8 @@ func (c *Controller) noticeDetail(text, detail string) {
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: text, Detail: detail})
 }
 
-// Running reports whether a turn is currently in flight.
+// Running reports whether admission is closed by a turn, including the delivery
+// of its TurnDone. Guards read this; a window shows TurnInFlight.
 func (c *Controller) Running() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -736,13 +771,6 @@ func (c *Controller) RuntimeStatus() RuntimeStatus {
 		CancelRequested: canceling,
 		Cancellable:     running || pending,
 	}
-}
-
-// Turn returns the current turn number (0 before the first submit).
-func (c *Controller) Turn() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.turn
 }
 
 type plannerPlanApprover struct {
@@ -888,17 +916,6 @@ func (c *Controller) loadGuardianSession() {
 	}
 }
 
-// ResetPlannerSession clears the planner's conversation history so the next
-// plan starts fresh. In dual-model (Plan+Execute) mode, this prevents stale
-// planner output from a previous session or tab from contaminating the current
-// executor's handoff. Safe to call on a single-model controller (no-op).
-func (c *Controller) ResetPlannerSession() {
-	runner, ok := c.runner.(plannerSessionResetter)
-	if ok {
-		runner.ResetPlannerSession()
-	}
-}
-
 // cacheColdAfter resolves how long the active provider keeps a prompt prefix
 // cached. A session idle longer than this resumes against a cold cache, so a
 // history rewrite at that moment costs no extra cache misses — it only shrinks
@@ -1038,7 +1055,7 @@ func (c *Controller) ToolResult(toolID string) *ToolResultData {
 			}
 			for _, tc := range msgs[j].ToolCalls {
 				if tc.ID == toolID {
-					out.Args = tc.Arguments
+					out.Args = tc.ExecutionArguments()
 					return out
 				}
 			}
@@ -1051,71 +1068,6 @@ func (c *Controller) ToolResult(toolID string) *ToolResultData {
 // Host returns the running MCP host (nil when no plugins), for frontends that
 // list servers / resolve MCP prompts.
 func (c *Controller) Host() *plugin.Host { return c.mcp.hostRef() }
-
-// Commands returns the loaded custom slash commands.
-func (c *Controller) Commands() []command.Command {
-	if p := c.commands.Load(); p != nil {
-		return *p
-	}
-	return nil
-}
-
-// ReloadCommands rescans all command directories and hot-swaps the slash_command
-// tool and the internal command slice — no MCP restart, no hook rerun.
-func (c *Controller) ReloadCommands(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-	}
-	cmds, loadErr := command.LoadRoots(config.CommandRootsForRoot(c.workspaceRoot)...)
-	var cmdSkills []skill.Skill
-	if !c.skills.noImplicitInvocation {
-		cmdSkills = skill.ModelInvocable(c.SlashSkills())
-	}
-
-	entries := make([]command.SlashEntry, 0, len(cmdSkills)+len(cmds))
-	for _, sk := range cmdSkills {
-		entries = append(entries, command.SlashEntry{
-			Name:        sk.SlashName(),
-			Description: sk.Description,
-			ArgHint:     sk.ArgumentHint,
-			Skill:       true,
-			Unlisted:    func() bool { return !c.skills.pathHits.Eligible(sk) },
-			Render: func(args []string) string {
-				cur, err := c.skills.forModel(sk)
-				if err != nil {
-					return ""
-				}
-				return c.skills.renderInvocation(cur, strings.Join(args, " "))
-			},
-		})
-	}
-	for _, cmd := range cmds {
-		if cmd.Hidden {
-			continue
-		}
-
-		entries = append(entries, command.SlashEntry{
-			Name:        cmd.Name,
-			Description: cmd.Description,
-			ArgHint:     cmd.ArgHint,
-			Render:      func(args []string) string { return cmd.Render(args) },
-		})
-	}
-	c.mcp.registerTool(command.NewSlashCommandTool(entries, c.skills.modelGate()))
-	cmdSlice := cmds
-	c.commands.Store(&cmdSlice)
-	return loadErr
-}
-
-// Executor returns the underlying agent when present (nil for pure runners).
-func (c *Controller) Executor() *agent.Agent {
-	if c == nil {
-		return nil
-	}
-	return c.executor
-}
 
 // HookRunner returns the session's hook runner (nil-safe; may hold zero hooks),
 // so a frontend can list the active hooks via `/hooks`.

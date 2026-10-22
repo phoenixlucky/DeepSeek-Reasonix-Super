@@ -23,6 +23,12 @@ type Probe struct {
 	DurationMs int64  `json:"durationMs"`
 	// Advice is the next thing to try, for failures whose cause is knowable.
 	Advice string `json:"advice,omitempty"`
+	// Code and AdviceCode name what Detail and Advice say, with Params as the
+	// pieces a sentence needs. A window words them in its own language; the text
+	// stays for logs and the terminal.
+	Code       string         `json:"code,omitempty"`
+	AdviceCode string         `json:"adviceCode,omitempty"`
+	Params     map[string]any `json:"params,omitempty"`
 }
 
 // Diagnose walks the path to endpoint under spec and stops at the first failure,
@@ -32,12 +38,12 @@ func Diagnose(ctx context.Context, spec ProxySpec, endpoint string) []Probe {
 	var out []Probe
 	target, err := url.Parse(strings.TrimSpace(endpoint))
 	if err != nil || target.Host == "" {
-		return append(out, Probe{Step: "dns", Detail: fmt.Sprintf("读不懂这个地址：%s", endpoint)})
+		return append(out, Probe{Step: "dns", Detail: fmt.Sprintf("读不懂这个地址：%s", endpoint), Code: "net.dns.unreadable", Params: map[string]any{"endpoint": endpoint}})
 	}
 
 	resolved, perr := ProxyFunc(spec)
 	if perr != nil {
-		return append(out, Probe{Step: "proxy", Detail: perr.Error(), Advice: "代理配置本身不合法，先改这里"})
+		return append(out, Probe{Step: "proxy", Detail: perr.Error(), Advice: "代理配置本身不合法，先改这里", AdviceCode: "net.proxy.invalid"})
 	}
 	// A nil resolver is the transport's own way of saying "never proxy", not a
 	// missing one.
@@ -45,7 +51,7 @@ func Diagnose(ctx context.Context, spec ProxySpec, endpoint string) []Probe {
 	if resolved != nil {
 		proxyURL, _ = resolved(&http.Request{URL: target})
 	}
-	out = append(out, Probe{Step: "proxy", OK: true, Detail: proxyDetail(spec, proxyURL)})
+	out = append(out, proxyProbe(spec, proxyURL))
 
 	// What must resolve and connect is the proxy when there is one: the endpoint's
 	// own name is the proxy's problem to resolve, not ours.
@@ -67,6 +73,7 @@ func Diagnose(ctx context.Context, spec ProxySpec, endpoint string) []Probe {
 	if err != nil {
 		dns.Detail = fmt.Sprintf("解析不了 %s：%v", host, err)
 		dns.Advice = "域名解析就失败了，通常是 DNS 或者根本没有网"
+		dns.Code, dns.AdviceCode, dns.Params = "net.dns.failed", "net.dns.advice", map[string]any{"host": host, "error": err.Error()}
 		return append(out, dns)
 	}
 	dns.Detail = fmt.Sprintf("%s → %s", host, strings.Join(clip(addrs, 2), ", "))
@@ -77,15 +84,17 @@ func Diagnose(ctx context.Context, spec ProxySpec, endpoint string) []Probe {
 	tcp := Probe{Step: "connect", OK: err == nil, DurationMs: since(started)}
 	if err != nil {
 		tcp.Detail = fmt.Sprintf("连不上 %s:%s：%v", host, port, err)
+		tcp.Code, tcp.Params = "net.connect.failed", map[string]any{"host": host, "port": port, "error": err.Error()}
 		if proxyURL != nil {
-			tcp.Advice = "解析得到地址但连不上代理，检查代理是不是没开、端口对不对"
+			tcp.Advice, tcp.AdviceCode = "解析得到地址但连不上代理，检查代理是不是没开、端口对不对", "net.connect.proxy_down"
 		} else {
-			tcp.Advice = "解析得到地址但连不上，可能被防火墙挡了，或者需要走代理"
+			tcp.Advice, tcp.AdviceCode = "解析得到地址但连不上，可能被防火墙挡了，或者需要走代理", "net.connect.blocked"
 		}
 		return append(out, tcp)
 	}
 	_ = conn.Close()
 	tcp.Detail = fmt.Sprintf("%s:%s 通了", host, port)
+	tcp.Code, tcp.Params = "net.connect.ok", map[string]any{"host": host, "port": port}
 	out = append(out, tcp)
 
 	if target.Scheme != "https" {
@@ -108,26 +117,28 @@ func Diagnose(ctx context.Context, spec ProxySpec, endpoint string) []Probe {
 		var hostnameErr x509.HostnameError
 		switch {
 		case errors.As(err, &unknownAuthority), errors.As(err, &certInvalid), errors.As(err, &hostnameErr):
-			tlsProbe.Advice = "证书不被信任 —— 公司网络里的解密代理常有这种情况，需要把它的根证书装进系统信任"
+			tlsProbe.Advice, tlsProbe.AdviceCode = "证书不被信任 —— 公司网络里的解密代理常有这种情况，需要把它的根证书装进系统信任", "net.tls.untrusted"
 		case isTLSRecordError(err):
-			tlsProbe.Advice = "对面不像是一个 HTTPS 端点，检查地址或者代理协议是不是填错了"
+			tlsProbe.Advice, tlsProbe.AdviceCode = "对面不像是一个 HTTPS 端点，检查地址或者代理协议是不是填错了", "net.tls.not_https"
 		}
 		return append(out, tlsProbe)
 	}
 	_ = resp.Body.Close()
 	tlsProbe.Detail = fmt.Sprintf("握手成功 · HTTP %d", resp.StatusCode)
+	tlsProbe.Code, tlsProbe.Params = "net.tls.ok", map[string]any{"status": resp.StatusCode}
 	out = append(out, tlsProbe)
 	return out
 }
 
-func proxyDetail(spec ProxySpec, proxyURL *url.URL) string {
+func proxyProbe(spec ProxySpec, proxyURL *url.URL) Probe {
 	if proxyURL == nil {
 		if NormalizeMode(spec.Mode) == ModeOff {
-			return "不走代理（已关闭）"
+			return Probe{Step: "proxy", OK: true, Detail: "不走代理（已关闭）", Code: "net.proxy.off"}
 		}
-		return "这个地址直连，不走代理"
+		return Probe{Step: "proxy", OK: true, Detail: "这个地址直连，不走代理", Code: "net.proxy.direct"}
 	}
-	return "经由 " + RedactProxyURL(proxyURL.String())
+	via := RedactProxyURL(proxyURL.String())
+	return Probe{Step: "proxy", OK: true, Detail: "经由 " + via, Code: "net.proxy.via", Params: map[string]any{"proxy": via}}
 }
 
 // RedactProxyURL masks credentials embedded in a proxy URL. A proxy line goes

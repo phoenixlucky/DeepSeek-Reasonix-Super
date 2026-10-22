@@ -131,6 +131,7 @@ type progressSlot struct {
 // only the initial queued/running states and the terminal event bypass it.
 type progressStatusSlot struct {
 	phase    subagentProgressPhase
+	rate     int
 	dirty    bool
 	dueAt    time.Time
 	lastSend time.Time
@@ -150,6 +151,7 @@ type subagentProgressMerger struct {
 	status map[string]*progressStatusSlot
 	order  []string // child IDs in registration order, for round-robin
 	rr     int      // rotating scan start for fairness
+	ran    ranBook  // what each child started with; every status event for it carries it
 
 	tokens     float64 // preview budget: subagentProgressGroupEventsPerSec
 	lastRefill time.Time
@@ -208,6 +210,7 @@ func (m *subagentProgressMerger) Close() {
 // flushChild instead.
 func (m *subagentProgressMerger) directStatus(childID string, phase subagentProgressPhase) {
 	m.mu.Lock()
+	ran := m.ran.of(childID)
 	st := m.status[childID]
 	if st == nil {
 		st = &progressStatusSlot{}
@@ -226,7 +229,7 @@ func (m *subagentProgressMerger) directStatus(childID string, phase subagentProg
 		Kind: event.ToolProgress,
 		Tool: event.Tool{
 			ID: childID, Name: event.SubagentProgressStatusName,
-			ParentID: parentID, Output: string(phase),
+			ParentID: parentID, Output: string(phase), Profile: ran,
 		},
 	})
 }
@@ -234,6 +237,11 @@ func (m *subagentProgressMerger) directStatus(childID string, phase subagentProg
 // statusEvent queues a phase transition for a child. The first transition per
 // child sends immediately; later transitions merge into the status slot.
 func (m *subagentProgressMerger) statusEvent(childID string, phase subagentProgressPhase) {
+	m.statusEventRate(childID, phase, 0)
+}
+
+// statusEventRate is statusEvent for a streaming child, with its rate estimate.
+func (m *subagentProgressMerger) statusEventRate(childID string, phase subagentProgressPhase, rate int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
@@ -257,7 +265,7 @@ func (m *subagentProgressMerger) statusEvent(childID string, phase subagentProgr
 		}
 		st.dueAt = dueAt
 	}
-	st.phase = phase
+	st.phase, st.rate = phase, rate
 	m.wakeLocked()
 }
 
@@ -309,14 +317,14 @@ func (m *subagentProgressMerger) flushChild(childID string, terminal subagentPro
 	if st != nil && st.dirty {
 		phase := st.phase
 		st.dirty = false
-		m.emitStatusLocked(childID, phase, 0)
+		m.emitStatusLocked(childID, phase, 0, st.rate)
 	}
 	for c := subagentProgressChanReasoning; c <= subagentProgressChanNotice; c++ {
 		if sl := m.slots[childID][c]; sl != nil && sl.dirty {
 			m.emitDeltaLocked(childID, c, sl)
 		}
 	}
-	m.emitStatusLocked(childID, terminal, durationMs)
+	m.emitStatusLocked(childID, terminal, durationMs, 0)
 	// A budget trim that dropped content with no channel left to carry the
 	// Truncated flag is surfaced as a truncated notice so frontends still know
 	// some preview content was lost.
@@ -392,7 +400,7 @@ func (m *subagentProgressMerger) stepLocked() bool {
 			st.dirty = false
 			st.lastSend = now
 			m.tokens--
-			m.emitStatusLocked(childID, phase, 0)
+			m.emitStatusLocked(childID, phase, 0, st.rate)
 			return true
 		}
 		for c := subagentProgressChanReasoning; c <= subagentProgressChanNotice; c++ {
@@ -470,8 +478,15 @@ func (m *subagentProgressMerger) refillLocked() {
 	}
 }
 
-func (m *subagentProgressMerger) emitStatusLocked(childID string, phase subagentProgressPhase, durationMs int64) {
-	m.emitToolProgressLocked(childID, event.SubagentProgressStatusName, string(phase), false, durationMs)
+func (m *subagentProgressMerger) emitStatusLocked(childID string, phase subagentProgressPhase, durationMs int64, rate int) {
+	parentID := m.groupParentID
+	if parentID == childID {
+		parentID = ""
+	}
+	m.sink.Emit(event.Event{Kind: event.ToolProgress, Tool: event.Tool{
+		ID: childID, Name: event.SubagentProgressStatusName, ParentID: parentID,
+		Output: string(phase), DurationMs: durationMs, RateTokensPerSec: rate, Profile: m.ran.of(childID),
+	}})
 }
 
 func (m *subagentProgressMerger) emitDeltaLocked(childID string, ch subagentProgressChannel, sl *progressSlot) {
@@ -598,6 +613,8 @@ type subagentProgressTracker struct {
 	childID    string
 	sink       event.Sink // forwards real tool events (the subSinkFor wrapper)
 	phase      subagentProgressPhase
+	meter      rateMeter
+	rateSent   time.Time
 	started    time.Time
 	ownsMerger bool
 	done       bool
@@ -671,7 +688,10 @@ func (t *subagentProgressTracker) setPhaseLocked(p subagentProgressPhase) {
 		return
 	}
 	t.phase = p
-	t.merger.statusEvent(t.childID, p)
+	if p != subagentPhaseReasoning && p != subagentPhaseResponding {
+		t.meter.reset()
+	}
+	t.merger.statusEventRate(t.childID, p, t.rateNowLocked())
 }
 
 // trackedChildSink is the sink one child agent emits into. It is a type rather
@@ -700,9 +720,11 @@ func (s trackedChildSink) Emit(e event.Event) {
 	switch e.Kind {
 	case event.Reasoning:
 		t.setPhaseLocked(subagentPhaseReasoning)
+		t.streamedLocked(e.Text)
 		t.merger.deltaEvent(t.childID, subagentProgressChanReasoning, e.Text)
 	case event.Text:
 		t.setPhaseLocked(subagentPhaseResponding)
+		t.streamedLocked(e.Text)
 		t.merger.deltaEvent(t.childID, subagentProgressChanText, e.Text)
 	case event.Notice:
 		text := e.Text

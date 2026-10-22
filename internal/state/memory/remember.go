@@ -139,7 +139,10 @@ func (t rememberTool) Execute(ctx context.Context, args json.RawMessage) (string
 		factScope = t.store.scopeForPath(path)
 	}
 	if q, ok := QueueFromContext(ctx); ok {
-		q.QueueMemory("Saved memory \"" + result.Memory.Name + "\" (" + string(factScope) + "): " + oneLine(result.Memory.Description) + "\n" + strings.TrimSpace(result.Memory.Body))
+		// The typed fact rides beside the note. The controller records it as a
+		// delivered fact without parsing the note back into memory, so an edit to
+		// its file made after this write is re-checked before the next recall.
+		q.QueueMemory("Saved memory \""+result.Memory.Name+"\" ("+string(factScope)+"): "+oneLine(result.Memory.Description)+"\n"+strings.TrimSpace(result.Memory.Body), result.Memory)
 	}
 	return fmt.Sprintf("Saved memory id=%s revision=%d (%s background) as %s (it applies now and its derived index loads automatically in future sessions).", result.Memory.ID, result.Memory.Revision, factScope, providerMemoryReference(result.Memory)), nil
 }

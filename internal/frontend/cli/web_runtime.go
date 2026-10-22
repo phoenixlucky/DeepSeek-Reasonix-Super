@@ -61,7 +61,7 @@ func listenWebWithPortRetry(addr string) (net.Listener, error) {
 		if listenErr == nil {
 			return ln, nil
 		}
-		if !webAddressInUse(listenErr) || attempt >= webPortRetryLimit || port >= 65535 {
+		if !webPortTaken(listenErr) || attempt >= webPortRetryLimit || port >= 65535 {
 			return nil, listenErr
 		}
 		port++

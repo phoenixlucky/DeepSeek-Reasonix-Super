@@ -172,10 +172,11 @@ func scanMemoryRecall(path string, markers []string, markersInPrefix bool) memor
 	defer f.Close()
 	type record struct {
 		MemoryRecall *struct {
-			Hits       []struct{ ID string } `json:"hits"`
-			UsedChars  int                   `json:"used_chars"`
-			Suppressed string                `json:"suppressed"`
-			ShadowHits []struct{ ID string } `json:"shadow_hits"`
+			Hits            []struct{ ID string } `json:"hits"`
+			UsedChars       int                   `json:"used_chars"`
+			Suppressed      string                `json:"suppressed"`
+			SuppressionCode string                `json:"suppression_code"`
+			ShadowHits      []struct{ ID string } `json:"shadow_hits"`
 		} `json:"memory_recall"`
 		Event *struct {
 			Kind string `json:"kind"`
@@ -205,7 +206,10 @@ func scanMemoryRecall(path string, markers []string, markersInPrefix bool) memor
 				if len(mr.ShadowHits) > 0 && mr.ShadowHits[0].ID == mr.Hits[0].ID {
 					stats.ShadowAgree++
 				}
-			} else if mr.Suppressed != "" {
+			} else if mr.SuppressionCode != "" || mr.Suppressed != "" {
+				// The typed code is the identity. A record written before the
+				// code existed carries only the sentence, whose presence still
+				// means recall stayed silent.
 				stats.Suppressed++
 			}
 		}

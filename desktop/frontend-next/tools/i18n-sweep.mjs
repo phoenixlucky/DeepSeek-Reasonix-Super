@@ -51,7 +51,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 await send(ws, "Runtime.enable");
 await send(ws, "Page.enable");
-await send(ws, "Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+await send(ws, "Emulation.setDeviceMetricsOverride", { width: Number(process.argv[3] || 1440), height: Number(process.argv[4] || 1000), deviceScaleFactor: 1, mobile: false });
 // The interface language is stored locally and fixed at boot, so set it first.
 await send(ws, "Page.navigate", { url });
 await wait(3000);
@@ -122,5 +122,5 @@ const seen = new Map();
 for (const { label, hits } of results) for (const h of hits) if (!seen.has(h)) seen.set(h, label);
 if (onb) console.log("entry:", JSON.stringify(onb));
 for (const [hit, label] of seen) console.log(`  [${label}] ${hit}`);
-console.log(`\nsections walked: ${results.length}; skipped=[${skipped.join(",")}]; Chinese still rendered: ${seen.size}`);
+console.log(`\nviewport ${process.argv[3] || 1440}x${process.argv[4] || 1000}; sections walked: ${results.length}; skipped=[${skipped.join(",")}]; Chinese still rendered: ${seen.size}`);
 ws.close();

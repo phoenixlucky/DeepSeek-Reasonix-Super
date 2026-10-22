@@ -62,8 +62,11 @@ export const SCOPE_SAID: Record<SettingScope, string> = {
 
 // 「已保存」和「生效」是两件事，重启那一档必须把它们分开说 —— 否则关掉设置的人
 // 不知道刚填的东西还在不在。
-const APPLY_SAID: Record<"immediate" | "runtime-rebuild" | "restart", string> = {
+const APPLY_SAID: Record<"immediate" | "runtime-rebuild" | "restart" | "on-open" | "next-turn" | "next-rebuild", string> = {
   immediate: "立即生效",
   "runtime-rebuild": "重建运行时",
   restart: "已保存 · 重启后生效",
+  "on-open": "已保存 · 新开的会话生效",
+  "next-turn": "已保存 · 下个回合起生效",
+  "next-rebuild": "已保存 · 下次会话构建时生效",
 };

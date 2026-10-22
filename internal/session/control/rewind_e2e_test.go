@@ -328,7 +328,7 @@ func TestEditPromptPersistsOriginalPrompt(t *testing.T) {
 	defer c.autosaveWG.Wait()
 
 	var loaded *sessionstore.Session
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(testenv.Budget(t))
 	for {
 		var err error
 		loaded, err = sessionstore.LoadSession(c.SessionPath())

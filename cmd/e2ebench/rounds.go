@@ -99,6 +99,7 @@ type trajScan struct {
 	gapReason, gapCompl, gapPrompt int64
 
 	delegationToolMs map[string]int64
+	nesting          callNesting
 }
 
 // modelAttempt is one sampling attempt's wall interval; planner marks attempts

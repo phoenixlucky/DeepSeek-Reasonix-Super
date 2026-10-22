@@ -135,12 +135,12 @@ func ToolEntries(tools []tool.ContractEntry) []Entry {
 			ToolName:    t.Name,
 			Aliases:     cleanList(t.CapabilityAliases),
 		}
-		if server, raw, ok := tool.SplitMCPName(t.Name); ok {
-			e.ID = "mcp-tool:" + server + "/" + raw
+		if b := t.MCP; b != nil {
+			e.ID = b.CapabilityID
 			e.Kind = KindMCPTool
-			e.Name = server + "/" + raw
-			e.Source = server
-			e.ConnectName = server
+			e.Name = b.Server + "/" + b.RawName
+			e.Source = b.Server
+			e.ConnectName = b.Server
 		}
 		out = append(out, e)
 	}

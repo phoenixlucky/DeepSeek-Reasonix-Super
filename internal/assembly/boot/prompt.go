@@ -2,7 +2,6 @@ package boot
 
 import (
 	"context"
-	"errors"
 	"reasonix/internal/runtime/capability"
 	"runtime"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"reasonix/internal/ext/skill"
 	"reasonix/internal/platform/environment"
 	"reasonix/internal/runtime/outputstyle"
+	"reasonix/internal/runtime/persona"
 	"reasonix/internal/safety/sandbox"
 	"reasonix/internal/state/instruction"
 	"reasonix/internal/state/memory"
@@ -36,9 +36,10 @@ type promptAssembly struct {
 }
 
 // buildPromptAssembly resolves the base system prompt and folds in, in order,
-// the output style, core policies, workspace line, environment section, offline
-// note, memory, and the skill index. Order is the contract: it decides the
-// prefix bytes every turn reuses.
+// the persona prefix, output style, core policies, persona suffix, environment
+// section, offline note, memory, and the skill index.
+// Order is the contract: it decides the cache-stable prefix bytes every turn
+// reuses. Saving does not rebuild a runtime; the next build reads saved values.
 func buildPromptAssembly(ctx context.Context, opts Options, cfg *config.Config, root string, shell sandbox.Shell, sink event.Sink, timer *phaseTimer) (promptAssembly, error) {
 	sysPrompt, err := cfg.ResolveSystemPromptForRoot(root)
 	if err != nil {
@@ -51,6 +52,9 @@ func buildPromptAssembly(ctx context.Context, opts Options, cfg *config.Config, 
 		report(sink, event.Event{Level: event.LevelWarn, Text: err.Error() + "; falling back to inline/default system prompt"})
 		sysPrompt = cfg.InlineSystemPrompt()
 	}
+	// Persona edits enter the cache-stable prefix at the next runtime build.
+	p := persona.FromConfig(cfg.Agent.Persona)
+	sysPrompt = persona.ApplyPrefix(sysPrompt, p)
 	// Output style: fold the selected persona/tone block into the base prompt
 	// before language/memory/skills append, so a "replace" style (keep-coding
 	// false) still keeps those. Applied once, into the cache-stable prefix.
@@ -58,14 +62,21 @@ func buildPromptAssembly(ctx context.Context, opts Options, cfg *config.Config, 
 		sysPrompt = outputstyle.Apply(sysPrompt, st)
 	}
 	sysPrompt = appendCorePolicies(sysPrompt)
+	sysPrompt = persona.ApplySuffix(sysPrompt, p)
 	timer.mark("prompt")
 	// Role settings, the workspace path and its version control ride the per-turn
 	// transient blocks, so this prefix is identical for every project on the
 	// machine; per-project text added here would diverge every byte after it.
+
+	// The probe still runs when the persona withholds runtime context: its
+	// persisted snapshot keeps later boots stable. Only the section is dropped.
 	if cfg.EnvironmentEnabled() {
 		shellLabel := shell.Kind.String()
 		if strings.TrimSpace(cfg.Tools.Shell.Path) != "" {
 			shellLabel = shell.Path
+		}
+		if label := shell.Description(); label != "" {
+			shellLabel = label
 		}
 		envSection := environment.FormatSection(
 			environment.RunProbesWithOptions(ctx, environment.DefaultProbes(), environment.ProbeOptions{
@@ -80,23 +91,21 @@ func buildPromptAssembly(ctx context.Context, opts Options, cfg *config.Config, 
 			shellLabel,
 			cfg.Environment.Tools,
 		)
-		if envSection != "" {
+		if envSection != "" && p.IncludeRuntimeContext {
 			sysPrompt += "\n\n" + envSection
 		}
 	}
 	timer.mark("environment")
-	sysPrompt = appendOfflineEnvironmentNote(sysPrompt, cfg.Environment.Offline)
+	if p.IncludeRuntimeContext {
+		sysPrompt = appendOfflineEnvironmentNote(sysPrompt, cfg.Environment.Offline)
+	}
 
 	// Memory folds in exactly here, once, becoming part of the durable prefix,
 	// so it costs nothing per turn. Mid-session changes ride the controller's
 	// transient turn-injection and fold in on the next session instead.
 	if !continuesGeneration(opts) {
-		if _, err := memory.StoreFor(opts.roots().MemoryUserDir(), root).MigrateV2WithVersion(opts.Version); err != nil {
-			ev := event.Event{Level: event.LevelWarn, Text: "Memory metadata migration did not complete.", Detail: err.Error()}
-			var backupErr *memory.MigrationBackupError
-			if errors.As(err, &backupErr) {
-				ev.Code = event.NoticeCodeMemoryMigrationBackup
-			}
+		migration, err := memory.StoreFor(opts.roots().MemoryUserDir(), root).MigrateV2WithVersion(opts.Version)
+		if ev, warn := memoryMigrationWarning(migration, err); warn {
 			report(sink, ev)
 		}
 	}

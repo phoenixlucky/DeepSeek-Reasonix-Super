@@ -164,6 +164,24 @@ func assertNoContractLeak(t *testing.T, got, want string) {
 	}
 }
 
+// The appended cut is a byte-exact suffix match, so a complete block the person
+// quotes at the end of their own turn is indistinguishable from a host-appended
+// one and is stripped. Prose that only names the tag keeps it.
+func TestUserSaidTextQuotedExecutionPolicy(t *testing.T) {
+	inSentence := `we log "<execution-policy>" when the preset changes, why?`
+	if got := UserSaidText(inSentence); got != inSentence {
+		t.Fatalf("UserSaidText mangled prose that names the tag: %q", got)
+	}
+	quoted := "explain this markup:\n<execution-policy preset=\"delivery\" version=\"3\">\nverify=full\n</execution-policy>"
+	const want = "explain this markup:"
+	if got := UserSaidText(quoted); got != want {
+		t.Fatalf("UserSaidText = %q, want %q (the suffix rule cannot tell a quoted block from an appended one)", got, want)
+	}
+	if got := UserMessageText(provider.Message{Role: provider.RoleUser, RawContent: quoted}); got != want {
+		t.Fatalf("UserMessageText = %q, want the same %q recall has always returned", got, want)
+	}
+}
+
 // mcContract builds a <memory-compiler-execution> block whose
 // planner_ir.source_event is the given text, matching the real contract shape.
 func mcContract(t *testing.T, sourceEvent string) string {

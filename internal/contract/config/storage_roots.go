@@ -71,7 +71,7 @@ func storageRootTable() []storageRoot {
 			{id: RootCache, env: "REASONIX_CACHE_HOME", relocatable: true, fallback: Roots.defaultCacheDir},
 			{id: RootWorktrees, env: "", relocatable: true, fallback: Roots.defaultWorktreeDir},
 			{id: RootLocks, env: "", relocatable: false, fallback: Roots.defaultLocksDir,
-				owns: []string{"workspace-leases", "repair-mutation-locks"}},
+				owns: []string{"workspace-leases", "repair-mutation-locks", "memory-store-locks"}},
 		}
 	})
 	return rootsTable
@@ -173,7 +173,8 @@ func RootIDs() []RootID {
 // state-root guard test fails on a joined path this list does not name.
 var StateRootEntries = []string{
 	"sessions", "archive", "stats", "projects", "appearance", "themes", "repair",
-	"serve-workspaces.json", "memory", "schedules", "trusted", "machine-id.key", "mcp-global-migration-v1", "commands",
+	"serve-workspaces.json", "memory", "schedules", "peers", "trusted", "machine-id.key", "mcp-global-migration-v1", "commands", "rules",
+	"agent-presets", "sandbox",
 	"REASONIX.md", "AGENTS.md", "CLAUDE.md", "REASONIX.local.md", "AGENTS.local.md", "CLAUDE.local.md",
 }
 

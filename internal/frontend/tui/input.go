@@ -23,7 +23,9 @@ const (
 
 var imageToken = regexp.MustCompile(`\[image #(\d+)\]`)
 
-type pasteBlock struct{ label, text string }
+// pointer is set once the text is kept as a file: the message then carries the
+// pointer, not the text.
+type pasteBlock struct{ label, text, pointer string }
 
 type pasteStore struct {
 	next   int
@@ -76,7 +78,7 @@ func (p *pasteStore) seed(history []HistoryMessage) {
 	}
 }
 
-var foldedLabel = regexp.MustCompile(`\[Pasted text #(\d+) · \d+ lines\]`)
+var foldedLabel = regexp.MustCompile(`\[Pasted (?:text|file) #(\d+) · \d+ lines\]`)
 
 // expand replaces each label with the block 1.x sends: the label, then the
 // text between Begin and End markers that name it.
@@ -89,7 +91,9 @@ func (p *pasteStore) expand(s string) string {
 		return tok
 	})
 	for _, b := range p.blocks {
-		if strings.Contains(s, b.label) {
+		if strings.Contains(s, b.label) && b.pointer != "" {
+			s = strings.ReplaceAll(s, b.label, b.label+"\n\n"+strings.TrimSpace(b.pointer))
+		} else if strings.Contains(s, b.label) {
 			s = strings.ReplaceAll(s, b.label, fmt.Sprintf("%s\n\n--- Begin %s ---\n%s\n--- End %s ---", b.label, b.label, b.text, b.label))
 		}
 	}
@@ -98,16 +102,24 @@ func (p *pasteStore) expand(s string) string {
 
 // insertPaste puts pasted text in the composer, folded unless a panel is
 // taking the keys: what is typed into one is an answer, not a message.
-func (m *model) insertPaste(text string) {
+func (m *model) insertPaste(text string) tea.Cmd {
+	if m.mcpPaste(text) {
+		return nil
+	}
 	if m.setup != nil {
 		m.pasteIntoSetup(text)
-		return
+		return nil
 	}
 	if m.tr.OpenPrompt() != nil || m.picker != nil || m.skills != nil || m.quick != nil || m.mcp != nil || m.rewind != nil || m.copying != nil || m.clearing != nil {
 		m.composer.InsertString(text)
-		return
+		return nil
 	}
-	m.composer.InsertString(m.pastes.fold(text))
+	shown := m.pastes.fold(text)
+	m.composer.InsertString(shown)
+	if shown != text {
+		return m.showFlash(i18n.M.PasteKeepHint)
+	}
+	return nil
 }
 
 func (m *model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -118,6 +130,9 @@ func (m *model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	if cmd, handled := m.menuKey(msg.String()); handled {
+		return m, cmd
+	}
+	if cmd, handled := m.queueKey(msg.String()); handled {
 		return m, cmd
 	}
 	if cmd, handled := m.viKey(msg); handled {
@@ -211,6 +226,8 @@ func (m *model) shortcutKey(k string) (tea.Cmd, bool) {
 		return m.clearDisplay(), true
 	case k == "ctrl+z":
 		return tea.Suspend, true
+	case k == "ctrl+g":
+		return m.keepFoldedPastes(), true
 	case imagePasteKey(k):
 		return m.pasteClipboard(), true
 	case k == "shift+insert":

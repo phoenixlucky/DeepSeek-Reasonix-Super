@@ -160,6 +160,11 @@ func TestEveryNoopVerdictIsReachable(t *testing.T) {
 // into the body. The window is the variable that decides how far it reaches.
 func windowedFoldFixture(t *testing.T, window int) *Agent {
 	t.Helper()
+	return windowedFoldFixtureWith(t, window, &fakeProvider{reply: "digest"})
+}
+
+func windowedFoldFixtureWith(t *testing.T, window int, prov *fakeProvider) *Agent {
+	t.Helper()
 	sess := &sessionstore.Session{Messages: []provider.Message{
 		{Role: provider.RoleSystem, Content: "system"},
 		{Role: provider.RoleUser, Content: "long-running task"},
@@ -170,7 +175,7 @@ func windowedFoldFixture(t *testing.T, window int) *Agent {
 			provider.Message{Role: provider.RoleAssistant, Content: "step " + string(rune('a'+i%26))},
 			provider.Message{Role: provider.RoleUser, Content: body})
 	}
-	return New(&fakeProvider{reply: "digest"}, tool.NewRegistry(), sess, Options{
+	return New(prov, tool.NewRegistry(), sess, Options{
 		ContextWindow: window, CompactRatio: 0.85, RecentKeep: 2,
 		ArchiveDir: testenv.TempDir(t),
 	}, &recordSink{})

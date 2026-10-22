@@ -95,4 +95,47 @@ describe("committing the staged changes", () => {
     expect(r.container.querySelector('[role="alert"]')?.textContent).toMatch(/暂存区/);
     expect((r.container.querySelector("textarea") as HTMLTextAreaElement).value).toBe("feat: add x");
   });
+
+  it("keeps a failed draft usable: the staged set stays, the reason is said, and a typed message commits it", async () => {
+    const failed = proposal({ message: "", draftFailure: "model_failed" });
+    const { container, act, port, onCommitted } = draw(failed);
+    fireEvent.click(act("commit.draft"));
+    await waitFor(() => expect(container.querySelector("textarea")).not.toBeNull());
+    expect(container.querySelector('[data-phase="ready"]')).not.toBeNull();
+    expect(container.querySelector(".commit-files")?.textContent).toMatch(/x\.go/);
+    expect(container.querySelector('[data-draft="model_failed"]')?.textContent).toMatch(/手动填写/);
+    const box = container.querySelector("textarea") as HTMLTextAreaElement;
+    expect(box.value).toBe("");
+    expect(document.activeElement).toBe(box);
+    expect(act("commit.confirm").disabled).toBe(true);
+    expect(act("commit.draft")).not.toBeNull();
+
+    fireEvent.change(box, { target: { value: "fix: by hand" } });
+    expect(act("commit.confirm").disabled).toBe(false);
+    fireEvent.click(act("commit.confirm"));
+    await waitFor(() => expect(container.querySelector('[data-phase="done"]')).not.toBeNull());
+    expect(port.commitStaged).toHaveBeenCalledWith({ message: "fix: by hand", fingerprint: "fp1", acknowledgeSecrets: false });
+    expect(onCommitted).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["no_model", "timeout", "no_answer"] as const)("names the %s reason without a sentence from the kernel", async (code) => {
+    const { container, act } = draw(proposal({ message: "", draftFailure: code }));
+    fireEvent.click(act("commit.draft"));
+    await waitFor(() => expect(container.querySelector(`[data-draft="${code}"]`)).not.toBeNull());
+  });
+
+  it("still holds the secrets acknowledgement on the manual path", async () => {
+    const { container, act } = draw(proposal({ message: "", draftFailure: "no_answer", files: [{ path: ".env", status: "A", sensitive: true }] }));
+    fireEvent.click(act("commit.draft"));
+    await waitFor(() => expect(container.querySelector(".commit-warn")).not.toBeNull());
+    fireEvent.change(container.querySelector("textarea") as HTMLTextAreaElement, { target: { value: "chore: env" } });
+    expect(act("commit.confirm").disabled).toBe(true);
+  });
+
+  it("a draft that succeeds carries no failure note", async () => {
+    const { container, act } = draw(proposal());
+    fireEvent.click(act("commit.draft"));
+    await waitFor(() => expect(container.querySelector("textarea")).not.toBeNull());
+    expect(container.querySelector("[data-draft]")).toBeNull();
+  });
 });

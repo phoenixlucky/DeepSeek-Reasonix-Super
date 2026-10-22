@@ -191,6 +191,10 @@ func modernRequestHeaders(ctx context.Context, method string, params any) http.H
 		if name, ok := p["name"].(string); ok {
 			h.Set("Mcp-Name", encodeHeaderValue(name))
 		}
+	case "tasks/get", "tasks/update", "tasks/cancel":
+		if id, ok := p["taskId"].(string); ok {
+			h.Set("Mcp-Name", encodeHeaderValue(id))
+		}
 	case "resources/read":
 		if uri, ok := p["uri"].(string); ok {
 			h.Set("Mcp-Name", encodeHeaderValue(uri))

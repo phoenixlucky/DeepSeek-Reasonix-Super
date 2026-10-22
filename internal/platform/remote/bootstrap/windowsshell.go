@@ -23,7 +23,7 @@ func (windowsShell) Executable() string { return "reasonix.exe" }
 // Home does not ask the shell: OpenSSH on Windows will not resolve ~, but
 // every SFTP session starts in the user's directory, so the file layer's own
 // idea of "." answers the same question without a second command.
-func (windowsShell) Home(ctx context.Context, _ Conn, fs *sftpfs.FS) (string, error) {
+func (windowsShell) Home(ctx context.Context, _ Conn, fs sftpfs.Files) (string, error) {
 	home, err := fs.RealPath(ctx, ".")
 	if err != nil {
 		return "", fmt.Errorf("bootstrap: resolve remote home: %w", err)
@@ -86,20 +86,24 @@ func (windowsShell) Paths(home, workspace string) StatePaths {
 	return pathsFor(toSFTPPath(home), toSFTPPath(workspace))
 }
 
-func (windowsShell) Launch(spec LaunchSpec, p StatePaths) string {
-	// The serve runs under a second PowerShell, reached the same encoded way,
-	// so its own arguments never pass through a round of shell parsing.
+func (windowsShell) LaunchScript(spec LaunchSpec, p StatePaths) (string, []byte) {
 	inner := "& " + psQuote(toShellPath(spec.Bin)) + " serve --addr 127.0.0.1:0 --auth token" +
 		" --token-file " + psQuote(toShellPath(p.TokenFile)) +
 		" --port-file " + psQuote(toShellPath(p.PortFile)) +
 		" --pid-file " + psQuote(toShellPath(p.PidFile)) +
 		windowsBrokerArgs(spec, p) +
 		" *>> " + psQuote(toShellPath(p.LogFile))
+	// Windows PowerShell 5.1 needs a BOM to read non-ASCII paths as UTF-8.
+	script := "\ufefftry {\r\n" + inner + "\r\nexit $LASTEXITCODE\r\n} catch {\r\n" +
+		"$_ | Out-File -LiteralPath " + psQuote(toShellPath(p.LogFile)) + " -Append -Encoding utf8\r\nexit 1\r\n}\r\n"
+	return p.PortFile + ".ps1", []byte(script)
+}
 
+func (windowsShell) Launch(spec LaunchSpec, p StatePaths) string {
 	// OpenSSH ends a session's children with the session, Start-Process included
 	// — a serve launched that way was gone before its port file appeared. What
 	// the WMI service creates has no such parent; this is the setsid of here.
-	launch := "powershell -NoProfile -NonInteractive -EncodedCommand " + encodePS(inner)
+	launch := "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + toShellPath(p.PortFile+".ps1") + "\""
 	outer := strings.Join([]string{
 		"$ErrorActionPreference='Stop'",
 		"New-Item -ItemType Directory -Force -Path " + psQuote(toShellPath(p.Dir)) + " | Out-Null",

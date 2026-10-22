@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"reasonix/internal/base/nilutil"
+	"reasonix/internal/contract/agentcomposition"
 )
 
 // Role is the role of a message.
@@ -39,7 +40,8 @@ const (
 
 // Message is a single conversation message.
 type Message struct {
-	Role Role `json:"role"`
+	AgentComposition *agentcomposition.Binding `json:"agent_composition,omitempty"`
+	Role             Role                      `json:"role"`
 	// Content is the provider-visible conversation content. Keeping this legacy
 	// field provider-visible preserves replay for older CLI/Desktop releases.
 	Content string `json:"content,omitempty"`
@@ -53,6 +55,11 @@ type Message struct {
 	// builds. Loaders migrate it into Content/RawContent before normal use.
 	ProviderContent string   `json:"provider_content,omitempty"`
 	Images          []string `json:"images,omitempty"` // data URLs (data:<mime>;base64,…) on user (attachments) and tool (MCP image results) messages; embedded only for vision-capable models
+	// Videos are references to video files for the model to watch natively; the
+	// bytes are read per request, and only the one before the model answers.
+	Videos []VideoRef `json:"videos,omitempty"`
+	// VideoParts are Videos resolved for one request. Never stored.
+	VideoParts []VideoPart `json:"-"`
 	// UnavailableImages are images this message holds whose stored bytes the
 	// session store could not read back. Host-owned: ModelMessages says so to
 	// the model, and a stored copy that reappears restores the image.
@@ -167,9 +174,10 @@ type MemoryCitation struct {
 
 // ToolCall is a tool invocation requested by the model. Arguments is raw JSON.
 type ToolCall struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
+	ID                    string                 `json:"id"`
+	Name                  string                 `json:"name"`
+	Arguments             string                 `json:"arguments"`
+	ArgumentNormalization *ArgumentNormalization `json:"argument_normalization,omitempty"`
 	// ThoughtSignature is an opaque Gemini-issued proof attached to a function
 	// call. OpenAI-compatible Gemini endpoints require it on message replay.
 	ThoughtSignature string `json:"thought_signature,omitempty"`

@@ -30,9 +30,10 @@ func TestCompactRatioHelpAndDocsUseConfigBounds(t *testing.T) {
 func TestParseCLICompactRatioMatchesConfig(t *testing.T) {
 	for _, value := range []string{"0", "0.5", "1", "100", "99.9", "0.05", "50", "abc", "", "70%", "-1", "NaN", "+Inf", "-Inf", " 50 "} {
 		t.Run(value, func(t *testing.T) {
-			percent, parseErr := strconv.ParseFloat(strings.TrimSpace(value), 64)
+			_, parseErr := strconv.ParseFloat(strings.TrimSpace(value), 64)
 			cfg := config.Default()
-			valid := parseErr == nil && cfg.SetCompactRatio(percent/100) == nil
+			typedRatio, _ := strconv.ParseFloat(strings.TrimSpace(value)+"e-2", 64)
+			valid := parseErr == nil && cfg.SetCompactRatio(typedRatio) == nil
 			ratio, err := parseCLICompactRatio(value)
 			if (err == nil) != valid {
 				t.Fatalf("parse error = %v, config valid = %v", err, valid)
@@ -95,7 +96,7 @@ func TestCompactRatioMatchesConfigAndPreservesNeighbours(t *testing.T) {
 					return
 				}
 				cfg := config.LoadForEdit(path)
-				if cfg.Agent.CompactRatio != percent/100 || cfg.Agent.Temperature != 0.42 {
+				if typed, _ := strconv.ParseFloat(value+"e-2", 64); cfg.Agent.CompactRatio != typed || cfg.Agent.Temperature != 0.42 {
 					t.Fatalf("saved ratio/temperature = %v/%v", cfg.Agent.CompactRatio, cfg.Agent.Temperature)
 				}
 				out := captureStdout(t, func() {
@@ -107,6 +108,28 @@ func TestCompactRatioMatchesConfigAndPreservesNeighbours(t *testing.T) {
 					t.Fatalf("query = %q", out)
 				}
 			})
+		}
+	}
+}
+
+func TestParseCLICompactRatioRefusesHugeExponentsWithoutBuildingThem(t *testing.T) {
+	for _, value := range []string{"1e999999999", "1e-999999999", "9e99999999999"} {
+		if _, err := parseCLICompactRatio(value); err == nil {
+			t.Fatalf("%q was accepted", value)
+		}
+	}
+}
+
+func TestParseCLICompactRatioKeepsTheDecimalTyped(t *testing.T) {
+	for value, want := range map[string]string{
+		"12.3": "0.123", "33.3": "0.333", "66.6": "0.666", "87.65": "0.8765", "99.9": "0.999", "0.1": "0.001", "50": "0.5", " 7.25 ": "0.0725", "1e1": "0.1",
+	} {
+		ratio, err := parseCLICompactRatio(value)
+		if err != nil {
+			t.Fatalf("%q: %v", value, err)
+		}
+		if got := strconv.FormatFloat(ratio, 'f', -1, 64); got != want {
+			t.Fatalf("%q -> %s, want %s", value, got, want)
 		}
 	}
 }

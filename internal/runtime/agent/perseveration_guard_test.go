@@ -663,3 +663,75 @@ func TestPerseverationStrikesResetPerRun(t *testing.T) {
 		t.Fatalf("provider requests = %d, want 4 (two runs, one retry each)", got)
 	}
 }
+
+// degenerateFragments is the vocabulary a real degraded stream collapsed to
+// (report FB-FSQH-2XJE): a handful of tiny sentences, in no fixed order, each
+// on a line of its own. No block of it repeats byte for byte, so periodicity
+// never sees it.
+var degenerateFragments = []string{
+	"go.", "End.", "I will.", "OK.", "Now.", "I wait.", "I produce the calls.",
+	"End now.", "I wait the tool calls now.", "I wait.", "go.", "Done.",
+}
+
+// degenerateStream is n fragments in a fixed pseudo-random order, so the test is
+// deterministic and no window of it repeats exactly.
+func degenerateStream(n int) string {
+	var b strings.Builder
+	x := uint32(7)
+	for range n {
+		x = x*1664525 + 1013904223
+		b.WriteString(degenerateFragments[int(x>>16)%len(degenerateFragments)])
+		b.WriteString("\n\n")
+	}
+	return b.String()
+}
+
+func TestPerseverationGuardFiresWhenAStreamCollapsesToAFewTinyLines(t *testing.T) {
+	g := newPerseverationGuard()
+	stream := degenerateStream(400)
+	fired := -1
+	for i := 0; i < len(stream); i += 7 {
+		if feed(t, g, stream[i:min(i+7, len(stream))]) {
+			fired = i
+			break
+		}
+	}
+	if fired < 0 {
+		t.Fatal("guard never fired on a stream that collapsed to a dozen tiny lines")
+	}
+	if fired > 4*1024 {
+		t.Fatalf("guard fired only after %d bytes; the collapse is plain well before that", fired)
+	}
+	if feed(t, g, "go.\n\n") {
+		t.Fatal("guard fired more than once on one episode")
+	}
+}
+
+// What must not trip it: ordinary prose, lists whose lines differ, code, and a
+// short run of tiny lines that has not collapsed anything yet.
+func TestPerseverationGuardLeavesVariedOutputAlone(t *testing.T) {
+	var list, code, steps strings.Builder
+	for i := range 300 {
+		fmt.Fprintf(&list, "- item %d is its own thing\n", i)
+		fmt.Fprintf(&code, "\tcase %d:\n\t\treturn handle%d(ctx)\n", i, i)
+	}
+	for i := range 40 {
+		fmt.Fprintf(&steps, "step %d.\n\n", i%5)
+	}
+	cases := map[string]string{
+		"a long list of distinct items": list.String(),
+		"code with repeated closers":    code.String() + strings.Repeat("}\n", 30),
+		"prose":                         nonRepeatingText(8 * 1024),
+		"a short run of tiny lines":     degenerateStream(30),
+		"forty short numbered steps":    steps.String(),
+	}
+	for name, text := range cases {
+		g := newPerseverationGuard()
+		for i := 0; i < len(text); i += 64 {
+			if feed(t, g, text[i:min(i+64, len(text))]) {
+				t.Errorf("%s: the guard fired on output that is not a loop", name)
+				break
+			}
+		}
+	}
+}

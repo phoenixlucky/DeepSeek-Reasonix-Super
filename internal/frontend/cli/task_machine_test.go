@@ -202,3 +202,25 @@ func TestTaskMachineRejectsConflictingSessionSources(t *testing.T) {
 		t.Fatalf("response = %+v", response)
 	}
 }
+
+func TestTaskMachineRejectsADirThatIsNotThere(t *testing.T) {
+	installMachineTestIdentity(t)
+	dir := testenv.TempDir(t)
+	file := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, missing := range []string{filepath.Join(dir, "absent"), file} {
+		var out bytes.Buffer
+		if code := runTaskCommand([]string{"list", "--json", "--dir", missing}, &out); code != 2 {
+			t.Fatalf("exit code = %d, output = %s", code, out.String())
+		}
+		var response machineErrorResponse
+		if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if response.Error.Code != "invalid_argument" {
+			t.Fatalf("response = %+v", response)
+		}
+	}
+}

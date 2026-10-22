@@ -46,6 +46,7 @@ type SlashArg struct {
 // chat TUI (controller-free, from its cached lists) and the desktop (from the
 // controller). This keeps the CLI and desktop sub-command hints identical.
 type ArgData struct {
+	Compositions    []SlashItem
 	Skills          []skill.Skill
 	DisabledSkills  []skill.Skill
 	ServerNames     []string
@@ -77,6 +78,8 @@ func SlashArgItems(line string, d ArgData) ([]SlashItem, int) {
 	prior := strings.Fields(line[:from]) // committed tokens, including the command word
 	var raw []SlashItem
 	switch line[:cmdEnd] {
+	case "/agent":
+		raw = d.Compositions
 	case "/mcp":
 		raw = mcpArgItems(prior, cur, d)
 	case "/model":
@@ -116,12 +119,12 @@ func SlashArgItems(line string, d ArgData) ([]SlashItem, int) {
 func memoryArgItems(prior []string, d ArgData) []SlashItem {
 	if len(prior) <= 1 {
 		return []SlashItem{
-			{Label: "recall", Insert: "recall", Hint: "show the latest automatic recall decision"},
-			{Label: "revisions", Insert: "revisions ", Hint: "show revision history", Descend: true},
-			{Label: "restore", Insert: "restore ", Hint: "restore an older revision", Descend: true},
-			{Label: "archived", Insert: "archived", Hint: "show archived facts"},
-			{Label: "recover", Insert: "recover ", Hint: "recover an archived fact", Descend: true},
-			{Label: "instructions", Insert: "instructions", Hint: "show precedence, imports, and diagnostics"},
+			{Label: "recall", Insert: "recall", Hint: i18n.M.ArgMemoryRecall},
+			{Label: "revisions", Insert: "revisions ", Hint: i18n.M.ArgMemoryRevisions, Descend: true},
+			{Label: "restore", Insert: "restore ", Hint: i18n.M.ArgMemoryRestore, Descend: true},
+			{Label: "archived", Insert: "archived", Hint: i18n.M.ArgMemoryArchived},
+			{Label: "recover", Insert: "recover ", Hint: i18n.M.ArgMemoryRecover, Descend: true},
+			{Label: "instructions", Insert: "instructions", Hint: i18n.M.ArgMemoryInstructions},
 		}
 	}
 	switch prior[1] {
@@ -152,10 +155,10 @@ func goalArgItems(prior []string) []SlashItem {
 		return nil
 	}
 	return []SlashItem{
-		{Label: "status", Insert: "status", Hint: "show active goal and budget runtime"},
-		{Label: "pause", Insert: "pause", Hint: "pause the running goal (keeps all state)"},
-		{Label: "resume", Insert: "resume", Hint: "resume a paused goal (adds one turn slice)"},
-		{Label: "clear", Insert: "clear", Hint: "stop goal mode"},
+		{Label: "status", Insert: "status", Hint: i18n.M.ArgGoalStatus},
+		{Label: "pause", Insert: "pause", Hint: i18n.M.ArgGoalPause},
+		{Label: "resume", Insert: "resume", Hint: i18n.M.ArgGoalResume},
+		{Label: "clear", Insert: "clear", Hint: i18n.M.ArgGoalClear},
 	}
 }
 
@@ -164,9 +167,9 @@ func reasoningLanguageArgItems(prior []string) []SlashItem {
 		return nil
 	}
 	return []SlashItem{
-		{Label: "auto", Insert: "auto", Hint: "follow conversation language"},
-		{Label: "zh", Insert: "zh", Hint: "prefer Chinese visible reasoning"},
-		{Label: "en", Insert: "en", Hint: "prefer English visible reasoning"},
+		{Label: "auto", Insert: "auto", Hint: i18n.M.ArgReasoningAuto},
+		{Label: "zh", Insert: "zh", Hint: i18n.M.ArgReasoningZh},
+		{Label: "en", Insert: "en", Hint: i18n.M.ArgReasoningEn},
 	}
 }
 
@@ -186,9 +189,9 @@ func currencyArgItems(prior []string) []SlashItem {
 		return nil
 	}
 	return []SlashItem{
-		{Label: "auto", Insert: "auto", Hint: "follow the resolved CLI locale"},
-		{Label: "CNY", Insert: "CNY", Hint: "Chinese yuan pricing"},
-		{Label: "USD", Insert: "USD", Hint: "US dollar pricing"},
+		{Label: "auto", Insert: "auto", Hint: i18n.M.ArgCurrencyAuto},
+		{Label: "CNY", Insert: "CNY", Hint: i18n.M.ArgCurrencyCNY},
+		{Label: "USD", Insert: "USD", Hint: i18n.M.ArgCurrencyUSD},
 	}
 }
 
@@ -197,23 +200,24 @@ func themeArgItems(prior []string) []SlashItem {
 		return nil
 	}
 	items := []SlashItem{
-		{Label: "auto", Insert: "auto", Hint: "mode · detect system or terminal background"},
-		{Label: "light", Insert: "light", Hint: "mode · force light shell"},
-		{Label: "dark", Insert: "dark", Hint: "mode · force dark shell"},
+		{Label: "auto", Insert: "auto", Hint: i18n.M.ArgThemeAuto},
+		{Label: "light", Insert: "light", Hint: i18n.M.ArgThemeLight},
+		{Label: "dark", Insert: "dark", Hint: i18n.M.ArgThemeDark},
 	}
+	dark, light := i18n.M.ArgThemeModeDark, i18n.M.ArgThemeModeLight
 	for _, st := range []struct {
 		name string
 		mode string
 		desc string
 	}{
-		{"graphite", "dark", "warm clay accent"},
-		{"ember", "dark", "hot orange accent"},
-		{"aurora", "dark", "cool teal accent"},
-		{"midnight", "dark", "quiet violet accent"},
-		{"sandstone", "light", "default warm light accent"},
-		{"porcelain", "light", "soft violet light accent"},
-		{"linen", "light", "muted coral light accent"},
-		{"glacier", "light", "cool blue accent"},
+		{"graphite", dark, i18n.M.ArgThemeGraphite},
+		{"ember", dark, i18n.M.ArgThemeEmber},
+		{"aurora", dark, i18n.M.ArgThemeAurora},
+		{"midnight", dark, i18n.M.ArgThemeMidnight},
+		{"sandstone", light, i18n.M.ArgThemeSandstone},
+		{"porcelain", light, i18n.M.ArgThemePorcelain},
+		{"linen", light, i18n.M.ArgThemeLinen},
+		{"glacier", light, i18n.M.ArgThemeGlacier},
 	} {
 		items = append(items, SlashItem{Label: st.name, Insert: st.name, Hint: st.mode + " · " + st.desc})
 	}
@@ -276,11 +280,11 @@ func mcpArgItems(prior []string, cur string, d ArgData) []SlashItem {
 	if len(prior) <= 1 {
 		return []SlashItem{
 			{Label: "add", Insert: "add ", Hint: i18n.M.ArgMcpAdd, Descend: true},
-			{Label: "connect", Insert: "connect ", Hint: "connect a configured MCP server", Descend: true},
-			{Label: "show", Insert: "show ", Hint: "show MCP server details", Descend: true},
-			{Label: "tools", Insert: "tools ", Hint: "show MCP server tools", Descend: true},
+			{Label: "connect", Insert: "connect ", Hint: i18n.M.ArgMcpConnect, Descend: true},
+			{Label: "show", Insert: "show ", Hint: i18n.M.ArgMcpShow, Descend: true},
+			{Label: "tools", Insert: "tools ", Hint: i18n.M.ArgMcpTools, Descend: true},
 			{Label: "remove", Insert: "remove ", Hint: i18n.M.ArgMcpRemove, Descend: true},
-			{Label: "import", Insert: "import", Hint: "import MCP servers from cc-switch"},
+			{Label: "import", Insert: "import", Hint: i18n.M.ArgMcpImport},
 		}
 	}
 	switch prior[1] {
@@ -308,16 +312,16 @@ func mcpArgItems(prior []string, cur string, d ArgData) []SlashItem {
 		}
 		var items []SlashItem
 		for _, name := range d.DisconnectedMCP {
-			items = append(items, SlashItem{Label: name, Insert: name, Hint: "configured"})
+			items = append(items, SlashItem{Label: name, Insert: name, Hint: i18n.M.ArgMcpConfigured})
 		}
 		return items
 	case "add":
 		if strings.HasPrefix(cur, "-") {
 			return []SlashItem{
-				{Label: "--http", Insert: "--http ", Hint: "Streamable HTTP URL"},
-				{Label: "--sse", Insert: "--sse ", Hint: "legacy SSE URL"},
-				{Label: "--env", Insert: "--env ", Hint: "KEY=VALUE (stdio)"},
-				{Label: "--header", Insert: "--header ", Hint: "KEY=VALUE (remote)"},
+				{Label: "--http", Insert: "--http ", Hint: i18n.M.ArgMcpHTTP},
+				{Label: "--sse", Insert: "--sse ", Hint: i18n.M.ArgMcpSSE},
+				{Label: "--env", Insert: "--env ", Hint: i18n.M.ArgMcpEnv},
+				{Label: "--header", Insert: "--header ", Hint: i18n.M.ArgMcpHeader},
 			}
 		}
 	}
@@ -373,8 +377,8 @@ func skillArgItems(prior []string, d ArgData) []SlashItem {
 	if len(prior) <= 1 {
 		return []SlashItem{
 			{Label: "show", Insert: "show ", Hint: i18n.M.ArgSkillShow, Descend: true},
-			{Label: "enable", Insert: "enable ", Hint: "enable a disabled skill", Descend: true},
-			{Label: "disable", Insert: "disable ", Hint: "disable an enabled skill", Descend: true},
+			{Label: "enable", Insert: "enable ", Hint: i18n.M.ArgSkillEnable, Descend: true},
+			{Label: "disable", Insert: "disable ", Hint: i18n.M.ArgSkillDisable, Descend: true},
 			{Label: "new", Insert: "new ", Hint: i18n.M.ArgSkillNew},
 			{Label: "paths", Insert: "paths", Hint: i18n.M.ArgSkillPaths},
 		}
@@ -406,7 +410,7 @@ func skillArgItems(prior []string, d ArgData) []SlashItem {
 func pluginArgItems(prior []string, d ArgData) []SlashItem {
 	if len(prior) <= 1 {
 		return []SlashItem{
-			{Label: "show", Insert: "show ", Hint: "show plugin capabilities and usage", Descend: true},
+			{Label: "show", Insert: "show ", Hint: i18n.M.ArgPluginShow, Descend: true},
 		}
 	}
 	if (prior[1] == "show" || prior[1] == "cat") && len(prior) == 2 {
@@ -460,8 +464,8 @@ func (c *Controller) managementNotice(trimmed string) bool {
 		return false
 	}
 	switch fields[0] {
-	case "/model":
-		c.notice(c.modelListText())
+	case "/agent", "/model":
+		c.compositionOrModelNotice(fields)
 	case "/preset", "/work-mode", "/profile":
 		c.presetNotice(fields)
 	case "/remote":
@@ -475,8 +479,8 @@ func (c *Controller) managementNotice(trimmed string) bool {
 	case "/memory":
 		args := strings.TrimSpace(strings.TrimPrefix(trimmed, fields[0]))
 		c.notice(MemoryCommandText(c, args))
-	case "/feedback":
-		c.feedbackCommand(strings.TrimSpace(strings.TrimPrefix(trimmed, fields[0])))
+	case "/feedback", "/peer", "/peers":
+		c.argumentCommand(fields[0], strings.TrimSpace(strings.TrimPrefix(trimmed, fields[0])))
 	case "/migrate", "/migration":
 		args := strings.TrimSpace(strings.TrimPrefix(trimmed, fields[0]))
 		migration.RunLegacyRescueCommand(args, c.sink)

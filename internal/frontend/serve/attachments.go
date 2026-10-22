@@ -17,8 +17,8 @@ import (
 // Bytes ride into a turn as path references, exactly as the CLI's do. This is
 // the door for a client that has bytes and no path: a browser tab, and the
 // clipboard everywhere. A window that knows the path uses POST /drop and copies
-// nothing. JSON rather than raw bytes because csrfGuard admits nothing else.
-// control enforces the real per-kind limit once these are decoded.
+// nothing. This legacy JSON endpoint remains bounded; /attachments/upload
+// streams files without aggregating their bytes in memory.
 const maxAttachmentUpload = 25 << 20
 
 // attachmentBytes takes the bytes from whichever half the client had. A desktop
@@ -70,11 +70,19 @@ func (e *attachmentRefusal) Error() string { return e.err.Error() }
 func refuseAttachment(w http.ResponseWriter, name string, err error) {
 	var pre *attachmentRefusal
 	var bad *control.AttachmentError
+	var streamLimit *control.AttachmentStreamLimitError
 	switch {
+	case errors.As(err, &streamLimit):
+		refuse(w, http.StatusRequestEntityTooLarge, "attachment.too_large", err.Error(), map[string]any{
+			"limit_bytes": streamLimit.LimitBytes, "limit_source": streamLimit.LimitSource,
+			"limit_mb": float64(streamLimit.LimitBytes) / (1 << 20),
+		})
 	case errors.Is(err, errBadAttachmentData):
 		badBody(w)
 	case errors.As(err, &pre):
 		refuse(w, pre.status, pre.code, pre.err.Error(), pre.params)
+	case errors.Is(err, control.ErrAttachmentNotText):
+		refuse(w, http.StatusUnsupportedMediaType, "attachment.not_text", err.Error(), nil)
 	case errors.Is(err, control.ErrAttachmentEmpty):
 		refuse(w, http.StatusBadRequest, "attachment.empty", err.Error(), nil)
 	case errors.As(err, &bad) && errors.Is(err, control.ErrAttachmentTooLarge):
@@ -94,9 +102,24 @@ func refuseAttachment(w http.ResponseWriter, name string, err error) {
 	}
 }
 
+// keepText stores a paste a person chose to keep out of the conversation and
+// answers with the pointer that stands in for it. There is no "@" reference:
+// the turn parser would expand that into the file's head and undo the saving.
+func (s *Server) keepText(w http.ResponseWriter, root, text string) {
+	saved, err := control.SaveTextAttachmentInRoot(root, text)
+	if err != nil {
+		refuseAttachment(w, "", err)
+		return
+	}
+	writeJSON(w, map[string]any{"path": saved, "pointer": control.TextAttachmentPointer(saved, text)})
+}
+
 func (s *Server) attachments(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, (maxAttachmentUpload/3)*4+1024)
 	var body struct {
+		// Kind "text" keeps a pasted text as a file: Text is the paste itself.
+		Kind string `json:"kind"`
+		Text string `json:"text"`
 		Mime string `json:"mime"`
 		// Name only supplies the extension the bytes are stored under; the
 		// stored name is generated either way.
@@ -113,12 +136,16 @@ func (s *Server) attachments(w http.ResponseWriter, r *http.Request) {
 		badBody(w)
 		return
 	}
+	root := s.ctl().WorkspaceRoot()
+	if body.Kind == "text" {
+		s.keepText(w, root, body.Text)
+		return
+	}
 	raw, err := attachmentBytes(body.Path, body.Data)
 	if err != nil {
 		refuseAttachment(w, body.Name, err)
 		return
 	}
-	root := s.ctl().WorkspaceRoot()
 	// The declared type picks the door, not the name: bytes claiming to be a
 	// picture must prove it, because a turn referencing them asks a model to
 	// look at them. Everything else is stored as the file it says it is.

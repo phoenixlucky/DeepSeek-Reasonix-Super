@@ -61,7 +61,7 @@ function draw(tree: TreeWorkspace[], paging: Partial<TreePaging> = {}) {
 describe("a workspace with more conversations than the kernel sent", () => {
   it("shows the true total beside the loaded count and every loaded row", () => {
     draw(workspace(50, 132));
-    expect(screen.getByText("50 / 132 会话")).toBeTruthy();
+    expect(screen.getByLabelText("50 / 132 会话")).toBeTruthy();
     expect(screen.getAllByText(/^chat \d+$/)).toHaveLength(50);
   });
 
@@ -70,7 +70,7 @@ describe("a workspace with more conversations than the kernel sent", () => {
     await userEvent.click(screen.getByRole("button", { name: "显示更多（还有 82 个）" }));
     expect(pager.more).toHaveBeenCalledWith("/w");
     relist(workspace(100, 132));
-    expect(screen.getByText("100 / 132 会话")).toBeTruthy();
+    expect(screen.getByLabelText("100 / 132 会话")).toBeTruthy();
     expect(screen.getByRole("button", { name: "显示更多（还有 32 个）" })).toBeTruthy();
   });
 
@@ -97,27 +97,27 @@ describe("a workspace with more conversations than the kernel sent", () => {
 
   it("offers nothing more, and a plain count, once everything is loaded", () => {
     draw(workspace(132, 132));
-    expect(screen.getByText("132 会话")).toBeTruthy();
+    expect(screen.getByLabelText("132 会话")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /显示更多/ })).toBeNull();
   });
 
   it("counts a kernel that sends no total as the rows it sent", () => {
     draw([{ root: "/w", name: "w", sessions: rows(7) }]);
-    expect(screen.getByText("7 会话")).toBeTruthy();
+    expect(screen.getByLabelText("7 会话")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /显示更多/ })).toBeNull();
   });
 
   it("leaves archived conversations out of the total the list is counted against", () => {
     draw(workspace(50, 132, 2, [3]));
-    expect(screen.getByText("49 / 130 会话")).toBeTruthy();
+    expect(screen.getByLabelText("49 / 130 会话")).toBeTruthy();
   });
 
   it("follows a delete: the total and the rows fall together", () => {
     const { relist } = draw(workspace(50, 132));
     relist(workspace(50, 131));
-    expect(screen.getByText("50 / 131 会话")).toBeTruthy();
+    expect(screen.getByLabelText("50 / 131 会话")).toBeTruthy();
     relist(workspace(49, 49));
-    expect(screen.getByText("49 会话")).toBeTruthy();
+    expect(screen.getByLabelText("49 会话")).toBeTruthy();
   });
 });
 

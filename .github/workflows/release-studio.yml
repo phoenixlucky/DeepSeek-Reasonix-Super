@@ -175,6 +175,9 @@ jobs:
           - platform: linux/amd64
             runner: ubuntu-22.04
             artifact: studio-build-linux-amd64
+          - platform: linux/arm64
+            runner: ubuntu-22.04-arm
+            artifact: studio-build-linux-arm64
     steps:
       # Real-time scanning inspects every file the job writes, and packaging
       # writes a quarter of a gigabyte twice. The runner is thrown away after
@@ -216,7 +219,16 @@ jobs:
       # not this shell's.
       - name: Install Linux packaging deps
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y fakeroot rpm
+        run: sudo apt-get update && sudo apt-get install -y fakeroot rpm cpio xvfb xauth policykit-1
+
+      # The fpm electron-builder carries is an x86_64 program, so on an ARM64
+      # runner the .deb and .rpm are built with one installed from RubyGems.
+      - name: Use a native fpm on ARM64 Linux
+        if: runner.os == 'Linux' && runner.arch == 'ARM64'
+        run: |
+          sudo apt-get install -y ruby ruby-dev build-essential
+          sudo gem install --no-document fpm -v 1.16.0
+          echo "USE_SYSTEM_FPM=true" >> "$GITHUB_ENV"
 
       # The same Developer ID and notary credentials the desktop line uses: one
       # certificate signs any bundle identifier its team owns, so Studio does not
@@ -359,6 +371,31 @@ jobs:
           app="$(cd ../.. && find dist -maxdepth 2 \( -name '*.app' -o -name '*-unpacked' \) | sort | head -1)"
           pnpm exec electron-builder --prepackaged "../../$app" $arch \
             -c.extraMetadata.version="${version#v}"
+
+      - name: Verify both Linux package formats
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          platform="${{ matrix.platform }}"
+          arch="${platform#linux/}"
+          bash scripts/verify-linux-package.sh "dist/ReasonixStudio-linux-$arch.deb" "dist/ReasonixStudio-linux-$arch.rpm" "$arch"
+
+      - name: Accept the installed Linux package
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          platform="${{ matrix.platform }}"
+          arch="${platform#linux/}"
+          version="${{ needs.resolve.outputs.version }}"
+          bash scripts/linux-install-smoke.sh "dist/ReasonixStudio-linux-$arch.deb" "$arch" "${version#v}"
+
+      - name: Verify the AppImage
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          platform="${{ matrix.platform }}"
+          arch="${platform#linux/}"
+          bash scripts/verify-linux-appimage.sh "dist/ReasonixStudio-linux-$arch.AppImage" "$arch"
 
       # With signing on, this leg only hands the bundle on: the signing jobs
       # run nothing but the signer, and windows-package packages in between.
@@ -871,12 +908,31 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # The page every archive carries beside the executable, built once here
+      # rather than once per target: serve.FindPage looks for
+      # frontend-next/dist next to the binary.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10
+          run_install: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: desktop/frontend-next/pnpm-lock.yaml
+
+      - name: Build the page
+        working-directory: desktop/frontend-next
+        run: pnpm install --frozen-lockfile && pnpm build
+
       # Every target the release line claims to support, from one runner: the
       # CLI is CGO-free, so none of them needs a toolchain of its own.
       - name: Cross-compile and archive
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
           SHA: ${{ needs.resolve.outputs.sha }}
+          PAGE_DIR: desktop/frontend-next/dist
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -888,11 +944,7 @@ jobs:
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
               -ldflags "-s -w -X main.version=$VERSION -X main.gitCommit=${SHA:0:12} -X main.buildTimeUTC=$built -X $pkg.linkedVersion=$VERSION -X $pkg.linkedRevision=$SHA" \
               -o "reasonix$ext" ./cmd/reasonix
-            if [ "$os" = windows ]; then
-              zip -qj "dist/reasonix-$os-$arch.zip" "reasonix$ext"
-            else
-              tar czf "dist/reasonix-$os-$arch.tar.gz" "reasonix$ext"
-            fi
+            scripts/package-cli-archive.sh "$os" "$arch" "reasonix$ext" "$PAGE_DIR" dist
             rm -f "reasonix$ext"
           done
           # The digest list the remote verifies against. Resolved on the
@@ -904,13 +956,7 @@ jobs:
       # A release that published the archives without the digest list is worse
       # than one that published neither: the routes resolve SHA256SUMS first.
       - name: Check the set is complete
-        run: |
-          set -euo pipefail
-          for want in reasonix-darwin-amd64.tar.gz reasonix-darwin-arm64.tar.gz \
-            reasonix-linux-amd64.tar.gz reasonix-linux-arm64.tar.gz \
-            reasonix-windows-amd64.zip reasonix-windows-arm64.zip SHA256SUMS; do
-            [ -f "dist/$want" ] || { echo "::error::no dist/$want"; exit 1; }
-          done
+        run: python3 scripts/check-cli-archives.py dist
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -985,6 +1031,11 @@ jobs:
         with:
           name: studio-build-linux-amd64
           path: staging/studio-build-linux-amd64
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: studio-build-linux-arm64
+          path: staging/studio-build-linux-arm64
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: needs.windows-sign-installer.result == 'success'
@@ -1068,34 +1119,7 @@ jobs:
           done < <(find staging/studio-* -type f -name 'ReasonixStudio-*' -print0
             find staging/cli-archives -type f -print0)
           ls -la dist
-          # Two Windows artifacts (installer, portable zip) per architecture,
-          # two per macOS architecture (dmg, zip) and the Linux .deb and .rpm. Fewer
-          # means an artifact was lost between jobs, and a partial release is
-          # worse than a failed one.
-          count=$(find dist -type f -name 'ReasonixStudio-*' | wc -l)
-          if [ "$count" -lt 10 ]; then
-            echo "::error::expected 10 artifacts (Windows installer + zip per architecture, macOS dmg + zip per architecture, Linux .deb and .rpm), found $count"
-            exit 1
-          fi
-          # Each platform's update channel, and there is exactly one per
-          # platform: dpkg on Linux, the next installer on Windows, and the
-          # bundle swapped out of the archive on macOS. Missing one degrades the
-          # release silently instead of failing it — it strands that platform on
-          # the version it is running.
-          # Each macOS architecture by name, not darwin-*: a glob passes on
-          # whichever one shipped, and the missing one is a platform left on
-          # the version it is running with nothing saying so.
-          # Each Windows architecture by name for the same reason: a glob passes
-          # on whichever installer shipped.
-          for required in 'ReasonixStudio-linux-*.deb' 'ReasonixStudio-linux-*.rpm' \
-            'ReasonixStudio-windows-amd64-installer.exe' 'ReasonixStudio-windows-arm64-installer.exe' \
-            'ReasonixStudio-windows-amd64.zip' 'ReasonixStudio-windows-arm64.zip' \
-            'ReasonixStudio-darwin-amd64.zip' 'ReasonixStudio-darwin-arm64.zip'; do
-            find dist -type f -name "$required" | grep -q . || {
-              echo "::error::no $required in the release; its packager did not run"
-              exit 1
-            }
-          done
+          bash scripts/verify-studio-artifacts.sh dist
 
       # The same minisign key the desktop line uses, because the public key that
       # verifies it is compiled into the client (update.PublicKey).
@@ -1183,7 +1207,7 @@ jobs:
           fi
           {
             printf '%s\n\n' '---'
-            printf "**macOS** 已用 Developer ID 签名并公证，打开时不需要清除隔离属性。%s**Linux** Debian 系从 \`.deb\` 安装，Fedora、RHEL、openSUSE 等从 \`.rpm\` 安装（\`sudo dnf install ./ReasonixStudio-linux-amd64.rpm\`）。\n\n" "$windows"
+            printf "**macOS** 已用 Developer ID 签名并公证，打开时不需要清除隔离属性。%s**Linux** Debian 系从 \`.deb\` 安装，Fedora、RHEL、openSUSE 等从 \`.rpm\` 安装（\`sudo dnf install ./ReasonixStudio-linux-amd64.rpm\`）。x86_64 用文件名带 amd64 的包，aarch64（统信 UOS、麒麟等）用带 arm64 的包。也提供 \`.AppImage\`（只提供下载，不会自更新；需要 FUSE 2，或用 \`--appimage-extract-and-run\` 启动）。\n\n" "$windows"
             printf "%s\n" "三个平台都能自更新：Linux 的 \`.deb\` 走自己的包（\`.rpm\` 的自更新尚未提供，请手动下载新包），Windows 运行下一个安装器，macOS 替换自身 bundle。"
           } >> "$notes"
           assets=()
@@ -1277,6 +1301,25 @@ jobs:
             --content-type "application/json; charset=utf-8" \
             --cache-control "public, max-age=300, stale-if-error=86400"
           echo "Studio catalog -> $VERSION"
+
+  website:
+    name: publish the Studio website changelog
+    needs: [resolve, publish]
+    if: github.repository == 'esengine/DeepSeek-Reasonix' && needs.resolve.outputs.candidate != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.workflow_sha }}
+      - name: Deploy and verify the website changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: bash scripts/publish-studio-changelog.sh
 
   # A CLI channel that moves while 1.x still publishes would have two lines
   # writing it, so every CLI job waits for this check. It runs no repository code.

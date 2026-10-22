@@ -232,6 +232,7 @@ func TestRemotePaneRefusesWithACodeWhenTheLinkIsDown(t *testing.T) {
 // and the far side's own words now.
 func TestAFarKernelThatRefusesSaysSoRatherThanLookingLikeADeadLink(t *testing.T) {
 	t.Setenv("REASONIX_HOME", testenv.TempDir(t))
+	saveTestRemoteHosts(t, "gpu-box")
 	far := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "workspace /srv/data/training is not a directory", http.StatusBadRequest)
 	}))
@@ -281,6 +282,7 @@ func TestAFarKernelThatRefusesSaysSoRatherThanLookingLikeADeadLink(t *testing.T)
 // the machine over there is a version behind. #9428.
 func TestAFarKernelWithNoPaneHubReadsAsAVersionBehind(t *testing.T) {
 	t.Setenv("REASONIX_HOME", testenv.TempDir(t))
+	saveTestRemoteHosts(t, "gpu-box")
 	// What a 1.x kernel is: every path is its page, and its page is a GET.
 	old := http.NewServeMux()
 	old.HandleFunc("GET /", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("<html>")) })
@@ -422,6 +424,7 @@ func TestOpenRemoteIsRefusedWhereNoAttacherIsWired(t *testing.T) {
 // the sidebar labels, so the host name has to survive the round trip.
 func TestOpenRemoteEndpointPublishesTheProxiedPane(t *testing.T) {
 	t.Setenv("REASONIX_HOME", testenv.TempDir(t))
+	saveTestRemoteHosts(t, "gpu-box")
 	rk := fakeRemoteKernel(t)
 	h := NewHub(HubOptions{Remote: &stubAttacher{
 		attach: func(host, workspace string) (RemoteEndpoint, func(), error) {
@@ -461,6 +464,7 @@ func TestOpenRemoteEndpointPublishesTheProxiedPane(t *testing.T) {
 // ever close: the pane it was for does not exist to be closed.
 func TestOpenRemoteGivesBackTheHoldWhenTheHubRefuses(t *testing.T) {
 	t.Setenv("REASONIX_HOME", testenv.TempDir(t))
+	saveTestRemoteHosts(t, "gpu-box")
 	rk := fakeRemoteKernel(t)
 	released := make(chan struct{}, 1)
 	h := NewHub(HubOptions{Remote: &stubAttacher{
@@ -550,6 +554,7 @@ func TestTwoRemotePanesDriveTwoRuntimesOnTheFarSide(t *testing.T) {
 	// The far hub builds a real assembly for each pane, so it needs a source
 	// to build against — the same minimum the other Open-driven tests use.
 	writeOpenableConfig(t)
+	saveTestRemoteHosts(t, "gpu-box")
 	far := NewHub(HubOptions{})
 	defer far.Shutdown()
 	farSide := httptest.NewServer(operatorHandler(far))
@@ -663,6 +668,7 @@ default = "shared-chat"
 // machine collects runtimes until its own ceiling refuses the next connect.
 func TestClosingARemotePaneRetiresTheFarRuntime(t *testing.T) {
 	writeOpenableConfig(t)
+	saveTestRemoteHosts(t, "gpu-box")
 	far := NewHub(HubOptions{})
 	defer far.Shutdown()
 	farSide := httptest.NewServer(operatorHandler(far))

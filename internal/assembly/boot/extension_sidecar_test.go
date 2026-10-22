@@ -231,6 +231,8 @@ func bootFakeInterceptAnswer(rawParams json.RawMessage) string {
 		}
 	}
 	switch {
+	case params.Event == "permission.decision" && os.Getenv("REASONIX_BOOT_FAKE_ALLOW_PERMISSION") == "1":
+		return `{"decision":"allow"}`
 	case params.Event != "" && params.Event == os.Getenv(bootFakeEnvBlockEvent):
 		return `{"decision":"block","reason":"boot fake block"}`
 	case params.Event != "" && params.Event == os.Getenv(bootFakeEnvInvalidEvent):

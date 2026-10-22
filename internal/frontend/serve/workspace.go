@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -16,10 +17,7 @@ import (
 	"reasonix/internal/contract/surface"
 	"reasonix/internal/platform/worktree"
 	"reasonix/internal/session/control"
-	"reasonix/internal/state/workspacelist"
 )
-
-const workspaceRecentMax = workspacelist.MaxPaths
 
 // AllowWorkspaceSwitch grants POST /workspace. It is off until a host asks for
 // it, and no config file can turn it on: a server reachable over the network
@@ -74,8 +72,9 @@ func (s *Server) workspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Path    string `json:"path"`
-		Isolate bool   `json:"isolate"`
+		Path     string             `json:"path"`
+		Isolate  bool               `json:"isolate"`
+		Worktree *worktreeSelection `json:"worktree,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		badBody(w)
@@ -86,13 +85,45 @@ func (s *Server) workspace(w http.ResponseWriter, r *http.Request) {
 	defer s.bindMu.Unlock()
 
 	dir := strings.TrimSpace(body.Path)
+	published := false
+	if controllerHasActiveRuntimeWork(s.ctl()) {
+		writeErr(w, http.StatusConflict, busyErr("busy.change_workspace", "cannot change the workspace while active work or background jobs are running"))
+		return
+	}
+	if body.Worktree != nil && (!body.Isolate || body.Worktree.Ref == "" || body.Worktree.SourceRoot != s.ctl().WorkspaceRoot() || !emptyConversation(s.ctl())) {
+		refuse(w, http.StatusConflict, "workspace.worktree_stale", "start a new session in the source workspace before creating a worktree", nil)
+		return
+	}
 	if body.Isolate {
-		res, err := worktree.Create(r.Context(), workspaceRepo(s.ctl()), config.DeliveryWorktreeDir())
+		ref := ""
+		if body.Worktree != nil {
+			ref = body.Worktree.Ref
+		}
+		managedRoot := config.DeliveryWorktreeDir()
+		res, err := worktree.CreateFrom(r.Context(), workspaceRepo(s.ctl()), managedRoot, ref)
 		if err != nil {
+			if errors.Is(err, worktree.ErrSourceUnknown) {
+				refuse(w, http.StatusConflict, "workspace.worktree_source_missing", "the source branch is no longer available; choose another branch", nil)
+				return
+			}
 			writeErr(w, http.StatusUnprocessableEntity, err)
 			return
 		}
+		repo := workspaceRepo(s.ctl())
+		defer func() {
+			if !published {
+				if err := worktree.DiscardUnpublished(context.WithoutCancel(r.Context()), repo, managedRoot, res); err != nil {
+					slog.Warn("retain unpublished worktree after rollback failure", "path", res.WorkspaceRoot, "err", err)
+				}
+			}
+		}()
 		dir = res.WorkspaceRoot
+		if body.Worktree != nil {
+			if err := control.CarryDraftAttachments(body.Worktree.SourceRoot, dir, body.Worktree.Attachments); err != nil {
+				writeErr(w, http.StatusUnprocessableEntity, err)
+				return
+			}
+		}
 	}
 	dir, err := resolveWorkspaceDir(dir)
 	if err != nil {
@@ -103,6 +134,7 @@ func (s *Server) workspace(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, err)
 		return
 	}
+	published = true
 	writeJSON(w, struct {
 		WorkspaceRoot string `json:"workspaceRoot"`
 	}{dir})
@@ -130,6 +162,10 @@ func resolveWorkspaceDir(dir string) (string, error) {
 // it. bindMu must be held. The outgoing controller keeps serving until the
 // replacement is fully built, so a failure leaves the session untouched.
 func (s *Server) switchWorkspaceLocked(ctx context.Context, dir string) error {
+	return s.switchWorkspaceCommit(ctx, dir, func(publish func() error) error { return publish() })
+}
+
+func (s *Server) switchWorkspaceCommit(ctx context.Context, dir string, commit func(func() error) error) error {
 	cur := s.ctl()
 	if cur.WorkspaceRoot() == dir {
 		return nil
@@ -148,13 +184,29 @@ func (s *Server) switchWorkspaceLocked(ctx context.Context, dir string) error {
 		return fmt.Errorf("open %s: %w", dir, err)
 	}
 	newCtrl.EnableInteractiveApproval()
+	if cur.Posture().Defaulted {
+		newCtrl.ApplyDefaultPosture()
+	} else {
+		newCtrl.SetToolApprovalMode(cur.ToolApprovalMode())
+	}
+	newCtrl.SetPlanMode(cur.PlanMode())
+	if current, ok := cur.(*control.Controller); ok {
+		if err := newCtrl.SetModelMode(current.ModelMode()); err != nil {
+			newCtrl.Close()
+			return err
+		}
+	}
 	newCtrl.SetOnSessionRecovered(sessionLeaseRecoveryHandler(s.leases))
 
-	if err := addRememberedWorkspace(ctx, dir); err != nil {
-		newCtrl.Close()
-		return err
-	}
-	if err := s.publishController(cur, newCtrl); err != nil {
+	if err := commit(func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := addRememberedWorkspace(ctx, dir); err != nil {
+			return err
+		}
+		return s.publishController(cur, newCtrl)
+	}); err != nil {
 		newCtrl.Close()
 		return err
 	}
@@ -184,13 +236,20 @@ func (s *Server) statsSurface() surface.Surface { return s.surface.Or(surface.Se
 // process working directory and sessions fall back to the global dir, so the
 // switch would quietly serve another project's conversations.
 func (s *Server) rebuildOptions(cur control.SessionAPI, ref string) boot.Options {
-	opts := boot.Options{Model: ref, Sink: s.rebuildSink(), Stderr: os.Stderr, StatsSource: s.statsSurface(), FeedbackSurface: feedbackSurface(s.statsSurface()), ProviderResolver: s.resolver, CleanupPendingReconciler: BackgroundCleanupReconciler}
+	opts := boot.Options{Model: ref, Sink: s.rebuildSink(), NativeSurfaces: true, Stderr: os.Stderr, StatsSource: s.statsSurface(), FeedbackSurface: feedbackSurface(s.statsSurface()), AccountsURL: accountsBaseURL(), ProviderResolver: s.resolver, CleanupPendingReconciler: BackgroundCleanupReconciler}
+	if s.lastBuild != nil {
+		opts.ComputerDriver = s.lastBuild.ComputerDriver
+	}
 	if cur == nil {
 		return opts
 	}
+	opts.NativeSurfaces = cur.NativeSurfaces()
+	opts.AgentPreset = cur.AgentPreset()
 	opts.WorkspaceRoot, opts.SessionDir = cur.WorkspaceRoot(), cur.SessionDir()
 	// Keep the logical session's private temporary directory across the rebuild.
 	if ctrl, ok := cur.(*control.Controller); ok && ctrl != nil {
+		opts.Composition = ctrl.CompositionBinding()
+		opts.Home = ctrl.PresetStore().Home
 		opts.SessionTemp = ctrl.SessionTemp()
 		opts.WorkspaceRepo = ctrl.WorkspaceRepo()
 		opts.BrowserSession = ctrl.BrowserSession()
@@ -292,19 +351,18 @@ func (s *Server) buildForWorkspace(ctx context.Context, dir, ref string) (*contr
 }
 
 // workspaceOptions builds the runtime that moves this pane to another root.
-// Nothing is inherited — the outgoing conversation stays in its own project —
-// so the pane's sink is the only thing that has to survive the move.
+// The outgoing conversation stays in its project; host capabilities and the
+// pane sink survive the move.
 func (s *Server) workspaceOptions(dir, ref string) boot.Options {
-	return boot.Options{
-		Model:           ref,
-		WorkspaceRoot:   dir,
-		SessionDir:      SessionDirFor(dir),
-		Sink:            s.rebuildSink(),
-		Stderr:          os.Stderr,
-		StatsSource:     s.statsSurface(),
-		FeedbackSurface: feedbackSurface(s.statsSurface()),
-
-		ProviderResolver:         s.resolver,
-		CleanupPendingReconciler: BackgroundCleanupReconciler,
+	opts := s.rebuildOptions(nil, ref)
+	opts.WorkspaceRoot, opts.SessionDir = dir, SessionDirFor(dir)
+	if ctl := s.ctl(); ctl != nil {
+		opts.NativeSurfaces = ctl.NativeSurfaces()
+		opts.AgentPreset = ctl.AgentPreset()
+		if current, ok := ctl.(*control.Controller); ok {
+			effort := current.RuntimeSelection().Effort
+			opts.EffortOverride = &effort
+		}
 	}
+	return opts
 }

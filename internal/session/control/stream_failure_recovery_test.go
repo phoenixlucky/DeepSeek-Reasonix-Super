@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"reasonix/internal/base/testenv"
 	"reasonix/internal/contract/event"
@@ -69,7 +68,7 @@ func TestControllerPreservesStreamFailureRecovery(t *testing.T) {
 			a := agent.New(p, reg, sessionstore.NewSession("stable system instructions"), agent.Options{}, event.Discard)
 			c := New(Options{Runner: a, Executor: a, SessionPath: sessionstore.NewSessionPath(testenv.TempDir(t), "fixture")})
 			defer c.Close()
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), testenv.Budget(t))
 			defer cancel()
 			if err := c.RunTurn(ctx, "Earlier failed task"); !errors.Is(err, provider.ErrInvalidFunctionCall) {
 				t.Fatalf("earlier turn: %v", err)

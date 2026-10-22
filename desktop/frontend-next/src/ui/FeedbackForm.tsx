@@ -1,18 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
 import { t } from "../i18n";
 import { systemLabel } from "./osname";
+import { memoryLines } from "./memoryrows";
 import { tx } from "../i18n/rich";
-import { FEEDBACK_CATEGORIES, FEEDBACK_CODE, FEEDBACK_REPO_ISSUES, type FeedbackCategory, type FeedbackEnv, type FeedbackReceipt } from "../port/feedback";
+import { FEEDBACK_CATEGORIES, FEEDBACK_CODE, FEEDBACK_REPO_ISSUES, type FeedbackCategory, type FeedbackEnv, type FeedbackProcessMemory, type FeedbackReceipt } from "../port/feedback";
 import { host } from "../port/host";
 import type { AgentPort } from "../port/port";
 import { CopyButton } from "./CopyButton";
 import { StudioIcon } from "./StudioIcon";
 import { dropDraft, heldDraft, holdDraft } from "./feedbackdraft";
 import { feedbackFailure, type FeedbackFailure } from "./feedbackfailure";
-import { admit, megabytes, payload, readShot, type Refused, type Shot } from "./feedbackshots";
+import { FeedbackShot } from "./FeedbackShot";
+import { admit, megabytes, payload, readShot, REFUSED_LABEL, type Refused, type Shot } from "./feedbackshots";
 import { useFileDrop } from "./filedrop";
 
 export const SECURITY_URL = "https://github.com/esengine/DeepSeek-Reasonix/security/policy";
+export const DISCUSSIONS_URL = "https://github.com/esengine/DeepSeek-Reasonix/discussions";
 
 const CATEGORY_LABEL: Record<FeedbackCategory, string> = {
   bug: "问题",
@@ -20,12 +23,6 @@ const CATEGORY_LABEL: Record<FeedbackCategory, string> = {
   question: "疑问",
   other: "其他",
 };
-
-const REFUSED_LABEL = {
-  format: "{name}：只支持 PNG 或 JPEG",
-  too_large: "{name}：超过 {size} MB，没有添加",
-  too_many: "{name}：最多 {n} 张，没有添加",
-} as const;
 
 const encoder = new TextEncoder();
 
@@ -39,10 +36,12 @@ interface Props {
   onMine: () => void;
   onClose: () => void;
   onFile: (url: string) => void;
+  onConceal: (hidden: boolean) => void;
 }
 
-export function FeedbackForm({ port, onMine, onClose, onFile }: Props) {
+export function FeedbackForm({ port, onMine, onClose, onFile, onConceal }: Props) {
   const [env, setEnv] = useState<FeedbackEnv | null>(null);
+  const [shellMemory, setShellMemory] = useState<FeedbackProcessMemory[]>([]);
   const [envFailure, setEnvFailure] = useState<FeedbackFailure | null>(null);
   const [category, setCategory] = useState<FeedbackCategory>(() => heldDraft().category);
   const [body, setBody] = useState(() => heldDraft().body);
@@ -62,6 +61,14 @@ export function FeedbackForm({ port, onMine, onClose, onFile }: Props) {
   const submit = useRef<HTMLButtonElement>(null);
   const done = useRef<HTMLHeadingElement>(null);
   const shotEpoch = useRef(0);
+  const mounted = useRef(true);
+  const focusFrame = useRef(0);
+  useEffect(() => () => {
+    mounted.current = false;
+    cancelAnimationFrame(focusFrame.current);
+  }, []);
+  const captureButton = useRef<HTMLButtonElement>(null);
+  const [capture, setCapture] = useState<"idle" | "taking" | "failed">("idle");
   const heldShots = useRef(shots);
   heldShots.current = shots;
 
@@ -77,6 +84,11 @@ export function FeedbackForm({ port, onMine, onClose, onFile }: Props) {
   }, [port]);
 
   useEffect(load, [load]);
+  useEffect(() => {
+    let alive = true;
+    void host().processMemory().then((rows) => alive && setShellMemory(rows));
+    return () => { alive = false; };
+  }, []);
 
   useEffect(() => {
     if (env && document.activeElement?.closest('[role="tablist"]')) field.current?.focus();
@@ -118,6 +130,21 @@ export function FeedbackForm({ port, onMine, onClose, onFile }: Props) {
     },
     [limits],
   );
+
+  const takeWindow = async () => {
+    if (capture === "taking") return;
+    setCapture("taking");
+    onConceal(true);
+    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 60))));
+    const bytes = await host().captureWindow();
+    // The send panel is mounted for as long as the dialog is, so a form that is gone
+    // has nothing left to unveil, and setting state then is a write into a torn-down page.
+    if (!mounted.current) return;
+    onConceal(false);
+    setCapture(bytes ? "idle" : "failed");
+    if (bytes) await add([new File([bytes as BlobPart], "window.png", { type: "image/png" })]);
+    if (mounted.current) focusFrame.current = requestAnimationFrame(() => captureButton.current?.focus());
+  };
 
   const zone = useFileDrop((d) => void add(d.files), setOver);
 
@@ -162,6 +189,7 @@ export function FeedbackForm({ port, onMine, onClose, onFile }: Props) {
         contact: contact.trim() || undefined,
         locale: document.documentElement.lang,
         images: payload(shots),
+        ...(shellMemory.length > 0 ? { memory: shellMemory } : {}),
       });
       shotEpoch.current++;
       dropDraft();
@@ -242,6 +270,15 @@ export function FeedbackForm({ port, onMine, onClose, onFile }: Props) {
               ),
             })}
           </p>
+          <p>
+            {tx("建议、想法和提问放在讨论区：{link}。bug 和错误请用下面的发送。", {
+              link: (
+                <a href={DISCUSSIONS_URL} data-action="feedback.link" onClick={(e) => { e.preventDefault(); onFile(DISCUSSIONS_URL); }}>
+                  {t("想法与讨论")}
+                </a>
+              ),
+            })}
+          </p>
         </div>
       </section>
 
@@ -313,20 +350,7 @@ export function FeedbackForm({ port, onMine, onClose, onFile }: Props) {
             {shots.length > 0 && (
               <ul className="fbk-shots">
                 {shots.map((s) => (
-                  <li key={s.id}>
-                    <img src={s.preview} alt={s.name} />
-                    <span className="fbk-shot-name">{s.name}</span>
-                    <button
-                      type="button"
-                      className="fbk-shot-x"
-                      data-action="feedback.shot.remove"
-                      data-target={s.id}
-                      aria-label={t("移除截图 {name}", { name: s.name })}
-                      onClick={() => setShots((prev) => prev.filter((x) => x.id !== s.id))}
-                    >
-                      <StudioIcon name="close" />
-                    </button>
-                  </li>
+                  <FeedbackShot key={s.id} shot={s} onRemove={() => setShots((prev) => prev.filter((x) => x.id !== s.id))} />
                 ))}
               </ul>
             )}
@@ -335,6 +359,11 @@ export function FeedbackForm({ port, onMine, onClose, onFile }: Props) {
                 <StudioIcon name="plus" />
                 {t("添加截图…")}
               </button>
+              {host().capturesWindow() && (
+                <button ref={captureButton} type="button" className="btn sm" data-action="feedback.shot.capture" disabled={room <= 0 || capture === "taking"} onClick={() => void takeWindow()}>
+                  {t("截取当前窗口")}
+                </button>
+              )}
               <span className="fbk-hint">
                 {limits
                   ? t("也可以直接粘贴或拖进来。PNG 或 JPEG，最多 {n} 张，每张不超过 {size} MB，较大的图会自动缩小。", { n: limits.images, size: megabytes(limits.uploadBytes) })
@@ -356,6 +385,11 @@ export function FeedbackForm({ port, onMine, onClose, onFile }: Props) {
               }}
             />
           </div>
+          {host().capturesWindow() && (
+            <span className="fbk-hint">
+              {capture === "failed" ? t("没能截取窗口，请改用「添加截图…」。") : t("「截取当前窗口」的图会包含窗口里看到的内容（钱包余额、会话等），发送前可在上方删除。")}
+            </span>
+          )}
           <span className="fbk-hint" data-tone="warn">{t("如果这份反馈被登记为公开议题，截图会和文字一起公开。发送前请确认没有露出密钥、聊天记录或私有代码。")}</span>
           {refused.length > 0 && (
             <ul className="fbk-refused" role="status">
@@ -383,8 +417,12 @@ export function FeedbackForm({ port, onMine, onClose, onFile }: Props) {
             <dd>{env.env.channel}</dd>
             <dt>{t("模型服务")}</dt>
             <dd>{env.env.providerKind}</dd>
+            <dt>{t("内存")}</dt>
+            <dd>
+              {memoryLines([...shellMemory, ...(env.env.memory ?? [])]).map((line) => <div key={line}>{line}</div>)}
+            </dd>
           </dl>
-          <p className="fbk-hint">{t("只读。不包含密钥、地址或任何文件内容。")}</p>
+          <p className="fbk-hint">{t("只读。不包含密钥、地址或任何文件内容。内存一项只有进程类型和上面这些数字，用来判断是哪一部分占用高。")}</p>
           {host().revealsLogs() && (
             <div className="fbk-logs">
               <button

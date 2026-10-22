@@ -27,6 +27,9 @@ func TestTreeSendsAnEmptyListForAFolderWithoutSessions(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if err := addRememberedWorkspace(t.Context(), root); err != nil {
+				t.Fatal(err)
+			}
 			h := NewHub(HubOptions{})
 			hubRuntime(t, h, root)
 

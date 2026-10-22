@@ -8,7 +8,8 @@ import (
 
 // renderAgentDelta writes the first half of the [agent] scalar delta onto buf
 // and reports whether it wrote any line. Split from renderAgentTail so neither
-// half carries more branches than the complexity limit allows.
+// half carries more branches than the complexity limit allows. Persona is absent
+// on purpose: it is user-level, so it never enters a project delta.
 func renderAgentDelta(buf *strings.Builder, c, d *Config) bool {
 	wrote := false
 	if sp := strings.TrimSpace(c.Agent.SystemPrompt); sp != "" && sp != d.Agent.SystemPrompt {
@@ -32,6 +33,10 @@ func renderAgentDelta(buf *strings.Builder, c, d *Config) bool {
 			fmt.Fprintf(buf, "reasoning_language = %q\n", l)
 			wrote = true
 		}
+	}
+	if c.TurnNarration() != d.TurnNarration() {
+		fmt.Fprintf(buf, "turn_narration = %q\n", c.TurnNarration())
+		wrote = true
 	}
 	if c.Agent.CompactRatio != d.Agent.CompactRatio {
 		fmt.Fprintf(buf, "compact_ratio = %s\n", formatFloat(c.Agent.CompactRatio))
@@ -58,6 +63,14 @@ func renderAgentTail(buf *strings.Builder, c, d *Config) bool {
 	wrote := false
 	if c.Agent.WebSearchModel != "" && c.Agent.WebSearchModel != d.Agent.WebSearchModel {
 		fmt.Fprintf(buf, "web_search_model = %q\n", c.Agent.WebSearchModel)
+		wrote = true
+	}
+	if c.Agent.TitleModel != "" && c.Agent.TitleModel != d.Agent.TitleModel {
+		fmt.Fprintf(buf, "title_model = %q\n", c.Agent.TitleModel)
+		wrote = true
+	}
+	if len(c.Agent.RoleEfforts) > 0 && !reflect.DeepEqual(c.Agent.RoleEfforts, d.Agent.RoleEfforts) {
+		fmt.Fprintf(buf, "role_efforts = %s\n", renderStringMap(c.Agent.RoleEfforts))
 		wrote = true
 	}
 	if c.Agent.PlannerModel != "" && c.Agent.PlannerModel != d.Agent.PlannerModel {

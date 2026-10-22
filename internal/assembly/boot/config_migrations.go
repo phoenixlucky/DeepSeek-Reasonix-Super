@@ -26,8 +26,10 @@ type configMigrations struct {
 func runConfigMigrations(roots config.Roots, root string) configMigrations {
 	var m configMigrations
 	m.legacy, m.legacyErr = roots.MigrateLegacyIfNeededForRoot(root)
-	m.deepSeek, m.deepSeekErr = roots.MigrateLegacyDeepSeekProtocolUserConfig()
-	retired := roots.MigrateRetiredKeysForRoot(root)
+	// Read after the legacy import, which may be what creates the file.
+	user := roots.SnapshotUserConfig()
+	m.deepSeek, m.deepSeekErr = roots.MigrateLegacyDeepSeekProtocolUserConfigFrom(user)
+	retired := roots.MigrateRetiredKeysForRootFrom(root, user)
 	m.stepLimits, m.stepLimitsErr = retired.StepLimits.Changed, retired.StepLimits.Err
 	m.redactToolOutput, m.redactToolOutputErr = retired.RedactToolOutput.Changed, retired.RedactToolOutput.Err
 	m.memoryCompiler, m.memoryCompilerErr = retired.MemoryCompiler.Changed, retired.MemoryCompiler.Err

@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { HttpError } from "../port/http_error";
 import type { AgentPort, BrowserTab } from "../port/port";
-import { failedPageID, observePageTabs, openPage, pageForEmptyColumn, pageInFlight, preparePage, readPageTabs, recheckPageTabs, pageReadAfterSettlement, unseenPageOpenings } from "./browser_open";
+import { failedPageID, observePageTabs, openPage, pageInFlight, preparePage, readPageTabs, recheckPageTabs, pageReadAfterSettlement, unseenPageOpenings } from "./browser_open";
 
 it.each(["browser.open_failed", "browser.engine_missing", "browser.engine_failed", "browser.profile_busy"])("reads the public tab identity from %s", (code) => {
   expect(failedPageID(new HttpError(400, "failed", { code, params: { tab: "b1" } }))).toBe("b1");
@@ -29,50 +29,6 @@ it("reserves preparation before it runs and releases a failure that created no t
   await failure;
   expect(port.browserOpen).not.toHaveBeenCalled();
   expect(unseenPageOpenings(port)).toHaveLength(0);
-});
-
-it("does not make an explicit browser wait for an unstarted preview preparation", async () => {
-  const tab: BrowserTab = {id:"blank",target:"blank-target",url:"about:blank",title:"Blank",active:false};
-  const port = { browserOpen: vi.fn(async () => tab) } as unknown as AgentPort;
-  let ready!: (tab: BrowserTab) => void;
-  const prepared = preparePage(port, () => new Promise((resolve) => {ready=resolve;}));
-  const browser = pageForEmptyColumn(port);
-  expect(port.browserOpen).toHaveBeenCalledWith("about:blank", true);
-  expect(await browser).toBe(tab);
-  ready({...tab,id:"preview",target:"preview-target"});
-  await prepared;
-  expect(port.browserOpen).toHaveBeenCalledTimes(1);
-});
-
-it("still shares an actual browser request when a later preview is only preparing", async () => {
-  const tab: BrowserTab = {id:"native",target:"native-target",url:"about:blank",title:"Native",active:false};
-  let done!: (tab: BrowserTab) => void, ready!: (tab: BrowserTab) => void;
-  const port = { browserOpen: vi.fn(() => new Promise<BrowserTab>((resolve) => {done=resolve;})) } as unknown as AgentPort;
-  const native = openPage(port, "about:blank");
-  const prepared = preparePage(port, () => new Promise((resolve) => {ready=resolve;}));
-  expect(pageInFlight(port)).not.toBeNull();
-  const shared = pageForEmptyColumn(port);
-  expect(port.browserOpen).toHaveBeenCalledTimes(1);
-  done(tab);
-  expect(await shared).toBe(tab);
-  await native;
-  ready({...tab,id:"existing",target:"existing-target"});
-  await prepared;
-});
-
-it("does not redirect a newer browser request to an older preparation that starts late", async () => {
-  const native: BrowserTab = {id:"native",target:"native-target",url:"about:blank",title:"Native",active:false};
-  const preview = {...native,id:"preview",target:"preview-target",url:"file:///w/index.html"};
-  let ready!: (url: string) => void, done!: (tab: BrowserTab) => void;
-  const port = { browserOpen: vi.fn((url: string) => url === "about:blank"
-    ? new Promise<BrowserTab>((resolve) => {done=resolve;}) : Promise.resolve(preview)) } as unknown as AgentPort;
-  const prepared = preparePage(port, () => new Promise((resolve) => {ready=resolve;}));
-  const requested = pageForEmptyColumn(port);
-  await Promise.resolve();
-  ready(preview.url);
-  await prepared;
-  done(native);
-  expect(await requested).toBe(native);
 });
 
 it.each([false, true])("keeps settled navigation ownership until its URL is observed, or its early tab closes: %s", async (closed) => {

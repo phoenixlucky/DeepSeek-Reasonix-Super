@@ -15,11 +15,12 @@ describe("the anchor a run-graph node lands on", () => {
     expect(html).toContain('data-call="probe-0"');
   });
 
-  it("marks a delegate's children too, which is where a fan-out's nodes are", () => {
+  it("marks a delegate's children too once its card is open, which is where a fan-out's nodes are", () => {
     const html = renderToStaticMarkup(
       <ToolCard
         tool={{ ...call("probe-0"), profile: { name: "fleet", count: 2 } }}
         running={false}
+        pinned
         children={[call("probe-0/fleet-1"), call("probe-0/fleet-2")]}
       />,
     );

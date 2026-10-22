@@ -321,3 +321,62 @@ func TestCompactInstallsCoveredPrefixHash(t *testing.T) {
 		t.Fatal("fresh projection should validate")
 	}
 }
+
+func TestLoadProjectionSidecarSaysWhyAFoldWasNotReused(t *testing.T) {
+	cases := []struct {
+		name   string
+		key    string
+		covers []provider.Message
+		want   ProjectionDrop
+	}{
+		{"history rewritten under the same lineage", "", []provider.Message{{Role: provider.RoleSystem, Content: "sys-old"}}, ProjectionDropHistory},
+		{"history rewritten under another lineage", "ws|s|other-model", []provider.Message{{Role: provider.RoleSystem, Content: "sys-old"}}, ProjectionDropLineage},
+		{"still valid", "", []provider.Message{{Role: provider.RoleSystem, Content: "sys"}}, ProjectionDropNone},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(testenv.TempDir(t), "s.jsonl")
+			key := tc.key
+			if key == "" {
+				key = promptCacheKey("ws", sessionstore.BranchID(path), "this-model")
+			}
+			if err := sessionstore.SaveCompactionState(path, sessionstore.CompactionState{
+				SchemaVersion:  sessionstore.CompactionStateSchemaV1,
+				PromptCacheKey: key,
+				Projection: sessionstore.ContextProjection{
+					Messages:          []provider.Message{{Role: provider.RoleSystem, Content: "summary"}},
+					CoveredCount:      1,
+					CoveredPrefixHash: sessionstore.CoveredPrefixHash(tc.covers, 1),
+				},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			a := New(nil, nil, sessionstore.NewSession("sys"), Options{SessionPath: path, WorkspaceID: "ws", ModelRef: "this-model"}, event.Discard)
+			if got := a.ProjectionDropped(); got != tc.want {
+				t.Fatalf("ProjectionDropped = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProjectionDroppedIsClearedByANewBinding(t *testing.T) {
+	path := filepath.Join(testenv.TempDir(t), "s.jsonl")
+	if err := sessionstore.SaveCompactionState(path, sessionstore.CompactionState{
+		SchemaVersion:  sessionstore.CompactionStateSchemaV1,
+		PromptCacheKey: promptCacheKey("ws", sessionstore.BranchID(path), "m"),
+		Projection: sessionstore.ContextProjection{
+			Messages: []provider.Message{{Role: provider.RoleSystem, Content: "summary"}}, CoveredCount: 1,
+			CoveredPrefixHash: sessionstore.CoveredPrefixHash([]provider.Message{{Role: provider.RoleSystem, Content: "other"}}, 1),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a := New(nil, nil, sessionstore.NewSession("sys"), Options{SessionPath: path, WorkspaceID: "ws", ModelRef: "m"}, event.Discard)
+	if a.ProjectionDropped() != ProjectionDropHistory {
+		t.Fatalf("setup: ProjectionDropped = %q", a.ProjectionDropped())
+	}
+	a.BindSessionPath(filepath.Join(testenv.TempDir(t), "fresh.jsonl"), true)
+	if got := a.ProjectionDropped(); got != ProjectionDropNone {
+		t.Fatalf("a session with no sidecar still reports %q", got)
+	}
+}

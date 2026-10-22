@@ -65,3 +65,9 @@ export function sessionCount(ws: TreeWorkspace, shown: number): { shown: number;
   const more = ws.remaining ?? 0;
   return more > 0 ? { shown, of: shown + more } : { shown };
 }
+
+/** Whether the rows in hand answer the view being asked for. Until the kernel
+ *  answers it they belong to the last view, and filtering them to this one would
+ *  say "none" for a list that is merely still being read. */
+export const answers = (answered: TreeView | null, asked: TreeView) =>
+  !answered || (answered.scope === asked.scope && answered.q === asked.q);

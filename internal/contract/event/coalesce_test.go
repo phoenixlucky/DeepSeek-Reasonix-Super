@@ -256,3 +256,149 @@ func TestCoalesceMergesCompactionProgress(t *testing.T) {
 		t.Fatalf("the finished fold must arrive after its own text: %+v", got[2])
 	}
 }
+
+// A shell emits one ToolProgress per output line, so a build log is hundreds of
+// frames a second unless they merge. Before this they each crossed the sink and
+// filled a subscriber's queue, which is what made the hub shed answer text.
+func TestCoalesceMergesToolProgress(t *testing.T) {
+	inner := &coalesceRecordSink{}
+	c := Coalesce(inner, time.Hour)
+	c.Emit(Event{Kind: ToolProgress, Tool: Tool{ID: "call-1", Output: "line 1\n"}}) // leading edge
+	for i := 2; i <= 100; i++ {
+		c.Emit(Event{Kind: ToolProgress, Tool: Tool{ID: "call-1", Output: "line\n"}})
+	}
+	c.Emit(Event{Kind: ToolResult, Tool: Tool{ID: "call-1", Output: "done"}})
+
+	got := inner.snapshot()
+	if len(got) != 3 {
+		t.Fatalf("got %d events, want 3 (leading chunk, merged burst, result): %+v", len(got), got)
+	}
+	if got[0].Kind != ToolProgress || got[0].Tool.ID != "call-1" || got[0].Tool.Output != "line 1\n" {
+		t.Fatalf("leading progress chunk = %+v", got[0])
+	}
+	if got[1].Kind != ToolProgress || got[1].Tool.ID != "call-1" {
+		t.Fatalf("merged burst = %+v", got[1])
+	}
+	if want := strings.Repeat("line\n", 99); got[1].Tool.Output != want {
+		t.Fatalf("merged payload = %q, want %q", got[1].Tool.Output, want)
+	}
+}
+
+// Two calls reporting at once must not be concatenated into one another's card.
+func TestCoalesceSeparatesToolProgressByCallID(t *testing.T) {
+	inner := &coalesceRecordSink{}
+	c := Coalesce(inner, time.Hour)
+	c.Emit(Event{Kind: ToolProgress, Tool: Tool{ID: "a", Output: "a1"}}) // leading edge
+	c.Emit(Event{Kind: ToolProgress, Tool: Tool{ID: "a", Output: "a2"}})
+	c.Emit(Event{Kind: ToolProgress, Tool: Tool{ID: "b", Output: "b1"}})
+	c.Emit(Event{Kind: ToolResult, Tool: Tool{ID: "b", Output: "done"}})
+
+	got := inner.snapshot()
+	if len(got) != 4 {
+		t.Fatalf("got %d events, want 4 (leading, a's tail flushed by the switch, b, b's result): %+v", len(got), got)
+	}
+	if got[1].Tool.ID != "a" || got[1].Tool.Output != "a2" {
+		t.Fatalf("a's buffered tail = %+v", got[1])
+	}
+	if got[2].Tool.ID != "b" || got[2].Tool.Output != "b1" {
+		t.Fatalf("b's chunk = %+v", got[2])
+	}
+}
+
+// A sub-agent's status channel carries Name/ParentID/rate, not just ID+Output.
+// Folding those would lose the fields, so they must cross untouched.
+func TestCoalescePassesThroughRichToolProgress(t *testing.T) {
+	inner := &coalesceRecordSink{}
+	c := Coalesce(inner, time.Hour)
+	for range 5 {
+		c.Emit(Event{Kind: ToolProgress, Tool: Tool{ID: "sub", Name: SubagentProgressStatusName, Output: "running", RateTokensPerSec: 40}})
+	}
+	got := inner.snapshot()
+	if len(got) != 5 {
+		t.Fatalf("got %d events, want 5 (rich progress must not merge): %+v", len(got), got)
+	}
+	for _, e := range got {
+		if e.Tool.Name != SubagentProgressStatusName || e.Tool.RateTokensPerSec != 40 {
+			t.Fatalf("status metadata lost: %+v", e.Tool)
+		}
+	}
+}
+
+// Progress without a call id cannot be attributed, so it must not be buffered
+// under an empty key where every unrelated chunk would land.
+func TestCoalesceBypassesToolProgressWithoutID(t *testing.T) {
+	inner := &coalesceRecordSink{}
+	c := Coalesce(inner, time.Hour)
+	c.Emit(Event{Kind: ToolProgress, Tool: Tool{Output: "orphan"}})
+	c.Emit(Event{Kind: ToolProgress, Tool: Tool{Output: "orphan"}})
+	if got := inner.snapshot(); len(got) != 2 {
+		t.Fatalf("got %d events, want 2: %+v", len(got), got)
+	}
+}
+
+// Every progress chunk an executor emits carries Source, and text from a
+// planner carries a different one. Merging must survive the first and never
+// cross the second.
+func TestCoalesceMergesDeltasCarryingSource(t *testing.T) {
+	inner := &coalesceRecordSink{}
+	c := Coalesce(inner, time.Hour)
+	c.Emit(Event{Kind: ToolProgress, Source: UsageSourceExecutor, Tool: Tool{ID: "call-1", Output: "line 1\n"}})
+	for range 99 {
+		c.Emit(Event{Kind: ToolProgress, Source: UsageSourceExecutor, Tool: Tool{ID: "call-1", Output: "line\n"}})
+	}
+	c.Emit(Event{Kind: ToolResult, Tool: Tool{ID: "call-1", Output: "done"}})
+
+	got := inner.snapshot()
+	if len(got) != 3 {
+		t.Fatalf("got %d events, want 3 (leading, merged burst, result): %+v", len(got), got)
+	}
+	if got[1].Source != UsageSourceExecutor {
+		t.Fatalf("merged frame lost its source: %q", got[1].Source)
+	}
+	if want := strings.Repeat("line\n", 99); got[1].Tool.Output != want {
+		t.Fatalf("merged payload = %q, want %q", got[1].Tool.Output, want)
+	}
+}
+
+// The same for answer text: a delta from a named source must still merge.
+func TestCoalesceMergesTextCarryingSource(t *testing.T) {
+	inner := &coalesceRecordSink{}
+	c := Coalesce(inner, time.Hour)
+	c.Emit(Event{Kind: Text, Source: UsageSourceExecutor, Text: "a"})
+	for _, s := range []string{"b", "c", "d"} {
+		c.Emit(Event{Kind: Text, Source: UsageSourceExecutor, Text: s})
+	}
+	c.Emit(Event{Kind: TurnDone})
+
+	got := inner.snapshot()
+	if len(got) != 3 {
+		t.Fatalf("got %d events, want 3 (leading a, merged bcd, TurnDone): %+v", len(got), got)
+	}
+	if got[0].Text != "a" || got[0].Source != UsageSourceExecutor {
+		t.Fatalf("leading text = %+v", got[0])
+	}
+	if got[1].Text != "bcd" || got[1].Source != UsageSourceExecutor {
+		t.Fatalf("merged text = %+v", got[1])
+	}
+}
+
+// Different sources must not merge into one another: a planner's text and an
+// executor's are attributable separately.
+func TestCoalesceSeparatesBySource(t *testing.T) {
+	inner := &coalesceRecordSink{}
+	c := Coalesce(inner, time.Hour)
+	c.Emit(Event{Kind: Text, Source: UsageSourceExecutor, Text: "e1"})
+	c.Emit(Event{Kind: Text, Source: UsageSourcePlanner, Text: "p1"})
+	c.Emit(Event{Kind: TurnDone})
+
+	got := inner.snapshot()
+	if len(got) != 3 {
+		t.Fatalf("got %d events, want 3 (leading e1, planner p1, TurnDone): %+v", len(got), got)
+	}
+	if got[0].Source != UsageSourceExecutor || got[0].Text != "e1" {
+		t.Fatalf("executor text = %+v", got[0])
+	}
+	if got[1].Source != UsageSourcePlanner || got[1].Text != "p1" {
+		t.Fatalf("planner text = %+v", got[1])
+	}
+}

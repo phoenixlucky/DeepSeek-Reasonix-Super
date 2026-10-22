@@ -170,7 +170,7 @@ func isDoctorRepairCommand(args []string) bool {
 
 func isDefaultInteractiveFlag(arg string) bool {
 	switch arg {
-	case "--model", "--max-steps", "--continue", "-c", "--resume", "-r", "--copy", "--dangerously-skip-permissions", "--yolo", "--permission-mode", "--effort", "--dir", "--add-dir", "--allowed-tools", "--allowedTools", "--profile", "--preset":
+	case "--model", "--max-steps", "--continue", "-c", "--resume", "-r", "--copy", "--dangerously-skip-permissions", "--yolo", "--permission-mode", "--effort", "--dir", "--add-dir", "--allowed-tools", "--allowedTools", "--profile", "--preset", "--agent-composition":
 		return true
 	}
 	if name, _, ok := strings.Cut(arg, "="); ok && isDefaultInteractiveFlag(name) {
@@ -268,7 +268,7 @@ func parseRuntimeProfile(value string) (string, error) {
 	case boot.TokenModeDelivery, "deliver", "quality":
 		return boot.TokenModeDelivery, nil
 	default:
-		return "", fmt.Errorf("unknown execution setting %q (want light, balanced, or delivery; legacy: economy, full)", value)
+		return "", fmt.Errorf("unknown execution setting %q (want %s; legacy: economy, full)", value, livePresets(" or "))
 	}
 }
 
@@ -366,7 +366,7 @@ func runAgent(args []string, version string) int {
 	}
 	profileRaw := strings.TrimSpace(*f.profileFlag)
 	if profileRaw != "" {
-		fmt.Fprintln(os.Stderr, "warning: --profile is deprecated; use --preset light|balanced|delivery")
+		warnProfileDeprecated()
 	} else {
 		profileRaw = strings.TrimSpace(*f.presetFlag)
 	}
@@ -501,9 +501,9 @@ func runAgent(args []string, version string) int {
 	// executor, not just the top-level one. Ask fails closed because no UI can
 	// answer; with no mode named, the build's sandbox claim and the folder's
 	// trust decide between that and auto once the controller exists.
-	overrides := runBuildOverrides(effortOverride, allowedTools, f.additionalDirs, workspaceRoot,
-		permissions.approval, cliSessionRecoveredHandler(leases), ablated)
+	overrides := runBuildOverrides(effortOverride, allowedTools, f.additionalDirs, workspaceRoot, permissions.approval, cliSessionRecoveredHandler(leases), ablated)
 	overrides.Version = version
+	overrides = withComposition(overrides, *f.agentComposition, resumeSession)
 	ctrl, err := setupProfileWithOverrides(ctx, *f.model, *f.maxSteps, true, sink, profile, overrides)
 	if err != nil {
 		if resultOutput != nil && format != runOutputText {
@@ -591,7 +591,7 @@ func defaultConfigTarget() string {
 	if p := config.UserConfigPath(); p != "" {
 		return p
 	}
-	return "reasonix.toml"
+	return config.ProjectConfigPath(".")
 }
 
 // defaultEnvTarget is the display target for the reasonix-owned global
@@ -608,7 +608,7 @@ func resolveSetupTargets(args []string) setupTargets {
 	for _, a := range args {
 		switch a {
 		case "--local", "-l":
-			t.config = "reasonix.toml"
+			t.config = config.ProjectConfigPath(".")
 		default:
 			t.config = a
 		}
@@ -1538,7 +1538,7 @@ func configReasoningLanguageCommand(args []string) int {
 	}
 	path := config.UserConfigPath()
 	if *local {
-		path = "reasonix.toml"
+		path = config.ProjectConfigPath(".")
 	}
 	if path == "" {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "cannot resolve config path")
@@ -1609,7 +1609,7 @@ func configCompactRatioCommand(args []string) int {
 	path := config.UserConfigPath()
 	scope := "user"
 	if *local {
-		path = "reasonix.toml"
+		path = config.ProjectConfigPath(".")
 		scope = "project"
 	}
 	if path == "" {
@@ -1654,8 +1654,8 @@ func configCompactRatioCommand(args []string) int {
 }
 
 func compactRatioSource() string {
-	if config.ConfigFileDefinesCompactRatio("reasonix.toml") {
-		return "project: " + displayPath("reasonix.toml")
+	if path := config.ProjectConfigPath("."); config.ConfigFileDefinesCompactRatio(path) {
+		return "project: " + displayPath(path)
 	}
 	if path := config.UserConfigPath(); path != "" && config.ConfigFileDefinesCompactRatio(path) {
 		return "user: " + displayPath(path)

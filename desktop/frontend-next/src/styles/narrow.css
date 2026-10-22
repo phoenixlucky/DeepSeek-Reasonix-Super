@@ -1,9 +1,37 @@
-.studio-model-group { flex-wrap: wrap; }
+.studio-model-group { flex-wrap: nowrap; }
+@container conversation (max-width: 720px) {
+  .turntools { flex-wrap: nowrap; }
+  .studio-model-group { flex: 1 1 0; }
+  .studio-model-control { flex: 0 1 auto; min-width: 0; }
+  .studio-model-control .model-picker .nm { max-width: none; }
+}
 .chrome .r-fold { display: contents; }
+.chrome .crumb-context { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; }
+.chrome .crumb-context .isolab { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 [data-fold~="bar"] .chrome .r-fold { display: none; position: absolute; top: calc(100% + 6px); right: 12px; z-index: 80; flex-wrap: wrap; gap: 5px; padding: 6px; border: 1px solid var(--border); border-radius: 10px; background: var(--raised); box-shadow: 0 12px 32px -14px #000; }
 [data-fold~="bar"] .chrome .r-fold[data-open] { display: flex; }
 [data-fold~="bar"] .tab { flex: 0 1 auto; min-width: 0; padding-inline: 6px; overflow: hidden; text-overflow: ellipsis; }
-@container conversation (max-width: 360px) { .studio-effort-picker::before { display: none; } }
+@container conversation (max-width: 360px) {
+  .turntools { flex-wrap: wrap; }
+  .studio-effort-picker::before { display: none; }
+  .studio-model-group { flex-basis: 100%; flex-wrap: wrap; }
+}
 @container conversation (max-width: 200px) { .studio-meterrail .studio-meter-cache { display: none; } }
+@container conversation (max-width: 520px) { .studio-deckchip > span { display: none; } }
 .chrome .thbtn.r-more { color: var(--muted); }
 .chrome .thbtn.r-more svg { stroke-width: 2.6; }
+@container conversation (max-width: 480px) {
+  .studio-overview-anchor { position: static; }
+  .studio-overview-anchor .studio-overview-popover { left: 0; right: 0; width: auto; }
+}
+.agents { container: agents / inline-size }
+@container agents (max-width: 460px) {
+  .ag { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; column-gap: 9px; row-gap: 2px }
+  .ag .pip, .ag .nm, .ag .rt, .ag .ag-open { grid-row: 1 }
+  .ag .pip { grid-column: 1 }
+  .ag .nm { grid-column: 2 }
+  .ag .rt { grid-column: 3; margin-left: auto }
+  .ag .ag-open { grid-column: 4 }
+  .ag .lbl { grid-row: 2; grid-column: 2 / -1 }
+  .ag .ran { grid-row: 3; grid-column: 2 / -1; max-width: none }
+}

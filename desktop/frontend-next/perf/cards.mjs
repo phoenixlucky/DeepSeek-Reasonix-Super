@@ -101,6 +101,12 @@ check("回执没有重复根容器", await page.locator(".rc > .rc").count() ===
 // between any two glyphs, so it is the one that must not give up its width.
 const rc = await browser.newPage({ viewport: { width: 1440, height: 900 }, locale: "zh-CN", colorScheme: "dark" });
 rc.on("pageerror", (e) => fails.push("页面异常: " + e.message));
+await rc.addInitScript(() => {
+  try {
+    localStorage.setItem("rx-turn-receipt", "on");
+  } catch {
+  }
+});
 await rc.goto(PAGE, { waitUntil: "networkidle" });
 await rc.waitForSelector(".compose");
 await rc.evaluate(() => {

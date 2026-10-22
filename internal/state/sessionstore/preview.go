@@ -19,6 +19,7 @@ import (
 var TransientUserBlockTags = []string{
 	"response-language",
 	"reasoning-language",
+	"turn-narration",
 	"memory-update",
 	"background-jobs",
 	"active-goal",
@@ -26,7 +27,10 @@ var TransientUserBlockTags = []string{
 	"hook-context",
 	"available-skills",
 	"current-date",
+	"session-scratch",
 	"project-instructions",
+	"project-rules",
+	"scoped-rules",
 	"capability-route",
 	"interrupted-turn-recovery",
 	"execution-policy",
@@ -45,6 +49,7 @@ var SupersededUserBlockTags = []string{
 	"active-goal",
 	"response-language",
 	"reasoning-language",
+	"turn-narration",
 	"workspace",
 	"project-instructions",
 	"scheduled-run",
@@ -228,10 +233,7 @@ func memoryCompilerSourceEvent(body string) string {
 
 // UserPreviewText returns the user-authored part of a persisted user message.
 func UserPreviewText(content string) string {
-	s := StripTransientUserBlocks(content)
-	s = HandoffTask(s)
-	s = StripTransientUserBlocks(s)
-	return strings.TrimSpace(s)
+	return userAuthoredText(content)
 }
 
 // pasteDisplayLabelPattern matches the standalone label desktop prepends to a
@@ -250,12 +252,9 @@ func StripPasteDisplayLabel(content string) string {
 // deterministic wrapper stripping.
 func UserMessageText(msg provider.Message) string {
 	if msg.RawContent != "" {
-		// Stripped here too: RawContent is meant to hold what a person typed,
-		// but a host-authored turn writes its own composed text to it, and
-		// returning that verbatim put <background-jobs> in the transcript.
-		return strings.TrimSpace(StripTransientUserBlocks(msg.RawContent))
+		return UserSaidText(msg.RawContent)
 	}
-	return UserPreviewText(msg.Content)
+	return UserSaidText(msg.Content)
 }
 
 // migrateLegacyProviderContent canonicalizes both historical user-turn shapes:

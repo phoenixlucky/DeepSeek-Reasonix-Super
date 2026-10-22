@@ -34,7 +34,7 @@ func TestComposeEmitsMemoryRecallAudit(t *testing.T) {
 	if len(sink.audits) != 1 {
 		t.Fatalf("audits = %d, want exactly one recall audit per composed user turn", len(sink.audits))
 	}
-	if sink.audits[0].Suppressed == "" && len(sink.audits[0].Hits) == 0 {
+	if sink.audits[0].SuppressionCode == "" && len(sink.audits[0].Hits) == 0 {
 		t.Fatalf("audit must explain itself: %+v", sink.audits[0])
 	}
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { AgentPort, CommitProposal, CommitResult } from "../port/port";
+import type { CommitDraftFailure } from "../port/workspace";
 import { t } from "../i18n";
 import { reason } from "../i18n/kernel";
 
@@ -10,10 +11,19 @@ type Phase =
   | { phase: "done"; result: CommitResult }
   | { phase: "failed"; error: string };
 
+// Why there is no drafted message. The staged set is still shown, so the person
+// writes it themselves; each reason says what to expect from drafting again.
+const DRAFT_NOTE: Record<CommitDraftFailure, string> = {
+  no_model: "当前会话没有可用的模型，不能起草。请手动填写提交说明。",
+  timeout: "起草超时了。请手动填写提交说明，或重新起草。",
+  no_answer: "模型没有给出提交说明。请手动填写，或重新起草。",
+  model_failed: "模型起草失败。请手动填写提交说明，或重新起草。",
+};
+
 // A proposal, not an action: the model drafts for what is staged, the person
 // edits, and only the confirm button records a local commit. Nothing here stages
 // a file or pushes.
-export function useCommitCard(port: AgentPort, onCommitted: () => void) {
+export function useCommitCard(port: AgentPort, onCommitted: () => void, repo?: string) {
   const [state, setState] = useState<Phase>({ phase: "idle" });
   const pending = useRef<AbortController | null>(null);
   useEffect(() => () => pending.current?.abort(), []);
@@ -23,7 +33,7 @@ export function useCommitCard(port: AgentPort, onCommitted: () => void) {
     const ac = new AbortController();
     pending.current = ac;
     setState({ phase: "drafting" });
-    port.proposeCommit(ac.signal).then(
+    (repo ? port.proposeCommit(ac.signal, repo) : port.proposeCommit(ac.signal)).then(
       (proposal) =>
         !ac.signal.aborted && setState({ phase: "ready", proposal, message: proposal.message, ack: false, committing: false }),
       (e) => !ac.signal.aborted && setState({ phase: "failed", error: reason(e) }),
@@ -95,7 +105,7 @@ export function useCommitCard(port: AgentPort, onCommitted: () => void) {
   const confirm = () => {
     set({ committing: true, error: undefined });
     port
-      .commitStaged({ message, fingerprint: proposal.fingerprint, acknowledgeSecrets: ack })
+      .commitStaged({ ...(repo ? { repo } : {}), message, fingerprint: proposal.fingerprint, acknowledgeSecrets: ack })
       .then(
         (result) => {
           setState({ phase: "done", result });
@@ -134,8 +144,10 @@ export function useCommitCard(port: AgentPort, onCommitted: () => void) {
           </label>
         </div>
       )}
+      {proposal.draftFailure && <p className="refine-error" role="status" data-draft={proposal.draftFailure}>{t(DRAFT_NOTE[proposal.draftFailure])}</p>}
       <textarea
         className="commit-message"
+        autoFocus={!!proposal.draftFailure}
         data-action="commit.edit"
         aria-label={t("提交说明")}
         value={message}

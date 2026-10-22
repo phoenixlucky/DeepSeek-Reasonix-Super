@@ -8,29 +8,29 @@ import (
 	"reasonix/internal/tools/builtin"
 )
 
-// computerHelper is the native helper of a host that can operate this
-// machine's applications, or nil in every other host.
-var computerHelper *computer.Helper
-
-// SetComputerHelper gives every assembly in this process the computer-use
-// tools, carried out by the helper executable at path. The host decides: the
-// helper's permissions belong to the application that started it.
-func SetComputerHelper(path string) {
-	if path == "" {
-		computerHelper = nil
-		return
-	}
-	computerHelper = computer.NewHelper(path)
-}
-
 // bindMachineTools binds the tools that reach past the workspace into this
-// machine: its browser, and its applications when the host has a helper. They
+// machine: its browser, and its applications when the host provides a driver. They
 // replace the unbound built-ins, so they are bound after those are registered.
-func bindMachineTools(reg *tool.Registry, cfg *config.Config, root string, reused *browser.Session) *browser.Session {
-	if computerHelper != nil {
-		for _, t := range builtin.ComputerTools(computer.NewSession(computerHelper)) {
+func bindMachineTools(reg *tool.Registry, cfg *config.Config, root string, reused *browser.Session, driver *computer.Driver) *browser.Session {
+	if driver != nil {
+		for _, t := range builtin.ComputerTools(computer.NewSession(driver)) {
 			reg.Add(t)
 		}
+	} else {
+		// No helper means the two tools could only answer `computer.unavailable`,
+		// refused the way `browserWithoutEngine` refuses below. A tool the model
+		// can see and cannot use is a turn spent discovering that.
+		suspendComputerTools(reg)
 	}
 	return bindBrowser(reg, cfg, root, reused)
+}
+
+// suspendComputerTools takes the computer-use tools out of the registry and
+// keeps them out, for the reason `suspendBrowserTools` does: `addBuiltins` has
+// already seeded the unbound copies, and a later `Add` — an MCP handshake, a
+// preset that binds its own set — would put them back.
+func suspendComputerTools(reg *tool.Registry) {
+	for _, t := range builtin.ComputerTools(nil) {
+		reg.SuspendPrefix(t.Name())
+	}
 }

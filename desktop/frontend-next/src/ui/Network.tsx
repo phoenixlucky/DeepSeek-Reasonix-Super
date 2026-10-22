@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { t } from "../i18n";
 import type { AgentPort, NetworkProbe, NetworkSettings } from "../port/port";
-import { reason } from "../i18n/kernel";
+import { reason, say } from "../i18n/kernel";
 
 // Three modes, not six input boxes. Nobody's first question is whether they want
 // http_proxy or https_proxy — it is "use what the system uses" or "here is mine".
@@ -170,10 +170,10 @@ export function Network({ port, host = "" }: { port: AgentPort; host?: string })
           {probes.map((p, i) => (
             <div className="probe" key={i} data-ok={p.ok ? "" : undefined}>
               <i className="mk">{p.ok ? "✓" : "×"}</i>
-              <span className="lb">{STEP_LABEL[p.step] ?? p.step}</span>
-              <span className="dt">{p.detail}</span>
+              <span className="lb">{STEP_LABEL[p.step] ? t(STEP_LABEL[p.step]) : p.step}</span>
+              <span className="dt">{say(p.code ? { code: p.code, params: p.params } : null, p.detail)}</span>
               <span className="ms">{p.durationMs ? `${p.durationMs}ms` : ""}</span>
-              {p.advice && <span className="adv">{p.advice}</span>}
+              {p.advice && <span className="adv">{say(p.adviceCode ? { code: p.adviceCode, params: p.params } : null, p.advice)}</span>}
             </div>
           ))}
         </div>

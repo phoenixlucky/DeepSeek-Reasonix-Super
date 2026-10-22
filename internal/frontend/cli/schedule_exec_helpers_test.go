@@ -18,12 +18,15 @@ import (
 
 	"reasonix/internal/base/testenv"
 	"reasonix/internal/contract/config"
+	"reasonix/internal/frontend/schedulerun"
 	"reasonix/internal/runtime/schedrun"
 	"reasonix/internal/state/schedule"
+	"reasonix/internal/state/workspacelist"
 )
 
 const (
 	asCLIEnv        = "RX_TEST_AS_CLI"
+	asHostEnv       = "RX_TEST_AS_HOST"
 	asSupervisorEnv = "RX_TEST_AS_SUPERVISOR"
 )
 
@@ -40,6 +43,10 @@ func scheduleTestHelperProcess() (int, bool) {
 		sup := &schedrun.Supervisor{Store: store, Policy: schedule.DefaultPolicy()}
 		_, _ = sup.Run(context.Background(), id)
 		return 0, true
+	}
+	if os.Getenv(asHostEnv) == "1" {
+		// The Studio host's entry: no command line around the child.
+		return schedulerun.Exec(os.Args[3:]), true
 	}
 	if os.Getenv(asCLIEnv) == "1" {
 		return Run(os.Args[1:], "test"), true
@@ -165,6 +172,8 @@ type execWorld struct {
 	sc    schedule.Schedule
 	run   schedule.Run
 	pol   schedule.Policy
+	// asHost starts the child the way the Studio host does, with no command line.
+	asHost bool
 }
 
 type testClock struct {
@@ -214,6 +223,7 @@ api_key_env = "SCHED_FAKE_KEY"
 	}
 	store := base.WithClock(clk.Now)
 	ws := testenv.TempDir(t)
+	trustSchedFolder(t, ws)
 	writeTestFile(t, filepath.Join(ws, "notes.txt"), "the TODO list is empty\n", 0o644)
 	writeTestFile(t, filepath.Join(ws, "reasonix.toml"), "default_model = \"evil/none\"\n", 0o644)
 	sc, err := store.Create(t.Context(), pol, schedule.CreateRequest{
@@ -239,6 +249,9 @@ var fakeModelRef = schedule.Model{Provider: "fake", Model: "fake-model"}
 func (w *execWorld) child() *exec.Cmd {
 	cmd := exec.Command(os.Args[0], "schedule", "exec", w.run.TriggerID)
 	cmd.Env = append(os.Environ(), asCLIEnv+"=1")
+	if w.asHost {
+		cmd.Env = append(cmd.Env, asHostEnv+"=1")
+	}
 	cmd.Dir = os.TempDir()
 	return cmd
 }
@@ -261,4 +274,20 @@ func (w *execWorld) runRecord() schedule.Run {
 	}
 	w.t.Fatal("run vanished")
 	return schedule.Run{}
+}
+
+// trustSchedFolder remembers dir as a project and marks it trusted, the state a
+// schedule needs its folder to be in both when it is created and when it runs.
+func trustSchedFolder(t *testing.T, dir string) {
+	t.Helper()
+	list := filepath.Join(config.MemoryUserDir(), workspacelist.FileName)
+	if err := workspacelist.Update(t.Context(), list, false, func(l *workspacelist.List) error {
+		l.Paths = append(l.Paths, dir)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.NewProjectGrantStore(config.RootsForHome("").Home()).SetTrust(dir, config.WorkspaceTrusted); err != nil {
+		t.Fatal(err)
+	}
 }

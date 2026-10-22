@@ -65,14 +65,15 @@ func TestResolveJumpHostsUsesConfiguredAliasesAndSSHConfig(t *testing.T) {
 	}
 }
 
-// The same alias through this machine's installed ssh. A failure at the
-// product's 15 s subprocess timeout is ssh not being scheduled, not a wrong
-// resolution: do not shorten that timeout to make this pass.
+// The same alias through this machine's installed ssh. The subprocess bound
+// here only reports a hang: a runner that starts ssh slowly (first execution
+// under a scanner, a saturated machine) must not fail a resolution test.
 func TestResolveJumpHostsThroughTheInstalledOpenSSH(t *testing.T) {
 	if _, err := exec.LookPath("ssh"); err != nil {
 		t.Skip("OpenSSH client is not installed")
 	}
 	home, sshCfg := jumpSSHConfig(t)
+	sshCfg.openSSHTimeout = testenv.Budget(t)
 	hops, err := ResolveJumpHosts(config.Default(), []string{"bastion"}, sshCfg)
 	if err != nil {
 		t.Fatal(err)

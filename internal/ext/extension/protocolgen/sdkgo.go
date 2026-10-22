@@ -35,6 +35,7 @@ var sdkEnumPrefixes = map[string]string{
 	"ProviderChunkType": "Chunk",
 	"ProviderErrorCode": "",
 	"ContentEncoding":   "Content",
+	"SessionReadKind":   "SessionRead",
 	"ErrorReason":       "Err",
 }
 

@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,7 +38,7 @@ func TestRememberToolSaves(t *testing.T) {
 		t.Fatalf("tool output must use a stable reference, got %q", out)
 	}
 
-	list := store.List()
+	list := mustStore(t, store).List()
 	if len(list) != 1 || list[0].Name != "likes-go" || list[0].Type != TypeUser || list[0].Scope != FactScopeGlobal {
 		t.Fatalf("memory not saved correctly: %+v", list)
 	}
@@ -52,7 +53,7 @@ func TestRememberToolDefaultsToProjectScope(t *testing.T) {
 	if _, err := NewRememberTool(store).Execute(context.Background(), []byte(`{"name":"project-feedback","description":"current project only","type":"feedback","body":"body"}`)); err != nil {
 		t.Fatal(err)
 	}
-	list := store.List()
+	list := mustStore(t, store).List()
 	if len(list) != 1 || list[0].Scope != FactScopeProject {
 		t.Fatalf("memory = %+v, want project scope", list)
 	}
@@ -86,7 +87,7 @@ func TestRememberToolUpdateWithoutScopePreservesLegacyGlobalScope(t *testing.T) 
 	if _, err := os.Stat(filepath.Join(store.Dir, "no-emoji.md")); !os.IsNotExist(err) {
 		t.Fatalf("omitted-scope update created a project copy, stat err=%v", err)
 	}
-	list := store.List()
+	list := mustStore(t, store).List()
 	if len(list) != 1 || list[0].Scope != FactScopeGlobal || !strings.Contains(list[0].Body, "every project") {
 		t.Fatalf("updated memory = %+v, want one global active copy", list)
 	}
@@ -109,13 +110,43 @@ func TestRememberToolUpdatesScopeQualifiedReference(t *testing.T) {
 	if !strings.Contains(out, "global/shared.md") || strings.Contains(out, root) {
 		t.Fatalf("qualified update output = %q", out)
 	}
-	global, ok := store.Read("global/shared.md")
+	global, ok := mustStore(t, store).Read("global/shared.md")
 	if !ok || global.Name != "shared" || global.Scope != FactScopeGlobal || global.Revision != 2 || global.Body != "global v2" {
 		t.Fatalf("updated global = %+v, ok=%v", global, ok)
 	}
-	project, ok := store.Read("project/shared.md")
+	project, ok := mustStore(t, store).Read("project/shared.md")
 	if !ok || project.Revision != 1 || project.Body != "project body" {
 		t.Fatalf("project fact changed = %+v, ok=%v", project, ok)
+	}
+}
+
+// A name active in two scopes must come back to the model carrying the
+// refusal's identity, both candidate ids, and the two ways to say which fact
+// was meant. The tool returns the store's error, which the agent renders into
+// the tool result the model reads.
+func TestRememberToolReturnsCrossScopeNameIdentity(t *testing.T) {
+	store, global, project := crossScopeNameStore(t)
+
+	out, err := NewRememberTool(store).Execute(context.Background(), []byte(`{"name":"shared","description":"updated","body":"v2"}`))
+	if err == nil {
+		t.Fatalf("remember reported success for a name active in two scopes: %q", out)
+	}
+	if out != "" {
+		t.Fatalf("a refused remember returned an output body: %q", out)
+	}
+	if !errors.Is(err, ErrNameActiveInTwoScopes) {
+		t.Fatalf("errors.Is(err, ErrNameActiveInTwoScopes) = false (err = %v)", err)
+	}
+	for _, want := range []string{
+		"memory.name_active_in_two_scopes",
+		global.Memory.ID,
+		project.Memory.ID,
+		"stable id",
+		"scope-qualified",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the model-facing refusal does not render %q:\n%s", want, err)
+		}
 	}
 }
 
@@ -145,6 +176,47 @@ func TestRememberToolQueuesNote(t *testing.T) {
 	}
 	if len(q.notes) != 1 || !strings.Contains(q.notes[0], "uses-rmb") || !strings.Contains(q.notes[0], "\nb") {
 		t.Fatalf("expected one queued note with the saved memory name and body, got %v", q.notes)
+	}
+}
+
+// TestRememberToolQueuesTheTypedFact pins the queue contract: the fact the tool
+// wrote rides the queue as a typed Memory, so the controller records what was
+// written rather than parsing the note's prose back into memory.
+func TestRememberToolQueuesTheTypedFact(t *testing.T) {
+	store := Store{Dir: testenv.TempDir(t)}
+	q := &fakeQueue{}
+	ctx := WithQueue(context.Background(), q)
+	if _, err := NewRememberTool(store).Execute(ctx, []byte(`{"name":"uses-rmb","description":"balance is RMB","type":"user","body":"b"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.delivered) != 1 {
+		t.Fatalf("remember queued %d typed facts, want exactly 1", len(q.delivered))
+	}
+	saved, ok := mustStore(t, store).Read("uses-rmb")
+	if !ok {
+		t.Fatal("the tool wrote no fact")
+	}
+	got := q.delivered[0]
+	if got.ID != saved.ID || got.Revision != saved.Revision || got.Body != saved.Body ||
+		got.Name != saved.Name || got.Scope != saved.Scope {
+		t.Fatalf("queued typed fact %+v does not describe the saved fact %+v", got, saved)
+	}
+}
+
+// TestForgetToolQueuesNoTypedFact: a delete has nothing left to re-check, so it
+// must not hand the controller a delivered fact to chase.
+func TestForgetToolQueuesNoTypedFact(t *testing.T) {
+	store := Store{Dir: testenv.TempDir(t)}
+	if _, err := store.Save(Memory{Name: "old-fact", Description: "d", Type: TypeProject, Body: "b"}); err != nil {
+		t.Fatal(err)
+	}
+	q := &fakeQueue{}
+	ctx := WithQueue(context.Background(), q)
+	if _, err := NewForgetTool(store).Execute(ctx, []byte(`{"name":"old-fact"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.delivered) != 0 {
+		t.Fatalf("forget queued %d typed facts, want none: %+v", len(q.delivered), q.delivered)
 	}
 }
 

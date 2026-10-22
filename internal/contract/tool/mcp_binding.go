@@ -16,7 +16,9 @@ type MCPBinding struct {
 	CapabilityID string
 }
 
-func mcpBinding(t Tool) (MCPBinding, bool) {
+// MCPBindingFor returns the host-declared identity of an MCP adapter.
+// Callable names alone cannot recover normalized or shortened raw names.
+func MCPBindingFor(t Tool) (MCPBinding, bool) {
 	meta, ok := t.(MCPMetadata)
 	if !ok {
 		return MCPBinding{}, false

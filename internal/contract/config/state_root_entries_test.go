@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"reasonix/internal/base/testenv"
 )
 
 // A directory written under the state root but missing from StateRootEntries is
@@ -37,7 +39,7 @@ func TestStateRootEntriesCoversEverythingWrittenThere(t *testing.T) {
 func stateRootJoins(dir string) (map[string]string, error) {
 	found := map[string]string{}
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil && vanishedMidWalk(path, err) {
+		if err != nil && testenv.VanishedMidWalk(path, err) {
 			return nil
 		}
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {

@@ -6,9 +6,41 @@ import "./testkit";
 import { Market } from "./Market";
 import { OwnInstall } from "./MarketOwn";
 import { MockPort } from "../port/mock";
+import { HttpError } from "../port/http_error";
+import { boot, STORAGE } from "../i18n";
 import type { AgentPort, MarketPlan } from "../port/port";
 
 afterEach(cleanup);
+
+it.each(["zh", "en"])("explains an invalid commit after trusting a publisher in %s", async (lang) => {
+  localStorage.setItem(STORAGE, lang);
+  boot();
+  try {
+    const port = new MockPort() as unknown as AgentPort;
+    const detail = await port.marketDetail("acme/review-kit");
+    const pkg = { ...detail.package, kind: "plugin" as const, pinned: false };
+    vi.spyOn(port, "marketList").mockResolvedValue({ packages: [pkg], limit: 24, offset: 0 });
+    vi.spyOn(port, "marketMyVote").mockResolvedValue({ signedIn: false, value: 0 });
+    vi.spyOn(port, "marketDetail").mockResolvedValue({ ...detail, package: pkg, pinned: false });
+    const plan = vi.spyOn(port, "planMarket").mockRejectedValue(new HttpError(409, "fallback", {
+      code: "market.invalid_plugin_source", error: "fallback",
+    }));
+    const install = vi.spyOn(port, "installMarket");
+    render(<Market port={port} onInstalled={() => {}} />);
+    await userEvent.click(await screen.findByRole("button", { name: /review-kit/ }));
+    const trust = lang === "zh" ? "信任并安装" : "Trust and install";
+    await userEvent.click(await screen.findByRole("button", { name: trust }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("40");
+    expect(alert.textContent).toContain(lang === "zh" ? "提交号" : "commit");
+    expect(alert.textContent).not.toContain("本机");
+    expect(plan).toHaveBeenCalledWith(expect.objectContaining({ trust: true }));
+    expect(install).not.toHaveBeenCalled();
+  } finally {
+    localStorage.setItem(STORAGE, "zh");
+    boot();
+  }
+});
 
 it.each(["public", "own"] as const)("shows a blocked %s preview and retries before offering installation", async (mode) => {
   const port = new MockPort() as unknown as AgentPort;

@@ -58,4 +58,5 @@ var kindNames = map[event.Kind]string{
 	event.RewindChanged:           "rewind_changed",
 	event.GraphDelta:              "graph_delta",
 	event.ProgressWatchEvent:      "progress_watch",
+	event.AskEngaged:              "ask_engaged",
 }

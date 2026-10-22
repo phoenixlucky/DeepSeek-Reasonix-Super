@@ -18,7 +18,7 @@ export class SseShell extends SseExtensions {
   // post0 for the same reason setContextWindow uses it: a refusal here carries
   // a code, and hand-rolling the fetch threw it away — "this server does not
   // let you set the shell" reached the panel in the kernel's English.
-  saveShell(prefer: string, path: string) {
-    return this.post0<ShellSettings>("/shell", { prefer, path });
+  saveShell(prefer: string, path: string, args?: string[]) {
+    return this.post0<ShellSettings>("/shell", args && args.length > 0 ? { prefer, path, args } : { prefer, path });
   }
 }

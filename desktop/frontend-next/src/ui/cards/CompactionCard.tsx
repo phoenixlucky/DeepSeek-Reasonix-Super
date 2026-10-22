@@ -58,6 +58,42 @@ function Coverage({ c }: { c: Compaction }) {
   );
 }
 
+const PART: Record<string, string> = {
+  system: "系统提示",
+  tools: "工具定义",
+  digest: "摘要",
+  user: "用户消息",
+  reply: "模型回复",
+  tool_output: "工具输出",
+};
+
+// What a fold left behind, when that is still a large share of the window. The
+// card says what the rest is made of — the host knows, and a person looking at
+// "607k to 316k" otherwise cannot tell whether the remainder is normal.
+function Remains({ c }: { c: Compaction }) {
+  const r = c.remains;
+  if (!r || r.total <= 0 || r.parts.length === 0) return null;
+  const top = r.parts.filter((p) => p.tokens > 0).slice(0, 3).map((p) => `${t(PART[p.name] ?? p.name)} ${tokens(p.tokens)}`).join("、");
+  const big = r.largest?.[0];
+  return (
+    <div className="comp-l">
+      <div className="row">
+        <span className="k">·</span>
+        <span>
+          {tx("折叠后仍有 {n}：{top}", { n: <b>{tokens(r.total)}</b>, top })}
+          {big && big.tokens > 0 && <>{" · "}{big.tool ? t("最大的一条是 {tool} 的结果 {n}", { tool: big.tool, n: tokens(big.tokens) }) : t("最大的一条是 {role} 消息 {n}", { role: t(PART[big.role === "assistant" ? "reply" : big.role === "tool" ? "tool_output" : "user"] ?? big.role), n: tokens(big.tokens) })}</>}
+        </span>
+      </div>
+      {r.active > 0 && (
+        <div className="row">
+          <span className="k">·</span>
+          <span>{t("正在进行的这一轮占 {n}，折叠动不了它。", { n: tokens(r.active) })}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // The tail of what has been written, kept to one line: a digest is thousands
 // of tokens of headings and lists, and growing the card by all of them would
 // move everything below it for the length of the fold.
@@ -76,13 +112,12 @@ export function CompactionCard({ c, done }: { c: Compaction; done: boolean }) {
     <div className="call" data-k="host">
       <div className="g">
         <Sym glyph="⊘" />
-        <span className="line" />
       </div>
       <div className="c">
         <div className="hl">
           <span className={done ? "nm" : "nm shim"}>{t(!done ? "正在压缩…" : aborted ? "压缩未完成" : "压缩完成")}</span>
           <span className="tag">{t("主机")}</span>
-          {c.trigger && <span className="arg">{why(c)}</span>}
+          {c.trigger && <span className="arg" title={why(c)}>{why(c)}</span>}
         </div>
         {/* While it runs, the digest's own last line is the progress bar: a
             fold can take a minute, and a placeholder that says nothing for a
@@ -138,6 +173,7 @@ export function CompactionCard({ c, done }: { c: Compaction; done: boolean }) {
                 )}
               </div>
               <Coverage c={c} />
+              <Remains c={c} />
               {c.summary && <Brief text={c.summary} />}
             </div>
           </div>

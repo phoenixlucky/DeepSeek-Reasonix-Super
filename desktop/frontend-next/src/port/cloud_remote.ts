@@ -6,6 +6,9 @@ import { classifyHandshakeFailure, failureView, retryAfterSeconds } from "./clou
 import { linkCodec, RemoteLink, RemoteLinkError, type RemoteConnection, type RemoteEnd } from "./cloud_link";
 
 const ACCOUNT = (import.meta.env.VITE_ACCOUNTS_API || "https://id.reasonix.io").replace(/\/$/, "");
+export const accountOrigin = ACCOUNT;
+// The computer this page is controlling; null on the desktop's own window.
+export const remoteDeviceId = () => new URLSearchParams(location.search).get("device")?.trim() || null;
 const RELAY = (import.meta.env.VITE_REMOTE_GATEWAY || "wss://remote.reasonix.io").replace(/\/$/, "");
 const REMOTE_HOME = import.meta.env.VITE_REMOTE_HOME || "https://reasonix.io/remote/";
 const HANDSHAKE_TIMEOUT_MS = 30_000;
@@ -54,10 +57,34 @@ interface RemoteDevice {
   revokedAt?: string | null;
 }
 
+// Browsers older than Chromium 133, Firefox 130 and Safari 17 have no X25519 in
+// WebCrypto and say so with a NotSupportedError. Those take the audited
+// software curve, loaded only then; every other step of the channel still runs
+// in WebCrypto.
+type Bytes = Uint8Array<ArrayBuffer>;
+
+async function agreement(devicePublic: Bytes): Promise<{ secret: Bytes; publicKey: Bytes }> {
+  try {
+    const pair = await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]);
+    const deviceKey = await crypto.subtle.importKey("raw", devicePublic, { name: "X25519" }, false, []);
+    const secret = new Uint8Array(await crypto.subtle.deriveBits({ name: "X25519", public: deviceKey }, pair.privateKey, 256));
+    return { secret, publicKey: new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey)) };
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === "NotSupportedError")) throw error;
+    return softwareAgreement(devicePublic);
+  }
+}
+
+async function softwareAgreement(devicePublic: Bytes): Promise<{ secret: Bytes; publicKey: Bytes }> {
+  const { x25519 } = await import("@noble/curves/ed25519.js").catch(() => {
+    throw new RemoteLinkError("transient", t("无法加载这个浏览器需要的加密组件，请检查网络后重试。"));
+  });
+  const keys = x25519.keygen();
+  return { secret: new Uint8Array(x25519.getSharedSecret(keys.secretKey, devicePublic)), publicKey: new Uint8Array(keys.publicKey) };
+}
+
 async function encryptedChannel(device: RemoteDevice, socket: WebSocket) {
-  const pair = await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]);
-  const deviceKey = await crypto.subtle.importKey("raw", base64ToBytes(device.publicKey), { name: "X25519" }, false, []);
-  const secret = await crypto.subtle.deriveBits({ name: "X25519", public: deviceKey }, pair.privateKey, 256);
+  const { secret, publicKey } = await agreement(base64ToBytes(device.publicKey));
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const material = await crypto.subtle.importKey("raw", secret, "HKDF", false, ["deriveKey"]);
   const info = new TextEncoder().encode(`reasonix-remote-v1|${device.id}`);
@@ -68,7 +95,6 @@ async function encryptedChannel(device: RemoteDevice, socket: WebSocket) {
     false,
     ["encrypt", "decrypt"],
   );
-  const publicKey = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
   socket.send(JSON.stringify({
     v: 1, type: "hello", publicKey: bytesToBase64(publicKey), salt: bytesToBase64(salt),
   }));
@@ -150,21 +176,27 @@ interface ReplayAnswer {
 }
 
 // Stands in for EventSource over the relay by polling /events/replay. A cursor
-// the URL carries is where a replacement stream resumes; without one it attaches
-// at the watermark, and asking past it returns no frames, not the whole log.
-// Frames the SSE transport writes on its own (the watermark, a gap) are said
-// here too, or the stream reads as silent to whoever watches it.
+// the URL carries is where a replacement stream resumes. Frames the SSE
+// transport writes on its own (the watermark, a gap) are said here too, or the
+// stream reads as silent to whoever watches it.
 export class RemoteEventSource {
   onmessage: ((event: MessageEvent<string>) => void) | null = null;
   private closed = false;
   private after: number | null;
   private readonly replay: string;
+  // What an attach asks for. Only the main event stream carries connection-local
+  // state to hand back — the pending prompt — so only its attach asks for
+  // nothing and is answered with that prompt. The tree stream reads the tree,
+  // not history, so its attach asks past the watermark as it always has:
+  // replaying the tree's history would only re-read the tree.
+  private readonly attachQuery: string;
 
   constructor(url: string) {
     const target = new URL(url, location.origin);
     const cursor = Number(target.searchParams.get("lastEventId") ?? "");
     this.after = target.searchParams.has("lastEventId") && Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : null;
     this.replay = `${target.pathname}/replay`;
+    this.attachQuery = target.pathname.endsWith("/tree/events") ? `?lastEventId=${Number.MAX_SAFE_INTEGER}` : "";
     queueMicrotask(() => void this.poll());
   }
 
@@ -180,12 +212,15 @@ export class RemoteEventSource {
     while (!this.closed) {
       let active = false;
       try {
-        const response = await fetch(`${this.replay}?lastEventId=${this.after ?? Number.MAX_SAFE_INTEGER}`, { credentials: "same-origin" });
+        // No cursor yet is an attach; the main stream's attach asks for nothing
+        // so the kernel answers with the waiting prompt, the tree stream's asks
+        // past the watermark. Every later read resumes from where it stands.
+        const query = this.after !== null ? `?lastEventId=${this.after}` : this.attachQuery;
+        const response = await fetch(`${this.replay}${query}`, { credentials: "same-origin" });
         if (response.ok && !this.closed) {
           const body = await response.json() as ReplayAnswer;
           const watermark = typeof body.watermark === "number" ? body.watermark : null;
-          const attaching = this.after === null;
-          const frames = attaching ? [] : body.frames ?? [];
+          const frames = body.frames ?? [];
           active = frames.length > 0;
           if (this.after === null) this.after = watermark ?? 0;
           else if (body.complete === false) {
@@ -280,6 +315,12 @@ async function connect(deviceId: string, nativeFetch: typeof fetch, useBootstrap
   }
 }
 
+// ownFetch is the page's own fetch, bound before remoteHub replaces
+// globalThis.fetch with one that routes same-origin requests over the tunnel.
+// A hosted page has to read its own origin — the build it is running — not the
+// kernel's, so anything that reads the page itself uses this and not the global.
+export const ownFetch: typeof fetch = globalThis.fetch.bind(globalThis);
+
 export async function remoteHub(deviceId: string): Promise<HubPort> {
   const nativeFetch = globalThis.fetch.bind(globalThis);
   let first: RemoteConnection;
@@ -298,10 +339,13 @@ export async function remoteHub(deviceId: string): Promise<HubPort> {
     return new URL(request.url).origin === location.origin ? link.fetch(request) : nativeFetch(request);
   }) as typeof fetch;
   globalThis.EventSource = RemoteEventSource as unknown as typeof EventSource;
-  return new SseHub();
+  // RemoteEventSource is a polled stand-in for one stream. The multiplexed
+  // stream also needs an open frame and per-pane subscriptions, which polling
+  // cannot carry, so every pane here reads its own /events instead.
+  return new SseHub({ mux: false });
 }
 
 export const remoteCodec = {
-  bytesToBase64, base64ToBytes, concatChunks, announceClosed,
+  bytesToBase64, base64ToBytes, concatChunks, announceClosed, agreement,
   waitForSocketOpen, handshakeTimeoutMS: HANDSHAKE_TIMEOUT_MS,
 };

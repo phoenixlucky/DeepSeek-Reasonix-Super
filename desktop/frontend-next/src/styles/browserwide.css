@@ -20,3 +20,7 @@
 [data-fold~="side"] .app[data-browser="on"] .pane[data-browser-size="wide"]:has(> .pbody[data-dock]) > .compose {
   display: block;
 }
+
+.pane[data-browser-size="full"]:has(> .pbody[data-dock]) > .findhost { grid-area: 1 / 1 / 2 / 3 }
+.pane[data-browser-size="full"]:has(> .pbody[data-dock]) > .scroll[data-pane="browser"] { grid-area: 2 / 1 / 4 / 3; border-left: 0 }
+.pane[data-browser-size="full"]:has(> .pbody[data-dock]) > :is(.pbody, .compose, .gutter-r) { display: none }

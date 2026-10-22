@@ -131,6 +131,17 @@ func (c *envConn) Exec(ctx context.Context, cmd string) (remote.ExecResult, erro
 	return c.Conn.Exec(ctx, "export PATH="+shellQuote(strings.Join(c.env.Path, ":"))+`:"$PATH"; `+cmd)
 }
 
+// ExecDetached keeps the captured PATH on a launch and leaves it to the wrapped
+// connection how the launched process is kept alive; one with nothing special
+// to do runs it as any other command.
+func (c *envConn) ExecDetached(ctx context.Context, cmd string) (remote.ExecResult, error) {
+	cmd = "export PATH=" + shellQuote(strings.Join(c.env.Path, ":")) + `:"$PATH"; ` + cmd
+	if d, ok := c.Conn.(Detacher); ok {
+		return d.ExecDetached(ctx, cmd)
+	}
+	return c.Conn.Exec(ctx, cmd)
+}
+
 // withLoginEnv wraps conn only when the capture produced a PATH.
 func withLoginEnv(env loginEnv, conn Conn) Conn {
 	if env.Outcome != EnvCaptured {

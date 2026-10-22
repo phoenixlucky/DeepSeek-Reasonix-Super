@@ -169,7 +169,8 @@ func TestWorkspaceListConcurrentUpdatesAndWriteFailure(t *testing.T) {
 
 func TestWorkspaceAddAtCapacityRefusesWithoutDroppingManuallyOrderedPaths(t *testing.T) {
 	t.Setenv("REASONIX_HOME", testenv.TempDir(t))
-	for i := range workspaceRecentMax {
+	limitWorkspaces(t, testWorkspaceLimit)
+	for i := range testWorkspaceLimit {
 		rememberWorkspace(fmt.Sprintf("/project-%d", i))
 	}
 	paths := Workspaces()
@@ -243,5 +244,60 @@ func TestWorkspaceRepairPreservesReadFailures(t *testing.T) {
 	forgetWorkspace("/old")
 	if info, err := os.Stat(path); err != nil || !info.IsDir() {
 		t.Fatalf("read failure replaced the source directory: %v (%v)", info, err)
+	}
+}
+
+// Dragging a project to a place names where it lands, not how many steps to
+// take: the order after the call is the one the person dropped.
+func TestWorkspacePlaceLandsBeforeTheNamedProjectOrAtTheEnd(t *testing.T) {
+	t.Setenv("REASONIX_HOME", testenv.TempDir(t))
+	a, b, c, d := testenv.TempDir(t), testenv.TempDir(t), testenv.TempDir(t), testenv.TempDir(t)
+	for _, dir := range []string{a, b, c, d} {
+		rememberWorkspace(dir)
+	}
+	// rememberWorkspace puts a new folder first, so the saved order is d c b a.
+	h := NewHub(HubOptions{})
+	srv := httptest.NewServer(operatorHandler(h))
+	defer srv.Close()
+	place := func(path string, before any) (int, string) {
+		body, _ := json.Marshal(map[string]any{"path": path, "before": before})
+		return postLaunchJSON(t, srv.URL+"/tree/workspaces/move", string(body), nil)
+	}
+	launch := LaunchWorkspaces()[0]
+	for _, tc := range []struct {
+		name   string
+		path   string
+		before any
+		want   []string
+	}{
+		{"to the front", a, d, []string{a, d, c, b}},
+		{"into the middle", d, b, []string{a, c, d, b}},
+		{"to the end", a, "", []string{c, d, b, a}},
+		{"before itself changes nothing", c, c, []string{c, d, b, a}},
+		{"before the project it already precedes changes nothing", c, d, []string{c, d, b, a}},
+	} {
+		if status, code := place(tc.path, tc.before); status != http.StatusNoContent {
+			t.Fatalf("%s = %d %s, want 204", tc.name, status, code)
+		}
+		if got := Workspaces(); !slices.Equal(got, tc.want) {
+			t.Fatalf("%s: order = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	if got := LaunchWorkspaces()[0]; got != launch {
+		t.Fatalf("dropping a project changed the launch project: %s then %s", launch, got)
+	}
+	for _, tc := range []struct {
+		path   string
+		before any
+		status int
+		code   string
+	}{
+		{"unknown", a, 404, "request.not_found"},
+		{a, "unknown", 404, "request.not_found"},
+		{"", a, 400, "request.missing_field"},
+	} {
+		if status, code := place(tc.path, tc.before); status != tc.status || code != tc.code {
+			t.Fatalf("place %q before %v = %d %s, want %d %s", tc.path, tc.before, status, code, tc.status, tc.code)
+		}
 	}
 }

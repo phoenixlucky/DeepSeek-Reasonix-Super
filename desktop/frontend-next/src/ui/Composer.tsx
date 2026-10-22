@@ -1,11 +1,18 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { t } from "../i18n";
+import { UNCONFIGURED_REF } from "./ConnectNote";
 import { reason } from "../i18n/kernel";
-import type { AgentPort, ChipCall, ModelEntry, SessionStatus, Attachment, WorkspaceGit } from "../port/port";
+import { keepPasteAsFile, PasteKeep, type PasteChip } from "./pastekeep";
+import type { AgentPort, ChipCall, ModelEntry, SessionStatus, WorkspaceGit } from "../port/port";
 import { Picker } from "./Menu";
 import { BranchChip } from "./BranchChip";
+import { WorktreeChip } from "./WorktreeChip";
+import { useWorktreeSetup, WorktreeSetupFailure } from "./useWorktreeSetup";
+import { WorktreeSetupPage } from "./WorktreeSetupPage";
 import { Policy } from "./Policy";
-import { modelMenu } from "./modelmenu";
+import { chosenGroups, groupHeadings, modelMenu, narrowToGroups } from "./modelmenu";
+import { ModelGroupChips } from "./ModelGroupChips";
 import { effortMenu, effortReading, effortsFor, forcesThinkingFor, routeEffortPick } from "./effort";
 import { CompletionMenu, useCompletion } from "./Completion";
 import { ChipMirror, useSkillChips } from "./ChipMirror";
@@ -22,10 +29,18 @@ import type { Quote } from "./cards/SayCard";
 import { StudioIcon } from "./StudioIcon";
 import { usePromptRefine } from "./PromptRefine";
 import { useProviderOrder } from "../state/providerorder";
+import { useModelFilter, writeModelFilter } from "../state/modelfilter";
 import { useDraft } from "./useDraft";
+import type { Submitted } from "./usesubmit";
 import { touchKeyboard } from "./touchKeyboard";
+import { ImagePreview } from "./ImagePreview";
+import { SideAskButton } from "./SideAskButton";
+import { chipId, chipName, isPicture, quoteBlock, releaseChip, type Chip } from "./composerChips";
 
 interface Props {
+  worktreeTarget?: HTMLElement | null;
+  onWorktreePhase?: (phase: string | null) => void;
+  fresh?: boolean;
   port: AgentPort;
   status: SessionStatus | null;
   running: boolean;
@@ -36,90 +51,67 @@ interface Props {
   // A line taken back from the queue. The counter makes the same text twice
   // two requests, as it does for a quote.
   restore?: { n: number; text: string };
+  // Text another surface hands the composer, such as a file reference; it goes
+  // in at the caret with a space on either side.
+  inject?: { n: number; text: string; session?: { id: string; title: string } };
   // Resolves false when the line never left, so what was typed comes back
   // rather than being lost to a refusal the user could not have prevented.
   // Bumped when something outside asks for the cursor — answering a plan card
   // with "revise" is a request to say what to change, and the saying happens here.
   focus?: number;
-  onSubmit: (text: string, chips?: ChipCall) => Promise<boolean>;
+  onSubmit: (text: string, chips?: ChipCall) => Promise<Submitted>;
   onChanged: () => void;
   onError: (e: unknown) => void;
   onSettings?: (section?: string) => void;
+  side?: boolean;
+  onSide?: () => void;
+  sidePanel?: ReactNode;
   changeCount?: number;
   countElsewhere?: boolean;
   // The work tree's Git state as git itself reports it, refreshed on the same
   // path as changeCount (turn boundaries, writes). null is "not answered yet";
   // repo:false is a workspace with no repository, and the two render apart.
   git?: WorkspaceGit | null;
-  // Called after a branch switch landed, so the change list, the branch reading
-  // and the session's workspace view re-read what the checkout moved.
-  onTreeChanged?: () => void;
+  // The switch already answers with the workspace's Git state.
+  onTreeChanged?: (git: WorkspaceGit) => void;
   // Bumped when settings change; a source edited there can change the ladder.
   pulse?: number;
   draftKey?: string;
 }
 
-// What is riding along with this turn. An attachment travels as bytes or a path
-// the kernel already saved; a long paste is held out of the box so eight hundred
-// lines of log do not become the composer.
-type Chip =
-  | {
-      k: "attachment";
-      id: string;
-      name: string;
-      state: "adding" | "ready" | "failed";
-      a?: Attachment;
-      blob?: File;
-      url?: string;
-      error?: string;
-    }
-  | { k: "paste"; id: string; body: string; lines: number; name?: string }
-  | { k: "quote"; id: string; body: string; turn?: number; lines: number };
-
-function chipName(c: Chip): string {
-  if (c.k === "quote") return c.turn === undefined ? t("引用回复") : t("引用第 {n} 轮回复", { n: c.turn });
-  return c.k === "paste" ? c.name ?? t("粘贴的文本") : c.name;
-}
-
-// What the model reads instead of a bare blockquote. Which reply this is about
-// is the kernel's turn number, so it is stated rather than left to be inferred
-// from the words; a rebuilt transcript with no turn says nothing instead of
-// guessing one. English like the kernel's other host-authored prefixes: the
-// line is addressed to the model, not to the reader.
-function quoteBlock(c: Extract<Chip, { k: "quote" }>): string {
-  const head = c.turn === undefined
-    ? "[Quoting an earlier assistant reply in this conversation.]"
-    : `[Quoting the assistant reply from turn ${c.turn}.]`;
-  return [head, ...c.body.split("\n").map((line) => `> ${line}`)].join("\n");
-}
-
-function isPicture(c: Chip): boolean {
-  return c.k === "attachment" && (c.a?.image === true || (c.a?.image !== false && c.blob?.type.startsWith("image/") === true));
-}
-
-function releaseChip(c: Chip) {
-  if (c.k === "attachment" && c.url) URL.revokeObjectURL(c.url);
-}
-
-let chipSeq = 0;
-const chipId = () => `c${++chipSeq}`;
-
-export function Composer({ port, status, running, quote, restore, focus, onSubmit, onChanged, onError, onSettings = () => {}, changeCount = 0, countElsewhere = false, git = null, onTreeChanged, pulse = 0, draftKey = "" }: Props) {
+export function Composer({ port, status, running, quote, restore, inject, focus, onSubmit, onChanged, onError, onSettings = () => {}, side = false, onSide, sidePanel, changeCount = 0, countElsewhere = false, git = null, onTreeChanged, pulse = 0, draftKey = "", fresh = false, worktreeTarget, onWorktreePhase }: Props) {
   const touch = touchKeyboard();
   const providerOrder = useProviderOrder();
+  const modelGroups = useModelFilter();
   const [submitting, setSubmitting] = useState(false);
+  const worktree = useWorktreeSetup(port, fresh && !!git?.repo, status?.workspaceRoot ?? "", onChanged, onTreeChanged, status?.sessionPath ?? "");
+  const [setupDraft, setSetupDraft] = useState<{ text: string; files: string[] }>({ text: "", files: [] });
+  const setupPhase = worktree.stage?.phase ?? null;
+  useEffect(() => { onWorktreePhase?.(setupPhase); }, [onWorktreePhase, setupPhase]);
   const { text, setText, beginSubmit, finishSubmit } = useDraft(draftKey, submitting);
   // The caret decides which token is being completed, so it is state here
   // rather than something read off the element when a menu happens to open.
   const [caret, setCaret] = useState(0);
   const [shots, setShots] = useState<Chip[]>([]);
+  const uploads = useRef(new Map<string, AbortController>());
+  useEffect(() => () => {
+    uploads.current.forEach((upload) => upload.abort());
+    uploads.current.clear();
+  }, []);
   const [stopping, setStopping] = useState(false);
   const submittingRef = useRef(false);
   const stoppingRef = useRef(false);
   const picker = useRef<HTMLInputElement>(null);
   const [models, setModels] = useState<ModelEntry[]>([]);
+  const menuItems = modelMenu(models, providerOrder, status?.modelRef);
+  const chosenModelGroups = chosenGroups(menuItems, modelGroups);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const box = useRef<HTMLTextAreaElement>(null);
+  const hadSetup = useRef(false);
+  useEffect(() => {
+    if (hadSetup.current && !setupPhase) box.current?.focus();
+    hadSetup.current = !!setupPhase;
+  }, [setupPhase]);
   const refine = usePromptRefine(port, text, (next) => {
     setText(next);
     setCaret(next.length);
@@ -130,7 +122,7 @@ export function Composer({ port, status, running, quote, restore, focus, onSubmi
   const attachTipId = useId();
   // Set only when a completion moved the caret: the browser puts it at the end
   // of a programmatic value, which is wrong for anything accepted mid-line.
-  const pending = useRef<number | null>(null);
+  const pending = useRef<number | [number, number] | null>(null);
 
   const loadModels = useCallback(() => {
     port.models().then(setModels).catch(() => setModels([]));
@@ -153,7 +145,7 @@ export function Composer({ port, status, running, quote, restore, focus, onSubmi
     if (!quote?.n) return;
     setShots((prev) => [
       ...prev,
-      { k: "quote", id: chipId(), body: quote.text, turn: quote.turn, lines: countLines(quote.text) },
+      { k: "quote", id: chipId(), body: quote.text, turn: quote.turn, source: quote.source, lines: countLines(quote.text) },
     ]);
     queueMicrotask(() => box.current?.focus());
   }, [quote?.n]);
@@ -171,15 +163,36 @@ export function Composer({ port, status, running, quote, restore, focus, onSubmi
     queueMicrotask(() => box.current?.focus());
   }, [restore?.n]);
 
+  const injectedAt = useRef(inject?.n ?? 0);
+  useEffect(() => {
+    if (!inject?.n || inject.n === injectedAt.current) return;
+    injectedAt.current = inject.n;
+    if (inject.session) {
+      addSession(inject.session);
+      queueMicrotask(() => box.current?.focus());
+      return;
+    }
+    const where = caret;
+    setText((prev) => {
+      const at = Math.min(where, prev.length);
+      const lead = at > 0 && !/\s$/.test(prev.slice(0, at)) ? " " : "";
+      const piece = lead + inject.text + " ";
+      pending.current = at + piece.length;
+      return prev.slice(0, at) + piece + prev.slice(at).replace(/^ /, "");
+    });
+    queueMicrotask(() => box.current?.focus());
+  }, [inject?.n]);
+
   const moveTo = useCallback((next: string, at: number) => {
     pending.current = at;
     type(next, at);
   }, []);
   const chips = useSkillChips(box, text, moveTo);
+  const addSession = useCallback((s: { id: string; title: string }) => setShots((prev) => prev.some((c) => c.k === "session" && c.session === s.id) ? prev : [...prev, { k: "session", id: chipId(), session: s.id, title: s.title }]), []);
   const menu = useCompletion(port, text, caret, (next, at) => {
     moveTo(next, at);
     box.current?.focus();
-  }, chips);
+  }, chips, addSession);
   const ime = useIme();
   const sendShortcut = useSendShortcut();
 
@@ -199,7 +212,8 @@ export function Composer({ port, status, running, quote, restore, focus, onSubmi
 
   const placeCaret = useCallback((el: HTMLTextAreaElement) => {
     if (pending.current === null) return;
-    el.setSelectionRange(pending.current, pending.current);
+    const [from, to] = typeof pending.current === "number" ? [pending.current, pending.current] : pending.current;
+    el.setSelectionRange(from, to);
     pending.current = null;
   }, []);
   useFitHeight(box, text, placeCaret);
@@ -209,12 +223,14 @@ export function Composer({ port, status, running, quote, restore, focus, onSubmi
   // the CLI — the host saved the bytes, the turn parser resolves the token. A
   // held-back paste follows the typed text, which is where it reads as the
   // material the message is about rather than as part of the sentence.
+  const keepPaste = (chip: PasteChip) => keepPasteAsFile(port, chip, setShots);
+
   const send = () => {
     if (submittingRef.current || shots.some((c) => c.k === "attachment" && c.state !== "ready")) return;
     const v = text.trim();
     if (!v && shots.length === 0) return;
-    const refs = shots.flatMap((c) => (c.k === "attachment" && c.a ? [c.a.ref] : []));
-    const pastes = shots.flatMap((c) => (c.k === "paste" ? [c.body] : []));
+    const refs = shots.flatMap((c) => (c.k === "attachment" && c.a ? [c.a.ref] : c.k === "session" ? ["@session:" + c.session] : []));
+    const pastes = shots.flatMap((c) => (c.k === "paste" ? [c.saved ? c.saved.pointer.trim() : c.body] : []));
     // A quote is what the question is about, so it leads; a held-back paste is
     // the material the answer needs and follows what was typed.
     const quotes = shots.flatMap((c) => (c.k === "quote" ? [quoteBlock(c)] : []));
@@ -222,6 +238,15 @@ export function Composer({ port, status, running, quote, restore, focus, onSubmi
     const line = compose(v);
     const call = chips.call(compose);
     const draft = { text, shots, caret: caretRef.current, chips: chips.held() };
+    if (worktree.selection || worktree.stage) setSetupDraft({ text: v, files: shots.map(chipName) });
+    const restoreDraft = (select = false) => {
+      finishSubmit(false);
+      pending.current = select ? [0, draft.text.length] : draft.caret;
+      type(draft.text, draft.caret);
+      chips.restore(draft.chips);
+      setShots((current) => [...draft.shots, ...current]);
+      if (!worktree.selection && !worktree.stage) queueMicrotask(() => box.current?.focus());
+    };
     beginSubmit(text);
     submittingRef.current = true;
     setSubmitting(true);
@@ -229,27 +254,25 @@ export function Composer({ port, status, running, quote, restore, focus, onSubmi
     setShots([]);
     void (async () => {
       try {
+        if (worktree.selection || worktree.stage) {
+          const prepared = await worktree.prepare(draft.shots.flatMap((chip) => chip.k === "attachment" && chip.a ? [chip.a.path] : chip.k === "paste" && chip.saved ? [chip.saved.path] : []));
+          if (!prepared) { restoreDraft(); return; }
+        }
         const sent = await (call ? onSubmit(line, call) : onSubmit(line));
-        if (sent) {
+        if (sent === true) {
           finishSubmit(true);
+          worktree.dismiss();
           draft.shots.forEach(releaseChip);
         }
         else {
-          finishSubmit(false);
-          pending.current = draft.caret;
-          type(draft.text, draft.caret);
-          chips.restore(draft.chips);
-          setShots((current) => [...draft.shots, ...current]);
-          queueMicrotask(() => box.current?.focus());
+          // A command this connection will never run is left selected, so the
+          // next thing typed replaces it instead of joining it.
+          restoreDraft(sent === "shell_unavailable");
+          worktree.dismiss();
         }
       } catch (e) {
-        finishSubmit(false);
-        pending.current = draft.caret;
-        type(draft.text, draft.caret);
-        chips.restore(draft.chips);
-        setShots((current) => [...draft.shots, ...current]);
-        queueMicrotask(() => box.current?.focus());
-        onError(e);
+        restoreDraft();
+        if (!(e instanceof WorktreeSetupFailure)) onError(e);
       } finally {
         submittingRef.current = false;
         setSubmitting(false);
@@ -269,20 +292,28 @@ export function Composer({ port, status, running, quote, restore, focus, onSubmi
   }, []);
 
   const discard = useCallback((c: Chip) => {
+    uploads.current.get(c.id)?.abort();
+    uploads.current.delete(c.id);
     releaseChip(c);
     setShots((prev) => prev.filter((x) => x !== c));
   }, []);
 
   const upload = useCallback(
     (id: string, blob: File) => {
+      const controller = new AbortController();
+      uploads.current.get(id)?.abort();
+      uploads.current.set(id, controller);
       void port
-        .attach(blob, blob.name)
+        .attach(blob, blob.name, controller.signal)
         .then((a) =>
           setShots((prev) => prev.map((c) => (c.k === "attachment" && c.id === id ? { ...c, a, state: "ready", error: "" } : c))),
         )
         .catch((e: unknown) =>
           setShots((prev) => prev.map((c) => (c.k === "attachment" && c.id === id ? { ...c, state: "failed", error: reason(e) } : c))),
-        );
+        )
+        .finally(() => {
+          if (uploads.current.get(id) === controller) uploads.current.delete(id);
+        });
     },
     [port],
   );
@@ -358,7 +389,8 @@ export function Composer({ port, status, running, quote, restore, focus, onSubmi
   // composer answering for an endpoint that never spoke.
   const declared = efforts.length > 0;
   const forcedThinking = forcesThinkingFor(models, status?.modelRef);
-  const modelLb = models.find((m) => m.ref === status?.modelRef)?.modelAlias?.trim()
+  const modelLb = status?.modelRef === UNCONFIGURED_REF ? t("未连接")
+    : models.find((m) => m.ref === status?.modelRef)?.modelAlias?.trim()
     || (status?.modelRef?.replace(/^[^/]+\//, "") ?? status?.label ?? "—");
   // A model switch rebuilds the runtime kernel-side; other controls here may
   // land at once. Each click needs its own pending state: greying the whole
@@ -379,13 +411,13 @@ export function Composer({ port, status, running, quote, restore, focus, onSubmi
   const hasDraft = text.trim().length > 0 || shots.some((c) => c.k !== "attachment" || c.state === "ready");
   const lines = countLines(text);
   const showCount = text.length >= 240 || lines > 3;
-  const sendDisabled = submitting || stopping || adding || failed || !hasDraft;
+  const sendDisabled = submitting || stopping || adding || failed || !hasDraft || !!worktree.stage;
   const warnPictures = status?.vision === false && shots.some((c) => c.k === "attachment" && c.state === "ready" && isPicture(c));
 
-  return (
-    // display:contents, so the box looks exactly as it did and the drop layer
-    // still has one node to ask which pane a drop landed in.
-    <div className="dropzone" ref={dropzone}>
+  const setupPage = worktree.stage && <WorktreeSetupPage stage={worktree.stage} task={setupDraft.text} files={setupDraft.files} busy={submitting} onRetry={send} onCancel={() => void worktree.cancel()} onEdit={worktree.dismiss}/>;
+  return (<>
+    {setupPage && (worktreeTarget ? createPortal(setupPage, worktreeTarget) : setupPage)}
+    <div className="dropzone" ref={dropzone} data-worktree-setup={worktree.stage ? "" : undefined} inert={!!worktree.stage}>
       {menu.open && (
         <CompletionMenu
           id={completionId}
@@ -423,11 +455,11 @@ export function Composer({ port, status, running, quote, restore, focus, onSubmi
               {c.k === "attachment" ? (
                 <>
                   {isPicture(c) ? (
-                    <span
+                    <ImagePreview src={c.url} name={c.name}
                       className="thumb"
-                      aria-hidden="true"
-                      style={c.url ? { backgroundImage: `url(${c.url})` } : undefined}
-                    />
+                    >
+                      <span aria-hidden="true" style={c.url ? { backgroundImage: `url(${c.url})` } : undefined} />
+                    </ImagePreview>
                   ) : (
                     <span className="glyph" aria-hidden="true">{kindOf(c.a?.path ?? c.name)}</span>
                   )}
@@ -451,6 +483,14 @@ export function Composer({ port, status, running, quote, restore, focus, onSubmi
                     )}
                   </span>
                 </>
+              ) : c.k === "session" ? (
+                <>
+                  <span className="glyph" aria-hidden="true">{"#"}</span>
+                  <span className="meta">
+                    <span className="nm" title={c.title}>{c.title}</span>
+                    <span className="sz">{t("历史会话 · 只读资料")}</span>
+                  </span>
+                </>
               ) : (
                 <>
                   <span className="glyph" aria-hidden="true">{c.k === "quote" ? "❝" : "TXT"}</span>
@@ -465,6 +505,7 @@ export function Composer({ port, status, running, quote, restore, focus, onSubmi
                     >
                       {t("{n} 行 · 展开到输入框", { n: c.lines })}
                     </button>
+                    {c.k === "paste" && <PasteKeep chip={c} onKeep={keepPaste} />}
                   </span>
                 </>
               )}
@@ -562,11 +603,11 @@ export function Composer({ port, status, running, quote, restore, focus, onSubmi
               menu.move(e.key === "ArrowDown" ? 1 : -1);
               return;
             }
-            // Tab completes; Enter completes a partial command or an explicitly selected item.
+            // Tab descends into directories; Enter confirms the highlighted reference.
             // The configured modifier chord sends the draft even with a menu open.
-            if (menu.open && (e.key === "Tab" || (e.key === "Enter" && menu.ownsEnter && !(sendShortcut === "modifier_enter" && sendKey))) && !e.shiftKey) {
+            if (menu.open && (e.key === "Tab" || (e.key === "Enter" && !(sendShortcut === "modifier_enter" && sendKey))) && !e.shiftKey) {
               e.preventDefault();
-              menu.accept();
+              menu.accept(undefined, e.key === "Tab" ? "descend" : "confirm");
               return;
             }
             // Esc closes the menu and stops there: reaching the app would cancel
@@ -631,6 +672,7 @@ export function Composer({ port, status, running, quote, restore, focus, onSubmi
               <span>{t("也可直接拖入或粘贴")}</span>
             </span>
           </button>
+          {onSide && <SideAskButton open={side} onToggle={onSide} panel={sidePanel} />}
           {refine.button}
         <div className="studio-mode-control">
           <Picker
@@ -639,6 +681,7 @@ export function Composer({ port, status, running, quote, restore, focus, onSubmi
             ariaPressed={status?.plan ?? false}
             place="bottom"
             title={t("工作模式")}
+            menuClassName="composer-menu"
             current={status?.plan ? "plan" : "agent"}
             pending={busy["plan"]}
             items={[
@@ -651,7 +694,7 @@ export function Composer({ port, status, running, quote, restore, focus, onSubmi
             label={<><StudioIcon name="agent" /><span className="studio-sr-label">{t("计划")}</span><span>{status?.plan ? "Plan" : "Agent"}</span><StudioIcon name="down" /></>}
           />
         </div>
-        <BranchChip port={port} git={git} changeCount={changeCount} countElsewhere={countElsewhere} onChanged={onChanged} onSwitched={onTreeChanged} onError={onError} />
+        {git?.repo && (worktree.sources || status?.workspaceRoot) ? <WorktreeChip port={port} onChanged={onChanged} onSwitched={onTreeChanged} onError={onError} changeCount={countElsewhere ? 0 : changeCount} sources={worktree.sources ?? { available: false, sourceRoot: status?.workspaceRoot ?? "", sources: [] }} canCreate={fresh && !!worktree.sources?.available} selection={worktree.selection} branch={git.branch} busy={submitting || running} onSelect={worktree.setSelection} refresh={worktree.refresh} /> : <BranchChip port={port} git={git} changeCount={changeCount} countElsewhere={countElsewhere} onChanged={onChanged} onSwitched={onTreeChanged} onError={onError} />}
         {/* The toggle keeps its legacy meaning: it follows `plan`, which the
             kernel turns off the moment a plan is approved. The lifecycle is a
             separate reading — an approved plan is still running, and saying so
@@ -670,8 +713,9 @@ export function Composer({ port, status, running, quote, restore, focus, onSubmi
             place="bottom"
             title={status?.modelRef ?? modelLb}
             current={status?.modelRef}
-            items={modelMenu(models, providerOrder, status?.modelRef)}
-            menuClassName="studio-model-menu"
+            items={narrowToGroups(menuItems, chosenModelGroups)}
+            head={<ModelGroupChips headings={groupHeadings(menuItems)} chosen={chosenModelGroups} onChange={writeModelFilter} />}
+            menuClassName="studio-model-menu composer-menu"
             searchAlways
             searchPlaceholder={t("搜索模型或服务商…")}
             menuTitle={<><b>{t("选择模型")}</b><small>{t("用于后续任务")}</small></>}
@@ -688,7 +732,7 @@ export function Composer({ port, status, running, quote, restore, focus, onSubmi
                 data-action="reasoning.effort"
                 place="bottom"
                 align="end"
-                menuClassName="studio-effort-menu"
+                menuClassName="studio-effort-menu composer-menu"
                 onOpen={loadModels}
                 title={t("推理强度")}
                 current={declared ? status.effort || "auto" : ""}
@@ -751,6 +795,6 @@ export function Composer({ port, status, running, quote, restore, focus, onSubmi
           </button>}
         </span>
       </div>
-    </div>
+    </div></>
   );
 }

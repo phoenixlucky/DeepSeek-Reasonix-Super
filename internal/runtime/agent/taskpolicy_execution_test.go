@@ -37,7 +37,7 @@ func TestTaskPolicyLeavesExploreSubagentAlone(t *testing.T) {
 func TestTaskPolicyPlanSignalDoesNotEnforceThePhase(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Add(fakeTool{name: "write_file", readOnly: false, writesPaths: true})
-	a := New(&scriptedProvider{name: "p"}, reg, sessionstore.NewSession("sys"), Options{}, event.Discard)
+	a := New(&scriptedProvider{name: "p"}, reg, sessionstore.NewSession("sys"), Options{CheckTargetAccess: allowTestFileAccess}, event.Discard)
 	a.turn.policySet = true
 	call := provider.ToolCall{Name: "write_file", Arguments: `{"path":"notes.txt","content":"x"}`}
 

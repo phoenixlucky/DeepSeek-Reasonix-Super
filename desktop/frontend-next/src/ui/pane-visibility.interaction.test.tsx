@@ -27,7 +27,9 @@ function open(visible: boolean) {
     emit = onEvent;
     return subscribe(onEvent, onGap, bootstrap);
   });
-  const status = vi.spyOn(port, "status");
+  const readStatus = port.status.bind(port);
+  let running = false;
+  const status = vi.spyOn(port, "status").mockImplementation(async () => ({ ...(await readStatus()), running }));
   const todos = vi.spyOn(port, "todos");
   const props = {
     port: port as AgentPort,
@@ -58,7 +60,10 @@ function open(visible: boolean) {
     send: (ev: Partial<WireEvent>) => act(() => emit(ev as WireEvent)),
     answer: () => view.container.querySelector(".txt")?.textContent ?? "",
     show: (next: boolean) => act(() => void view.rerender(<Pane {...props} active={next} visible={next} />)),
-    start: () => act(() => emit({ kind: "turn_started" } as WireEvent)),
+    start: () => act(() => {
+      running = true;
+      emit({ kind: "turn_started" } as WireEvent);
+    }),
     // Polls over one second of a running turn, counted from zero so a pane's
     // mount reads are excluded.
     pollsOverASecond: async () => {

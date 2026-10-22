@@ -22,7 +22,7 @@ export interface Finding {
 
 /** The find bar's whole state. pulse is the window asking; only the pane that
  *  has focus answers it, so one chord does not open a bar in every session. */
-export function useFind(items: Item[], pulse: number, active: boolean, onOpen: () => void, pref?: ReceiptPref): Finding {
+export function useFind(items: Item[], pulse: number, active: boolean, onOpen: () => void, pref?: ReceiptPref, togglePulse = 0): Finding {
   const [held, setHeld] = useState<{ q: string; i: number; focus: number } | null>(null);
   const receipts = useShowsReceipt(pref);
   const hits = useMemo(() => (held ? search(items, held.q, receipts) : NO_HITS), [items, held, receipts]);
@@ -45,6 +45,20 @@ export function useFind(items: Item[], pulse: number, active: boolean, onOpen: (
     onOpen();
     setHeld((was) => (was ? { ...was, focus: was.focus + 1 } : { q: "", i: 0, focus: 1 }));
   }, [pulse, active, onOpen]);
+
+  // The title bar button is a switch: the same press that opens the bar closes it.
+  const seenToggle = useRef(0);
+  useEffect(() => {
+    if (togglePulse === seenToggle.current) return;
+    seenToggle.current = togglePulse;
+    if (!togglePulse || !active) return;
+    if (held) {
+      setHeld(null);
+      return;
+    }
+    onOpen();
+    setHeld({ q: "", i: 0, focus: 1 });
+  }, [togglePulse, active, held, onOpen]);
 
   const total = hits.length;
   const ask = useCallback((q: string) => setHeld((was) => ({ q, i: 0, focus: was?.focus ?? 0 })), []);

@@ -8,7 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"reasonix/internal/contract/agentcomposition"
 	"reasonix/internal/contract/tool"
+	"reasonix/internal/ext/extension/protocol"
 	"reasonix/internal/ext/extension/sidecar"
 	"reasonix/internal/ext/pluginpkg"
 )
@@ -27,17 +29,27 @@ type extensionTool struct {
 	clients  *sidecar.Manager
 }
 
-func (t extensionTool) Name() string            { return t.name }
-func (t extensionTool) Description() string     { return t.decl.Description }
-func (t extensionTool) Schema() json.RawMessage { return t.decl.InputSchema }
-func (t extensionTool) ReadOnly() bool          { return t.decl.ReadOnly }
+func (t extensionTool) Name() string                 { return t.name }
+func (t extensionTool) Description() string          { return t.decl.Description }
+func (t extensionTool) Schema() json.RawMessage      { return t.decl.InputSchema }
+func (t extensionTool) ReadOnly() bool               { return t.decl.ReadOnly }
+func (t extensionTool) ExtensionPackageName() string { return t.pluginID }
 
 func (t extensionTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
-	client := t.clients.Client(t.pluginID)
-	if client == nil || client.Exited() {
-		return "", fmt.Errorf("the %s extension is not running; reload extensions or check it under Settings → Plugins", t.pluginID)
-	}
-	res, err := client.CallTool(ctx, t.decl.Name, args, extensionToolTimeout)
+	var res protocol.ToolCallResult
+	err := t.clients.WithReady(ctx, t.pluginID, func(callCtx context.Context, client *sidecar.Client) error {
+		if !client.ServesTool(t.decl.Name) {
+			return fmt.Errorf("extension %s no longer serves tool %s", t.pluginID, t.decl.Name)
+		}
+		for _, current := range client.DeclaredTools() {
+			if current.Name == t.decl.Name && agentcomposition.Digest(current) != agentcomposition.Digest(t.decl) {
+				return agentcomposition.Unavailable("extension:"+t.pluginID, "Tool contract changed before dispatch; refresh the capability directory and retry.")
+			}
+		}
+		var callErr error
+		res, callErr = client.CallTool(callCtx, t.decl.Name, args, extensionToolTimeout)
+		return callErr
+	})
 	if err != nil {
 		return "", fmt.Errorf("the %s extension could not run %s: %w", t.pluginID, t.decl.Name, err)
 	}
@@ -60,7 +72,22 @@ func addExtensionTools(reg *tool.Registry, mgr *sidecar.Manager, warn func(strin
 	if mgr == nil {
 		return
 	}
-	for _, client := range mgr.Clients() {
+	if mgr.OnDemand() {
+		reg.RemovePrefix(tool.ExtensionNamePrefix)
+		reg.RemovePrefix("connect_ext__")
+	}
+	for _, p := range mgr.DeferredPackages() {
+		for _, decl := range p.Package.Manifest.Runtime.Tools {
+			name := extensionToolName(p.Installed.Name, decl.Name)
+			if len(name) <= 64 {
+				reg.Add(extensionTool{name: name, pluginID: p.Installed.Name, decl: decl, clients: mgr})
+			}
+		}
+		if p.Package.Manifest.Runtime.DynamicTools {
+			reg.Add(extensionDiscoveryTool{pluginID: p.Installed.Name, clients: mgr, registry: reg})
+		}
+	}
+	for _, client := range mgr.ToolClients() {
 		for _, decl := range client.DeclaredTools() {
 			if !client.ServesTool(decl.Name) {
 				continue

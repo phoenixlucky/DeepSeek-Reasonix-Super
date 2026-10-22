@@ -16,7 +16,7 @@ const (
 
 func TestMain(m *testing.M) {
 	if dir := os.Getenv(crashChildDir); dir != "" {
-		release := InstallFatalLog(dir, "2.31.0/rc 1")
+		release, _ := InstallFatalLog(dir, "2.31.0/rc 1")
 		if os.Getenv(crashChildRelease) != "" {
 			release()
 			os.Exit(0)
@@ -87,7 +87,7 @@ func TestFatalLogBoundsWhatEarlierCrashesLeft(t *testing.T) {
 	unrelated := filepath.Join(dir, "notes.txt")
 	_ = os.WriteFile(unrelated, []byte("keep"), 0o600)
 
-	release := InstallFatalLog(dir, "dev")
+	release, _ := InstallFatalLog(dir, "dev")
 	defer release()
 
 	logs := fatalLogs(t, dir)
@@ -105,5 +105,27 @@ func TestFatalLogBoundsWhatEarlierCrashesLeft(t *testing.T) {
 	}
 	if _, err := os.Stat(unrelated); err != nil {
 		t.Fatal("files that are not crash files must be left alone")
+	}
+}
+
+// A run that returns a failure code makes the runtime print nothing, so its file
+// was empty, dropped on the next launch and removed by release: the shell then
+// named a crash file that held no reason or did not exist. exited puts the code
+// and the reason in it and keeps it.
+func TestExitedKeepsTheFileWithTheCodeAndTheReason(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "crash")
+	_, exited := InstallFatalLog(dir, "2.41.0")
+	exited(1, "reasonix-studio-host: listener closed")
+	names := fatalLogs(t, dir)
+	if len(names) != 1 {
+		t.Fatalf("fatal logs after a failed run = %v, want one", names)
+	}
+	raw, _ := os.ReadFile(names[0])
+	if !strings.Contains(string(raw), "host exited with code 1: reasonix-studio-host: listener closed") {
+		t.Fatalf("file holds %q", raw)
+	}
+	pruneFatalLogs(dir)
+	if got := fatalLogs(t, dir); len(got) != 1 {
+		t.Fatalf("the next launch dropped the recorded exit: %v", got)
 	}
 }

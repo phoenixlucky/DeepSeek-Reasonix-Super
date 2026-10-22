@@ -305,7 +305,7 @@ var curatedProviderPresets = slices.Concat([]ProviderPreset{
 			ContextWindow: 262144,
 		}},
 	},
-}, mimoPresets, []ProviderPreset{
+}, mimoPresets, geminiNativePresets, []ProviderPreset{
 	{
 		ID:          "minimax-cn-api",
 		Label:       "MiniMax CN API",

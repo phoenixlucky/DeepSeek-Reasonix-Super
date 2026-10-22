@@ -32,7 +32,7 @@ func TestEffectInstalledSDKSidecarLifecycle(t *testing.T) {
 	buildCtx, cancelBuild := context.WithTimeout(t.Context(), time.Minute)
 	cmd := exec.CommandContext(buildCtx, "go", "build", "-o", binary, ".")
 	cmd.Dir = example
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local", "GOPROXY=off")
+	cmd.Env = goBuildEnv()
 	out, err := cmd.CombinedOutput()
 	cancelBuild()
 	if err != nil {

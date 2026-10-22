@@ -13,11 +13,13 @@ package event
 
 import (
 	"encoding/json"
+	"reasonix/internal/contract/delivery"
 	"reasonix/internal/contract/hostaudit"
 	"reasonix/internal/contract/pricing"
 
 	"reasonix/internal/contract/agentgraph"
 	"reasonix/internal/contract/provider"
+	"reasonix/internal/contract/surfacespec"
 )
 
 // Kind tags an Event. Read the field(s) documented for that kind.
@@ -157,6 +159,10 @@ const (
 	ProgressWatchEvent
 	// RewindChanged signals that the undo offer must be read again.
 	RewindChanged
+	// AskEngaged says the person has taken the question Ask.ID over, so the host
+	// will no longer skip it. It never asks anything: AskRequest stays the only
+	// kind that puts a question on screen.
+	AskEngaged
 	// KindCount is a sentinel one past the last real Kind. New event kinds must
 	// be inserted above it so completeness tests cover them automatically.
 	KindCount
@@ -198,6 +204,9 @@ type StreamAttemptInfo struct {
 	Attempt int // 1-based attempt number
 	Max     int // total attempts including the first (typically 6)
 	Reason  string
+	// FirstTokenMs is, on a commit, the host-measured time from sending the
+	// request to the first output; 0 = not measured.
+	FirstTokenMs int64
 }
 
 const TurnOutcomeFinalReadiness = "final_readiness"
@@ -238,6 +247,8 @@ type Profile struct {
 	Count  int
 	Model  string
 	Effort string
+	// Label is the task's own short description, set only for a single sub-agent.
+	Label string
 }
 
 // Tool describes a tool call for ToolDispatch / ToolResult events. On dispatch
@@ -245,9 +256,11 @@ type Profile struct {
 // Output/Err/Bound are filled in. Args is the raw JSON arguments — a sink
 // compacts it for display.
 type Tool struct {
-	ID   string
-	Name string
-	Args string
+	Deliveries            []delivery.File
+	ID                    string
+	Name                  string
+	Args                  string
+	ArgumentNormalization *provider.ArgumentNormalization
 	// ResolvedName/CapabilityID describe the real target behind a stable proxy
 	// while Name/Args remain the provider-visible call. They are optional local
 	// display metadata and never enter provider requests.
@@ -257,7 +270,10 @@ type Tool struct {
 	// Images are what the call showed the model, as data URLs. The result text
 	// only names them, so a window with nothing else to go on shows a person a
 	// placeholder where the agent had a picture.
-	Images         []string
+	Images []string
+	// Videos are video files the call handed to the model to watch natively. A
+	// window shows the file and where it went; the bytes never ride an event.
+	Videos         []VideoShown
 	Err            string // ToolResult: non-empty when the call failed or was blocked
 	RefusalCode    string // ToolResult: dotted identity of a host refusal; Err is only its wording
 	WorkspaceLease *WorkspaceLease
@@ -268,6 +284,9 @@ type Tool struct {
 	ReadOnly   bool
 	Bound      OutputBound // ToolResult: how Output was fitted into context
 	DurationMs int64       // ToolResult: wall-clock execution time in milliseconds
+	// RateTokensPerSec is the estimated rate a sub-agent is streaming at, on its
+	// status channel only while it reasons or answers. An estimate, not provider usage.
+	RateTokensPerSec int
 	// StartedAt/EndedAt are unix-millisecond execution bounds (ToolResult).
 	// Zero when the call never ran (dependency-skipped, cancelled, synthetic).
 	StartedAt int64
@@ -403,6 +422,8 @@ type AskQuestion struct {
 	Options []AskOption
 	Multi   bool     // allow selecting more than one option
 	Default []string // prefilled answer, for a form sent back to be corrected
+	Surface *surfacespec.Spec
+	CallID  string
 }
 
 // AskOrigin names the external party behind an AskRequest the agent did not
@@ -432,6 +453,8 @@ type Ask struct {
 	ID        string
 	Questions []AskQuestion
 	Origin    *AskOrigin
+	// SkipInMs is the wait left before the host skips this question, 0 if it never will.
+	SkipInMs int64
 }
 
 // Compaction carries a context-compaction pass for the CompactionStarted /
@@ -454,6 +477,9 @@ type Compaction struct {
 	Boundary            string // "capacity" | "economic": which threshold sent this fold
 	TriggerTokens       int    // ...and its size, so a card need not say only "a threshold"
 	Code                string // Done with nothing folded: the class of refusal or failure, empty when none applies
+	// Done: what the prompt still holds after the fold, set only when that is a
+	// large share of the window, so a card can say what the rest is made of.
+	Remains *ContextComposition
 }
 
 // ContextMaintenance is the typed wire-safe receipt for snip/prune/noop/
@@ -502,6 +528,10 @@ type GuardianResult struct {
 	DurationMs        int64             // wall-clock review time
 	Usage             *provider.Usage   // guardian review token telemetry
 	Pricing           *provider.Pricing // for cost display (nil = omit cost)
+	// CostQuote is the occurrence-time quote for Usage, filled by CostQuoteSink
+	// exactly as a Usage event's quote is. Nil until quoted; a quote with
+	// CostComplete=false says the review's money is unknown, not zero.
+	CostQuote *pricing.CostQuote
 }
 
 // AskAnswer is the user's reply to one AskQuestion: the chosen option label(s)
@@ -509,6 +539,7 @@ type GuardianResult struct {
 type AskAnswer struct {
 	QuestionID string
 	Selected   []string
+	Value      json.RawMessage `json:",omitempty"`
 }
 
 // FinalReadiness carries machine-readable recovery requirements on TurnDone.
@@ -535,6 +566,12 @@ const (
 	UsageSourceAdvisor          = "advisor"
 	UsageSourceBestOf           = "best-of"
 	UsageSourceBestOfJudge      = "best-of-judge"
+	// UsageSourceDeepSeekSearch is a request to the DeepSeek Search API, billed per successful request.
+	UsageSourceDeepSeekSearch = "deepseek-search"
+	// UsageSourceDeepSeekFetch is a request to the DeepSeek Fetch API, billed per successful request.
+	UsageSourceDeepSeekFetch = "deepseek-fetch"
+	// UsageSourceSide is a side conversation: asked beside the session, billed to it.
+	UsageSourceSide = "side"
 )
 
 // Event is one increment in a turn's event stream. Read the field(s) documented
@@ -579,6 +616,8 @@ type Event struct {
 	// approval and tool waits included, summed over goal continuations; 0 when the
 	// turn failed, was cancelled, or gave no final answer.
 	WorkDurationMs int64
+	// TurnDone: unix ms the turn began; set only alongside WorkDurationMs.
+	WorkStartedAt int64
 	// TurnStarted: which message this turn is about — the conversation's own
 	// turn number, and the session index that message takes. Both nil when the
 	// turn opened no authored message.
@@ -686,3 +725,12 @@ func (f FuncSink) Emit(e Event) {
 // Discard is a Sink that drops every event. Useful in tests and for runs that
 // only care about the final session state.
 var Discard Sink = FuncSink(func(Event) {})
+
+// VideoShown is one video a tool call handed to the model natively.
+type VideoShown struct {
+	Name       string
+	Size       int64
+	DurationMs int64
+	// Model is the model it was sent to.
+	Model string
+}

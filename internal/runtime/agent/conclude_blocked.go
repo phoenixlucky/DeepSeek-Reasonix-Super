@@ -110,3 +110,6 @@ func checkBlockedEvidence(ledger *evidence.Ledger, items []blockedEvidence) erro
 	}
 	return fmt.Errorf("none of the cited evidence matches a receipt from this turn — cite a command exactly as it ran, or files you actually read")
 }
+
+// HostRequiredBy says why the tool cannot be removed by name: the host names it as the way out of a task that cannot pass its check.
+func (*ConcludeBlockedTool) HostRequiredBy() string { return tool.FeatureTurnExit }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 
 	"reasonix/internal/base/diff"
 )
@@ -33,18 +32,20 @@ func (w writeFile) Preview(ctx context.Context, args json.RawMessage) (diff.Chan
 	if p.Path == "" {
 		return diff.Change{}, fmt.Errorf("path is required")
 	}
-	p.Path = resolveIn(w.workDir, p.Path)
+	p.Path = resolveIn(w.workDir, resolveSessionTemp(w.sessionTemp, p.Path))
 	if err := refuseNetworkPath(p.Path, w.roots); err != nil {
 		return diff.Change{}, err
 	}
 
-	old, kind := "", diff.Create
-	if src, err := readEditSource(ctx, w.overlay, p.Path); err == nil {
-		old, kind = src.content, diff.Modify
-	} else if !os.IsNotExist(err) {
-		return diff.Change{}, fmt.Errorf("read %s: %w", p.Path, err)
+	src, hadPrior, err := w.sourceForWrite(ctx, p.Path)
+	if err != nil {
+		return diff.Change{}, err
 	}
-	return diff.Build(p.Path, old, p.Content, kind), nil
+	kind := diff.Create
+	if hadPrior {
+		kind = diff.Modify
+	}
+	return diff.Build(p.Path, src.content, p.Content, kind), nil
 }
 
 // Preview computes the change edit_file would make. It enforces the same
@@ -70,7 +71,7 @@ func (e editFile) Preview(ctx context.Context, args json.RawMessage) (diff.Chang
 		return diff.Change{}, err
 	}
 
-	src, err := readEditSource(ctx, e.overlay, p.Path)
+	src, err := e.readPolicy.source(ctx, e.overlay, p.Path)
 	if err != nil {
 		return diff.Change{}, fmt.Errorf("read %s: %w", p.Path, err)
 	}
@@ -112,7 +113,7 @@ func (m multiEdit) Preview(ctx context.Context, args json.RawMessage) (diff.Chan
 		return diff.Change{}, err
 	}
 
-	src, err := readEditSource(ctx, m.overlay, p.Path)
+	src, err := m.readPolicy.source(ctx, m.overlay, p.Path)
 	if err != nil {
 		return diff.Change{}, fmt.Errorf("read %s: %w", p.Path, err)
 	}

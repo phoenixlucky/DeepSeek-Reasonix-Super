@@ -11,7 +11,7 @@ import (
 
 // CatalogEntry is one official list price for a model in a billing currency.
 type CatalogEntry struct {
-	Provider      string // deepseek | longcat | mimo
+	Provider      string // deepseek | longcat | mimo | google
 	Model         string
 	Currency      string // ISO billing currency for this row
 	CacheHit      float64
@@ -76,13 +76,18 @@ const deepseekCheckedOn = "2026-09-13"
 // mimoCheckedOn is when the V2.6 rows were read off the vendor's own docs.
 const mimoCheckedOn = "2026-10-06"
 
+// googleCheckedOn is when the Gemini rows were read off Google's pricing page.
+const googleCheckedOn = "2026-10-17"
+
 // CatalogSourceURLs document public pricing pages.
 const (
-	DocDeepSeekPricing   = "https://api-docs.deepseek.com/quick_start/pricing"
-	DocLongCatPricingUSD = "https://longcat.chat/platform/docs/Pricing/LongCat-2.0.html"
-	DocLongCatPricingCNY = "https://longcat.chat/platform/docs/zh/pricing/long-cat-2.0"
-	DocMiMoPAYG          = "https://mimo.mi.com/docs/price/pay-as-you-go"
-	DocMiMoTokenPlan     = "https://platform.xiaomimimo.com/token-plan"
+	DocDeepSeekPricing    = "https://api-docs.deepseek.com/quick_start/pricing"
+	DocDeepSeekPricingCNY = "https://api-docs.deepseek.com/zh-cn/quick_start/pricing"
+	DocLongCatPricingUSD  = "https://longcat.chat/platform/docs/Pricing/LongCat-2.0.html"
+	DocLongCatPricingCNY  = "https://longcat.chat/platform/docs/zh/pricing/long-cat-2.0"
+	DocMiMoPAYG           = "https://mimo.mi.com/docs/price/pay-as-you-go"
+	DocMiMoTokenPlan      = "https://platform.xiaomimimo.com/token-plan"
+	DocGeminiPricing      = "https://ai.google.dev/gemini-api/docs/pricing"
 )
 
 // officialEndpointHosts maps a vendor's own API hostnames to the catalog
@@ -90,12 +95,13 @@ const (
 // or proxy bills on its own terms even when it serves the same model, and an
 // entry merely named after a vendor is not evidence of the vendor's endpoint.
 var officialEndpointHosts = map[string]string{
-	"api.deepseek.com":              "deepseek",
-	"api.longcat.chat":              "longcat",
-	"api.xiaomimimo.com":            "mimo",
-	"token-plan-cn.xiaomimimo.com":  "mimo",
-	"token-plan-sgp.xiaomimimo.com": "mimo",
-	"token-plan-ams.xiaomimimo.com": "mimo",
+	"api.deepseek.com":                  "deepseek",
+	"api.longcat.chat":                  "longcat",
+	"api.xiaomimimo.com":                "mimo",
+	"generativelanguage.googleapis.com": "google",
+	"token-plan-cn.xiaomimimo.com":      "mimo",
+	"token-plan-sgp.xiaomimimo.com":     "mimo",
+	"token-plan-ams.xiaomimimo.com":     "mimo",
 }
 
 // OfficialProviderForEndpoint returns the catalog provider whose official

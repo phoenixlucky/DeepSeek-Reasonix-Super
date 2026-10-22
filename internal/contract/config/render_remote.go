@@ -21,7 +21,15 @@ func renderRemoteSection(b *strings.Builder, r RemoteConfig) {
 	for _, h := range r.Hosts {
 		b.WriteString("\n[[remote.hosts]]\n")
 		fmt.Fprintf(b, "name = %q\n", h.Name)
-		fmt.Fprintf(b, "host = %q\n", h.Host)
+		if h.Kind != "" {
+			fmt.Fprintf(b, "kind = %q   # ssh (default) | wsl, a WSL distribution on this machine\n", h.Kind)
+		}
+		if h.Distro != "" {
+			fmt.Fprintf(b, "distro = %q\n", h.Distro)
+		}
+		if h.Host != "" || h.HostKind() == RemoteKindSSH {
+			fmt.Fprintf(b, "host = %q\n", h.Host)
+		}
 		if h.Port > 0 {
 			fmt.Fprintf(b, "port = %d\n", h.Port)
 		}

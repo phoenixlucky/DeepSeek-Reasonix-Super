@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useModalFocus } from "./useModalFocus";
 import { t } from "../i18n";
 import type { RemoteAsk as Ask } from "../port/remote";
 import { listenAction } from "./listen";
@@ -11,6 +12,8 @@ interface Props {
 // A connect is stopped on this. Two shapes: a fingerprint to compare, or a
 // secret to type — and the first is the one that must not be made easy.
 export function RemoteAsk({ ask, onAnswer }: Props) {
+  const sheet = useRef<HTMLDivElement>(null);
+  useModalFocus(sheet);
   const [text, setText] = useState("");
   const box = useRef<HTMLInputElement>(null);
   const secret = ask.kind !== "hostkey";
@@ -32,7 +35,7 @@ export function RemoteAsk({ ask, onAnswer }: Props) {
   }, [ask.askId, onAnswer]);
 
   return (
-    <div className="askveil" role="dialog" aria-modal="true" aria-labelledby="ask-t">
+    <div ref={sheet} className="askveil" role="dialog" aria-modal="true" aria-labelledby="ask-t">
       <div className="askcard">
         <h2 id="ask-t">
           {secret

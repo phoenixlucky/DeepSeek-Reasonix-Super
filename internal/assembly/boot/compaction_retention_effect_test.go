@@ -28,7 +28,7 @@ func (p *compactionEffectProvider) Stream(_ context.Context, req provider.Reques
 	p.reqs = append(p.reqs, req)
 	p.mu.Unlock()
 	text := p.bulk
-	if len(req.Messages) > 0 && strings.Contains(req.Messages[0].Content, "compacting the earlier part") {
+	if req.Summary {
 		text = "## Standing facts\n- none recorded"
 	}
 	ch := make(chan provider.Chunk, 2)

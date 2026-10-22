@@ -3,7 +3,12 @@
 package sessionstore
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 
 	"reasonix/internal/contract/provider"
 )
@@ -13,9 +18,13 @@ import (
 // the same history further: the turns the torn record dropped are usually
 // already durable there, and taking the shorter log alone is what let an
 // unclean exit lose them. damaged still rides out so the next save heals.
-func resolveReplayedMessages(sessionPath string, replay sessionEventReplay) ([]provider.Message, bool, bool, error) {
+func resolveReplayedMessagesWithLimits(sessionPath string, replay sessionEventReplay, limits sessionReplayLimits) ([]provider.Message, bool, bool, error) {
 	if replay.damaged {
-		if healed, ok := checkpointExtendingReplay(sessionPath, replay.msgs); ok {
+		healed, ok := checkpointExtendingReplayWithLimits(sessionPath, replay.msgs, limits)
+		if err := limits.err(); err != nil {
+			return nil, false, false, err
+		}
+		if ok {
 			return healed, false, true, nil
 		}
 	}
@@ -25,15 +34,73 @@ func resolveReplayedMessages(sessionPath string, replay sessionEventReplay) ([]p
 // checkpointExtendingReplay reports the checkpoint when it continues the prefix
 // the log still replays. One that is shorter is a read model that has not
 // caught up; one that contradicts what survived is another writer's file.
-func checkpointExtendingReplay(sessionPath string, replayed []provider.Message) ([]provider.Message, bool) {
-	msgs, err := loadSessionMessagesFromJSONL(sessionPath)
-	if err != nil || len(msgs) <= len(replayed) {
+func checkpointExtendingReplayWithLimits(sessionPath string, replayed []provider.Message, limits sessionReplayLimits) ([]provider.Message, bool) {
+	msgs, err := loadSessionMessagesFromJSONLWithLimits(sessionPath, limits)
+	if limits.err() != nil {
+		return nil, false
+	}
+	if err != nil {
+		// The checkpoint's tail is torn. Keep what decodes rather than reading
+		// the tear as "a stranger's file": that fold returned the shorter replay
+		// as a clean success and let the next save rewrite it from that.
+		msgs = loadSessionMessagesFromJSONLKeepingDecodedTailWithLimits(sessionPath, limits)
+	}
+	if len(msgs) <= len(replayed) {
 		return nil, false
 	}
 	if !messagesHavePrefix(msgs, replayed) && !messagesHavePrefixWithCompatibleSystem(msgs, replayed) {
 		return nil, false
 	}
 	return msgs, true
+}
+
+// loadSessionMessagesFromJSONLKeepingDecodedTail reads the checkpoint as far as
+// its records decode, so a torn FINAL line — the half-written in-place append a
+// crash leaves — costs only the record it truncated.
+func loadSessionMessagesFromJSONLKeepingDecodedTail(path string) []provider.Message {
+	return loadSessionMessagesFromJSONLKeepingDecodedTailWithLimits(path, defaultSessionReplayLimits)
+}
+
+func loadSessionMessagesFromJSONLKeepingDecodedTailWithLimits(path string, limits sessionReplayLimits) []provider.Message {
+	f, err := os.OpenInRoot(filepath.Dir(path), filepath.Base(path))
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	data, err := io.ReadAll(limits.reader(f))
+	if err != nil {
+		return nil
+	}
+	lines := bytes.Split(data, []byte("\n"))
+	last := -1
+	for i, line := range lines {
+		if limits.err() != nil {
+			return nil
+		}
+		if len(bytes.TrimSpace(line)) > 0 {
+			last = i
+		}
+	}
+	var msgs []provider.Message
+	for i, line := range lines {
+		if limits.err() != nil {
+			return nil
+		}
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var m provider.Message
+		if err := json.Unmarshal(line, &m); err != nil {
+			// Damage before the end means every later record is about to be
+			// dropped: nothing here can stand in for the checkpoint.
+			if i != last {
+				return nil
+			}
+			return msgs
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs
 }
 
 // settleDisplayReadModel republishes the read model whole when the in-place

@@ -64,3 +64,22 @@ func (w *PeakWindow) holidayOff(local time.Time) bool {
 	day := local.Format("2006-01-02")
 	return slices.Contains(w.HolidayOffPeak, day)
 }
+
+// NextChange is the first instant after t at which IsPeak answers differently,
+// and false when it does not within a fortnight: a nil window, or a schedule
+// with nothing to flip to. The hours are whole, so only an hour boundary in the
+// vendor's zone can be a change.
+func (w *PeakWindow) NextChange(t time.Time) (time.Time, bool) {
+	if w == nil || len(w.Hours) == 0 {
+		return time.Time{}, false
+	}
+	now := w.IsPeak(t)
+	next := t.In(time.FixedZone("", w.OffsetSeconds)).Truncate(time.Hour).Add(time.Hour)
+	for range 14 * 24 {
+		if w.IsPeak(next) != now {
+			return next, true
+		}
+		next = next.Add(time.Hour)
+	}
+	return time.Time{}, false
+}

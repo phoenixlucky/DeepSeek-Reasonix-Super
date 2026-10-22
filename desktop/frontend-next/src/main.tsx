@@ -5,12 +5,22 @@ import { reason } from "./i18n/kernel";
 import { track as trackWidth } from "./ui/viewport";
 import "./styles/tokens.css";
 import "./styles/app.css";
+import "./styles/composition-picker.css";
 import "./styles/dock.css";
 import "./styles/studio.css";
-import "./styles/planpeek.css";
+import "./styles/dialogcenter.css";
+import "./styles/stophint.css";
 import "./styles/phonecomposer.css";
 import "./styles/tips.css";
+import "./styles/skillpin.css";
 import "./styles/waitnote.css";
+import "./styles/bring.css";
+import "./styles/peerthreads.css";
+import "./styles/line.css";
+import "./styles/notice.css";
+import "./styles/peers.css";
+import "./styles/contentmatches.css";
+import "./styles/jsontext.css";
 import "./styles/narrow.css";
 import "./styles/workfold.css";
 import "./styles/workbench-launcher.css";
@@ -21,11 +31,24 @@ import "./styles/sponsor.css";
 import "./styles/chart.css";
 import "./styles/versions.css";
 import "./styles/changedpill.css";
+import "./styles/askskip.css";
+import "./styles/pastekeep.css";
+import "./styles/ctxitems.css";
+import "./styles/sidepanel.css";
+import "./styles/scrolljump.css";
 import "./styles/sessionnotes.css";
 import "./styles/providerpresets.css";
 import "./styles/sidebardrop.css";
 import "./styles/sessionquick.css";
 import "./styles/sessionpin.css";
+import "./styles/treerows.css";
+import "./styles/workbench-changes.css";
+import "./styles/gitgraph.css";
+import "./styles/modelmenu.css";
+import "./styles/composer-menu.css";
+import "./styles/runsignals.css";
+import "./styles/toasts.css";
+import "./styles/overview.css";
 import { App } from "./ui/App";
 import { SseHub } from "./port/hub";
 import { HttpError } from "./port/http_error";
@@ -37,6 +60,7 @@ import { settled } from "./boot/gate";
 import { failureView, type FailureView } from "./port/cloud_failure";
 import { RemoteLinkError } from "./port/cloud_link";
 import { RemoteNotice } from "./ui/RemoteNotice";
+import { useStalePage } from "./ui/stale_page";
 import { onRemoteConnectionEnded, remoteConnectionEnded, openRemoteHome, remoteHub, signInAgain, type RemoteEnd } from "./port/cloud_remote";
 
 const failureAction = (view: FailureView) => (view.action === "home" ? openRemoteHome : () => location.reload());
@@ -48,11 +72,21 @@ function RemoteAwareApp({ hub, remote }: { hub: HubPort; remote: string | null }
     if (!remote) return;
     return onRemoteConnectionEnded(setEnded);
   }, [remote]);
+  const stale = useStalePage(!!remote);
   const reauth = ended?.kind === "reauth";
   const specific = !reauth && ended?.failure ? failureView(ended.failure) : null;
   return (
     <>
       <App hub={hub} />
+      {stale && !ended && (
+        <RemoteNotice
+          title={t("这个页面不是最新版")}
+          body={t("它是之前打开的旧版本，继续用可能出现莫名的报错。刷新一下就能换成最新版。")}
+          action={t("刷新页面")}
+          info
+          onAction={() => location.reload()}
+        />
+      )}
       {ended && remote && (
         <RemoteNotice
           title={reauth ? t("需要重新登录") : specific?.title ?? t("远程连接已断开")}

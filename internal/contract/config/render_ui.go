@@ -34,6 +34,7 @@ func renderUISection(b *strings.Builder, c *Config, scope RenderScope) {
 	}
 	fmt.Fprintf(b, "show_turn_usage = %v   # CLI/TUI: show per-request token and cost receipts in the transcript\n", c.UI.ShowTurnUsage)
 	fmt.Fprintf(b, "show_changed_files = %v   # Studio: show the changed-files pill above the composer; false = the count stays in the branch chip\n", c.UI.ShowChangedFiles)
+	fmt.Fprintf(b, "feedback_level_notices = %v   # tell me when my feedback level goes up (Studio note, /feedback list line); false = nothing is said\n", c.UI.FeedbackLevelNotices)
 	fmt.Fprintf(b, "fold_turn_work = %v   # Studio: fold a turn's tool calls, thinking and middle sentences under one line, keeping the last sentence out; false = every step stays drawn\n", c.UI.FoldTurnWork)
 	fmt.Fprintf(b, "show_receipt = %v   # TUI and Studio: draw the end-of-turn delivery receipt card; false = one line only when something is unproven\n", c.UI.ShowReceipt)
 	b.WriteString("\n")

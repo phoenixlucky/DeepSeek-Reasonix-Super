@@ -134,6 +134,26 @@ const timeLoops = (page) =>
   await ctx.close();
 }
 
+{
+  // The sidebar's footer is part of the rail: a plate of its own over the
+  // wallpaper reads as a second, whiter panel at the window's lower left.
+  for (const scheme of ["light", "dark"]) {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 760 }, colorScheme: scheme });
+    await ctx.addInitScript(() => localStorage.setItem("rx-nav-rail", "off"));
+    const page = await ctx.newPage();
+    await page.goto(`${BASE.replace(/\?.*/, "")}?pack=photo`, { waitUntil: "networkidle" });
+    await page.waitForSelector(".app", { timeout: 15000 });
+    await page.mouse.click(8, 407);
+    await page.waitForSelector(".railfoot", { timeout: 5000 });
+    const paint = await page.evaluate(() => {
+      const alpha = (c) => (c.startsWith("rgba(") ? Number(c.split(",")[3].replace(")", "")) : c.includes("/") ? Number(c.split("/")[1].replace(")", "")) : 1);
+      return alpha(getComputedStyle(document.querySelector(".railfoot")).backgroundColor);
+    });
+    check(`${scheme}: the sidebar footer paints no plate over the wallpaper`, paint === 0, `alpha ${paint}`);
+    await ctx.close();
+  }
+}
+
 await browser.close();
 console.log(fails.length ? `\n${fails.length} failed:\n- ${fails.join("\n- ")}` : "\nall passed");
 process.exit(fails.length ? 1 : 0);

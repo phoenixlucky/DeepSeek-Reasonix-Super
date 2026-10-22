@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reasonix/internal/base/workspaceid"
 	"reasonix/internal/state/sessionstore"
 	"slices"
 	"strings"
 
+	"reasonix/internal/base/backgroundwork"
 	"reasonix/internal/base/fileutil"
 	"reasonix/internal/contract/config"
 	"reasonix/internal/contract/event"
@@ -24,59 +26,9 @@ import (
 // cannot spin the sidebar.
 const maxRecoveryLineageWalk = 16
 
-// treeWorkspace is one folder in the sidebar: what it is called, whether a pane
-// is driving it, and the conversations saved under it.
-type treeWorkspace struct {
-	Root string `json:"root"`
-	Name string `json:"name"`
-	// Isolated marks a delivery worktree. Its folder name is the project's, so
-	// without this the sidebar shows two rows with one name.
-	Isolated bool `json:"isolated,omitempty"`
-	Missing  bool `json:"missing,omitempty"`
-	Open     bool `json:"open,omitempty"`
-	// Remembered marks a folder the user chose. A window always has a root — the
-	// one it happened to launch in — and a client that cannot tell the two apart
-	// shows "never picked a project" as if it were a project.
-	Remembered bool `json:"remembered,omitempty"`
-	// Total counts every conversation the workspace lists, loaded or not, and
-	// Archived the share of them that are archived. Sessions is the newest of
-	// them, as many as the request's window asked for.
-	Total    int `json:"total"`
-	Archived int `json:"archived,omitempty"`
-	// Remaining counts the rows the request's scope and query match that
-	// Sessions does not carry: what "show more" would still bring. Always sent, so
-	// a client can tell a kernel that predates it from one with nothing left.
-	Remaining int           `json:"remaining"`
-	Sessions  []treeSession `json:"sessions"`
-}
-
-// treeSession is one conversation. RuntimeID is set when a pane already has it
-// open, which is what lets the sidebar focus that pane instead of opening a
-// second writer for the same transcript.
-type treeSession struct {
-	Path      string `json:"path"`
-	Name      string `json:"name"`
-	Title     string `json:"title,omitempty"`
-	Turns     int    `json:"turns,omitempty"`
-	RuntimeID string `json:"runtimeId,omitempty"`
-	Archived  bool   `json:"archived,omitempty"`
-	Pinned    bool   `json:"pinned,omitempty"`
-	// AutoArchivedAt is unix milliseconds of an automatic archive, else absent.
-	AutoArchivedAt int64 `json:"autoArchivedAt,omitempty"`
-	// Unread is a turn that finished since the person last looked. The kernel
-	// derives it from two stored timestamps; absence reads as seen.
-	Unread bool `json:"unread,omitempty"`
-	// Copies are this conversation's conflict-recovery copies. A save that
-	// keeps conflicting writes one file per turn, all under the one title, and
-	// unfolded that is a sidebar of rows the user never made.
-	Copies []treeSession `json:"copies,omitempty"`
-	// Versions are this conversation as it stood before each rewind cut it,
-	// newest first. Each is a whole conversation and opens like one.
-	Versions []treeSession `json:"versions,omitempty"`
-}
-
 func (h *Hub) registerTreeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /tree", h.tree)
+	mux.HandleFunc("GET /history/search", historySearch)
 	mux.HandleFunc("GET /tree/events", h.treeEvents)
 	mux.HandleFunc("GET /tree/events/replay", h.treeEventsReplay)
 	mux.HandleFunc("POST /tree/workspaces", h.addWorkspace)
@@ -85,39 +37,59 @@ func (h *Hub) registerTreeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /tree/sessions/remove", h.removeSession)
 	mux.HandleFunc("POST /tree/sessions/archive", h.archiveSession)
 	mux.HandleFunc("POST /tree/sessions/pin", h.pinSession)
+	mux.HandleFunc("POST /tree/sessions/viewed", h.markSessionViewed)
+	mux.HandleFunc("POST /tree/sessions/move", h.moveSession)
+	mux.HandleFunc("POST /tree/sessions/move-to", h.moveSessionTo)
 	mux.HandleFunc("POST /tree/sessions/pins", h.syncPins)
 	mux.HandleFunc("POST /tree/sessions/rename", h.renameSession)
+	mux.HandleFunc("POST /tree/sessions/auto-name", h.autoNameSession)
 	mux.HandleFunc("POST /tree/sessions/export", h.exportSession)
 	mux.HandleFunc("POST /tree/sessions/import-legacy", h.importLegacySessions)
+	mux.HandleFunc("POST /tree/sessions/import-native", h.importNativeSession)
 }
 
 // tree answers the whole sidebar in one request: every remembered workspace
-// with the sessions saved under it. Titles come from each project's cache and
+// with the sessions saved under it, and a folder only a pane was opened in once
+// something was said there. Titles come from each project's cache and
 // are never generated here — the pane that opens a session does that.
 func (h *Hub) tree(w http.ResponseWriter, r *http.Request) {
+	defer backgroundwork.Shared.Read()()
 	window, ok := parseTreeWindow(w, r)
 	if !ok {
 		return
 	}
 	open := h.openSessions()
-	roots := h.roots()
+	roots := groupWorkspaces(h.roots())
 	out := make([]treeWorkspace, 0, len(roots))
 	for _, ref := range roots {
 		// Open means a pane is driving this folder — true from the moment one is
 		// opened, before its first turn has written a transcript to list.
 		node := treeWorkspace{
-			Root: ref.dir, Name: fileutil.RootName(ref.dir), Open: h.rootPanes(ref.dir) > 0,
-			Isolated:   worktree.IsManagedPath(ref.dir, config.DeliveryWorktreeDir()),
-			Remembered: ref.remembered,
-			Sessions:   []treeSession{},
+			Root: ref.root, Name: fileutil.RootName(ref.root),
+			WorkspaceRoots: ref.roots,
+			Isolated:       worktree.IsManagedPath(ref.root, config.DeliveryWorktreeDir()),
+			Remembered:     ref.remembered,
+			Sessions:       []treeSession{},
 		}
-		if st, err := os.Stat(ref.dir); err != nil || !st.IsDir() {
+		for _, root := range ref.roots {
+			node.Open = node.Open || h.rootPanes(root) > 0
+		}
+		if st, err := os.Stat(ref.root); err != nil || !st.IsDir() {
 			node.Missing = true
 		}
-		page := h.workspacePage(ref.dir, node.Name, open, window, window.limitFor(ref.dir))
+		page := h.projectPage(ref.roots, node.Name, open, window, window.limitFor(ref.root))
+		if !ref.remembered && !page.Said && (page.Status == nil || page.Status.CountsComplete) {
+			continue
+		}
 		node.Sessions, node.Total, node.Archived, node.Remaining = page.Sessions, page.Total, page.Archived, page.Remaining
+		if page.Status != nil {
+			node.ListingState, node.ListingRevision = page.Status.ListingState, page.Status.ListingRevision
+			node.CountsComplete = &page.Status.CountsComplete
+			node.PendingMetadata, node.FailedMetadata = page.Status.PendingMetadata, page.Status.FailedMetadata
+		}
 		out = append(out, node)
 	}
+	h.reportOrphanPanes(out)
 	writeJSON(w, out)
 }
 
@@ -130,6 +102,9 @@ func attachVersions(dir string, rows []treeSession, open map[string]string) {
 		return
 	}
 	for i := range rows {
+		if filepath.Dir(rows[i].Path) != dir {
+			continue
+		}
 		for _, v := range byParent[sessionstore.BranchID(rows[i].Path)] {
 			if open[sessionstore.CanonicalSessionPath(v.Path)] != "" {
 				continue
@@ -141,24 +116,39 @@ func attachVersions(dir string, rows []treeSession, open map[string]string) {
 	}
 }
 
-// unlistedOpenSessions are the conversations a pane in root holds that the
-// listing does not show: a path is minted at the first submit, and the
-// transcript is written after it, so a first turn in flight has no file yet.
-// Without a row it can be neither found nor returned to while it runs.
-func (h *Hub) unlistedOpenSessions(root string, listed []treeSession) []treeSession {
-	seen := make(map[string]bool, len(listed))
-	for _, row := range listed {
+// unlistedOpenSessions are the open panes' conversations that have no file yet
+// (a path is minted at the first submit, the transcript written after). A
+// session on disk is never unlisted: a scope, search or window that leaves its
+// row out is the view's choice.
+func (h *Hub) unlistedOpenSessions(root string, shown []treeSession, onDisk []sessionstore.SessionInfo) []treeSession {
+	runtimes := h.localRuntimes()
+	// Transcript names are minted from a timestamp, so only a row named like an
+	// open pane's file can be that pane's; resolving thousands of others costs
+	// a filesystem walk each.
+	names := make(map[string]bool, len(runtimes))
+	for _, rt := range runtimes {
+		if path := rt.Server.Controller().SessionPath(); path != "" {
+			names[strings.ToLower(filepath.Base(path))] = true
+		}
+	}
+	seen := make(map[string]bool, len(names)+len(shown))
+	for _, si := range onDisk {
+		if names[strings.ToLower(filepath.Base(si.Path))] {
+			seen[sessionstore.CanonicalSessionPath(si.Path)] = true
+		}
+	}
+	for _, row := range shown {
 		seen[sessionstore.CanonicalSessionPath(row.Path)] = true
 		for _, cp := range row.Copies {
 			seen[sessionstore.CanonicalSessionPath(cp.Path)] = true
 		}
 	}
 	var out []treeSession
-	for _, rt := range h.localRuntimes() {
+	for _, rt := range runtimes {
 		ctrl := rt.Server.Controller()
 		path := ctrl.SessionPath()
 		canonical := sessionstore.CanonicalSessionPath(path)
-		if canonical == "" || seen[canonical] || !drivesRoot(rt, root) {
+		if canonical == "" || seen[canonical] || !drivesRoot(rt, root) || !sessionstore.IsVisibleSession(path) {
 			continue
 		}
 		seen[canonical] = true
@@ -271,7 +261,7 @@ func (h *Hub) syncPins(w http.ResponseWriter, r *http.Request) {
 // through the value the kernel itself reported.
 func (h *Hub) listedSessionPaths() map[string]string {
 	out := map[string]string{}
-	for _, ref := range h.roots() {
+	for _, ref := range h.sessionRoots() {
 		infos, err := sessionstore.ListSessionOrder(SessionDirFor(ref.dir))
 		if err != nil {
 			continue
@@ -284,8 +274,10 @@ func (h *Hub) listedSessionPaths() map[string]string {
 }
 
 // importLegacySessions is the user-facing recovery path for old installations.
-// Unknown historical workspaces fall back to the workspace the user selected,
-// so a successful import is never stranded outside the desktop tree.
+// A conversation goes back to the project it was made in; one whose project is
+// gone falls back to the workspace the user selected so it is not stranded outside
+// the desktop tree, and one that records no project is left in the source and listed
+// as skipped.
 func (h *Hub) importLegacySessions(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Path      string `json:"path"`
@@ -301,7 +293,7 @@ func (h *Hub) importLegacySessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	known := ""
-	for _, ref := range h.roots() {
+	for _, ref := range h.sessionRoots() {
 		if ref.dir == workspace {
 			known = ref.dir
 			break
@@ -312,6 +304,13 @@ func (h *Hub) importLegacySessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result := migration.RunLegacySessionImportInto(strings.TrimSpace(body.Path), SessionDirFor(known), legacyImportLog)
+	for _, root := range result.Workspaces {
+		// A folder the import routed sessions back into is a project the person
+		// had in 1.x; without a place in the list its conversations are unreachable.
+		if err := addRememberedWorkspace(r.Context(), root); err != nil && !errors.Is(err, errWorkspaceListFull) {
+			slog.Warn("serve: could not list an imported project", "root", root, "err", err)
+		}
+	}
 	count := 0
 	for _, imported := range result.SessionImports {
 		count += imported.Count
@@ -412,7 +411,9 @@ func (h *Hub) removeWorkspace(w http.ResponseWriter, r *http.Request) {
 		missingField(w, "path")
 		return
 	}
-	inFolder := func(rt *Runtime) bool { return drivesRoot(rt, dir) }
+	inFolder := func(rt *Runtime) bool {
+		return rt.Local() && projectIdentity(rt.Server.Controller().WorkspaceRoot()) == projectIdentity(dir)
+	}
 	if !h.releaseOrRefuse(w, r, "workspace.running", "a conversation in this folder is running; stop it first", h.panesWhere(inFolder)) {
 		return
 	}
@@ -538,34 +539,6 @@ func sessionHolder(held *sessionstore.SessionLeaseError) map[string]any {
 	return map[string]any{"pid": held.Info.PID, "host": held.Info.Hostname}
 }
 
-// renameSession sets the name a session shows under. Unlike removal this is
-// safe on an open one — the title lives in the sidecar, not the transcript — so
-// a tab can be renamed without closing the pane behind it.
-func (h *Hub) renameSession(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Path  string `json:"path"`
-		Title string `json:"title"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		badBody(w)
-		return
-	}
-	path, err := filepath.Abs(strings.TrimSpace(body.Path))
-	if err != nil || !store.IsSessionTranscriptName(filepath.Base(path)) {
-		refuse(w, http.StatusBadRequest, codeSessionBadPath, "the session path could not be resolved", nil)
-		return
-	}
-	if !h.ownsSessionDir(filepath.Dir(path)) {
-		refuse(w, http.StatusForbidden, "session.outside_workspace", "path outside a known workspace", nil)
-		return
-	}
-	if err := sessionstore.RenameSession(path, body.Title); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 // exportSession returns the transcript only after applying the same workspace
 // boundary as rename and removal. The shell owns where the copy is saved; the
 // kernel owns which path is safe to read.
@@ -578,15 +551,41 @@ func (h *Hub) exportSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path, err := filepath.Abs(strings.TrimSpace(body.Path))
-	if err != nil || !store.IsSessionTranscriptName(filepath.Base(path)) {
+	name := filepath.Base(path)
+	if err != nil || !filepath.IsLocal(name) || !store.IsSessionTranscriptName(name) {
 		refuse(w, http.StatusBadRequest, codeSessionBadPath, "the session path could not be resolved", nil)
 		return
 	}
-	if !h.ownsSessionDir(filepath.Dir(path)) {
+	dir := h.knownSessionDir(filepath.Dir(path))
+	if dir == "" {
 		refuse(w, http.StatusForbidden, "session.outside_workspace", "path outside a known workspace", nil)
 		return
 	}
-	content, err := os.ReadFile(path)
+	path = filepath.Join(dir, name)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	defer root.Close()
+	info, err := root.Lstat(name)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !info.Mode().IsRegular() {
+		refuse(w, http.StatusForbidden, "session.outside_workspace", "session export requires a regular transcript", nil)
+		return
+	}
+	loaded, err := sessionstore.LoadSession(path)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	content, err := root.ReadFile(name)
+	if loaded.Composition() != nil {
+		content, err = sessionstore.ExportNativeArchive(path)
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -600,12 +599,16 @@ func (h *Hub) exportSession(w http.ResponseWriter, r *http.Request) {
 // ownsSessionDir reports whether dir is the session directory of a workspace
 // this hub lists, which is the boundary a delete may not reach past.
 func (h *Hub) ownsSessionDir(dir string) bool {
-	for _, ref := range h.roots() {
+	return h.knownSessionDir(dir) != ""
+}
+
+func (h *Hub) knownSessionDir(dir string) string {
+	for _, ref := range h.sessionRoots() {
 		if known, err := filepath.Abs(SessionDirFor(ref.dir)); err == nil && known == dir {
-			return true
+			return known
 		}
 	}
-	return false
+	return ""
 }
 
 // rootRef is one sidebar folder and whether the user ever chose it.
@@ -646,7 +649,19 @@ func (h *Hub) roots() []rootRef {
 // openSessions maps canonical session paths to the runtime driving them.
 // drivesRoot reports whether rt is a local pane working in root.
 func drivesRoot(rt *Runtime, root string) bool {
-	return rt.Local() && rt.Server.Controller().WorkspaceRoot() == root
+	return rt.Local() && sameFolder(rt.Server.Controller().WorkspaceRoot(), root)
+}
+
+// sameFolder says whether two spellings name one directory. The remembered
+// folders and a pane's own root are written by different code, and on Windows a
+// folder has several spellings (case, slash direction, a trailing separator, an
+// 8.3 short name), so string equality splits one folder into two.
+func sameFolder(a, b string) bool {
+	if a == b {
+		return true
+	}
+	fa := workspaceid.PathFingerprint(a)
+	return fa != "" && fa == workspaceid.PathFingerprint(b)
 }
 
 // openSessionsIn is openSessions for the panes drivesRoot accepts: the ones
@@ -677,7 +692,7 @@ func (h *Hub) openSessions() map[string]string {
 func (h *Hub) rootPanes(root string) int {
 	n := 0
 	for _, rt := range h.localRuntimes() {
-		if rt.Server.Controller().WorkspaceRoot() == root {
+		if sameFolder(rt.Server.Controller().WorkspaceRoot(), root) {
 			n++
 		}
 	}

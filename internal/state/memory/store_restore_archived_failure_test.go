@@ -14,7 +14,7 @@ import (
 // the double-failure test covers repairing it on retry.
 func assertNoDoubleIdentity(t *testing.T, s Store, dir, archivePath string) {
 	t.Helper()
-	_, active := s.Read("alpha")
+	_, active := mustStore(t, s).Read("alpha")
 	_, archived := os.Stat(archivePath)
 	if active {
 		t.Fatalf("a failed recovery left %q active as well as archived at %s", "alpha", archivePath)
@@ -60,15 +60,15 @@ func TestRestoreArchivedIndexFailureLeavesNoDoubleIdentity(t *testing.T) {
 	if _, retryErr := s.RestoreArchived(archivePath); retryErr != nil {
 		t.Fatalf("the failed recovery left no way to retry: %v", retryErr)
 	}
-	if _, ok := s.Read("alpha"); !ok {
+	if _, ok := mustStore(t, s).Read("alpha"); !ok {
 		t.Fatal("the retry did not restore the fact")
 	}
 }
 
-func TestRestoreArchivedArchiveRemovalFailureLeavesNoDoubleIdentity(t *testing.T) {
+func TestRestoreArchivedStagingRemovalFailureLeavesNoDoubleIdentity(t *testing.T) {
 	s, dir, archivePath := restoreFixture(t)
 	withFault(t, func(op, path string) error {
-		if op == "remove" && path == archivePath {
+		if op == "remove" && strings.HasPrefix(filepath.Base(path), restoreStagingPrefix) {
 			return &os.PathError{Op: "remove", Path: path, Err: os.ErrPermission}
 		}
 		return nil
@@ -82,7 +82,7 @@ func TestRestoreArchivedArchiveRemovalFailureLeavesNoDoubleIdentity(t *testing.T
 	if _, retryErr := s.RestoreArchived(archivePath); retryErr != nil {
 		t.Fatalf("the failed recovery left no way to retry: %v", retryErr)
 	}
-	active, ok := s.Read("alpha")
+	active, ok := mustStore(t, s).Read("alpha")
 	if !ok {
 		t.Fatal("the retry did not restore the fact")
 	}
@@ -107,7 +107,7 @@ func TestRestoreArchivedDoubleIndexFailureConvergesOnRetry(t *testing.T) {
 	if err == nil {
 		t.Fatal("recovery reported success although no index write could succeed")
 	}
-	if _, active := s.Read("alpha"); active {
+	if _, active := mustStore(t, s).Read("alpha"); active {
 		t.Fatal("a failed recovery left the fact active")
 	}
 	if _, archived := os.Stat(archivePath); archived != nil {
@@ -118,7 +118,7 @@ func TestRestoreArchivedDoubleIndexFailureConvergesOnRetry(t *testing.T) {
 	if _, retryErr := s.RestoreArchived(archivePath); retryErr != nil {
 		t.Fatalf("the retry did not converge: %v", retryErr)
 	}
-	if _, ok := s.Read("alpha"); !ok {
+	if _, ok := mustStore(t, s).Read("alpha"); !ok {
 		t.Fatal("the retry did not restore the fact")
 	}
 	body := mustReadString(t, filepath.Join(dir, indexFile))

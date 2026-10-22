@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -9,9 +10,11 @@ import (
 
 	"reasonix/internal/contract/event"
 	"reasonix/internal/contract/provider"
+	"reasonix/internal/contract/tool"
 	"reasonix/internal/ext/extension"
 	"reasonix/internal/ext/extension/dispatch"
 	"reasonix/internal/ext/extension/providerconv"
+	"reasonix/internal/safety/permission"
 )
 
 // Extension Protocol v2 agent-side wiring. The agent consults the
@@ -245,13 +248,16 @@ func (a *Agent) interceptToolBefore(ctx context.Context, plan *toolCallPlan) (to
 	if d == nil {
 		return toolOutcome{}, false
 	}
-	payload := dispatch.ToolBeforePayload{Name: plan.call.Name, Arguments: plan.call.Arguments, CallID: plan.call.ID}
+	payload := dispatch.ToolBeforePayload{Name: plan.call.Name, Arguments: plan.call.ExecutionArguments(), CallID: plan.call.ID}
 	result, err := d.Intercept(ctx, extension.PointToolBefore, &payload)
 	if err != nil {
 		msg := fmt.Sprintf("error: %v", err)
 		return toolOutcome{output: msg, errMsg: firstLine(err.Error())}, true
 	}
 	d.Event(extension.PointToolBefore, payload)
+	if result.Answer != "" {
+		return modAnswerOutcome(result), true
+	}
 	if result.Blocked {
 		reason := extensionBlockReason(result.BlockReason)
 		return toolOutcome{output: "blocked: " + reason, blocked: true, errMsg: "blocked by extension"}, true
@@ -274,10 +280,21 @@ func (a *Agent) interceptToolBefore(ctx context.Context, plan *toolCallPlan) (to
 	}
 	plan.call.Name = payload.Name
 	plan.call.Arguments = payload.Arguments
+	plan.call.ArgumentNormalization = nil
 	if blocked, early := a.parseToolCall(ctx, plan); early {
 		return blocked, true
 	}
 	return toolOutcome{}, false
+}
+
+// modAnswerOutcome is a call a mod answered in place of the tool. The tool did
+// not run, so the host says so before the mod's text, and the result carries the
+// mod as its origin: the one label every external result gets.
+func modAnswerOutcome(result *dispatch.Result) toolOutcome {
+	return toolOutcome{
+		output:     "the tool did not run: a Claude Code mod answered this call in its place\n" + result.Answer,
+		provenance: tool.Provenance{Kind: tool.ProvenanceMod, Source: result.AnswerBy},
+	}
 }
 
 // interceptExtensionPermission runs permission.decision at the gate point.
@@ -349,6 +366,43 @@ func (a *Agent) interceptExtensionPermission(ctx context.Context, plan *toolCall
 	case result.Permission != nil && *result.Permission:
 		*allow = true
 	}
+	if result.Ask && *allow {
+		return a.confirmAskedByExtension(ctx, plan)
+	}
+	return toolOutcome{}, false
+}
+
+// mcpFastPathRuling is the trusted MCP path's gate: the host's explicit deny and
+// live authorization, then the extensions' ruling. The path allows by default,
+// so an extension can only tighten here.
+func (a *Agent) mcpFastPathRuling(ctx context.Context, plan *toolCallPlan, gateArgs json.RawMessage) (toolOutcome, bool) {
+	if outcome, blocked := mcpFastPathBlock(ctx, a.svc.gate, plan.permName, gateArgs, plan.readOnly); blocked {
+		return outcome, true
+	}
+	allowed := true
+	return a.interceptExtensionPermission(ctx, plan, &allowed)
+}
+
+// confirmAskedByExtension puts a call the host allowed to the user because a
+// tighten-only extension asked. A gate that cannot ask refuses: an ask is never
+// quietly dropped.
+func (a *Agent) confirmAskedByExtension(ctx context.Context, plan *toolCallPlan) (toolOutcome, bool) {
+	refuse := func(msg string) (toolOutcome, bool) {
+		return toolOutcome{output: "blocked: " + msg, blocked: true, errMsg: "blocked by extension permission policy"}, true
+	}
+	c, ok := a.svc.gate.(interface {
+		Confirm(context.Context, string, json.RawMessage, string) (permission.Verdict, error)
+	})
+	if !ok {
+		return refuse("an extension required approval for this call and this session has no way to ask")
+	}
+	v, err := c.Confirm(ctx, plan.permName, plan.permArgs, "an extension")
+	if err != nil {
+		return refuse(err.Error())
+	}
+	if !v.Allow {
+		return refuse(v.Reason)
+	}
 	return toolOutcome{}, false
 }
 
@@ -365,7 +419,7 @@ func (a *Agent) interceptToolAfter(ctx context.Context, call provider.ToolCall, 
 	}
 	payload := dispatch.ToolAfterPayload{
 		Name:      call.Name,
-		Arguments: call.Arguments,
+		Arguments: call.ExecutionArguments(),
 		Result:    result,
 		IsError:   err != nil,
 		CallID:    call.ID,

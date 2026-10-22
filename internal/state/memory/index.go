@@ -13,12 +13,15 @@ import (
 // fact, scope-qualified, shadowed globals annotated rather than hidden
 // (#7995). A fact past its expires_at is left out — automatic recall already
 // refuses to serve one, and a line the model can never act on is prefix rent.
-func (s Store) Index() string {
+func (s Store) Index() (string, error) {
 	return s.indexAt(time.Now().UTC())
 }
 
-func (s Store) indexAt(now time.Time) string {
-	memories := s.ListAll()
+func (s Store) indexAt(now time.Time) (string, error) {
+	memories, err := s.ListAll()
+	if err != nil {
+		return "", err
+	}
 	live := memories[:0:0]
 	for _, m := range memories {
 		if FreshnessFor(m, now) != FreshnessExpired {
@@ -27,7 +30,7 @@ func (s Store) indexAt(now time.Time) string {
 	}
 	memories = live
 	if len(memories) == 0 {
-		return ""
+		return "", nil
 	}
 	shadowed := map[string]string{} // global fact ID -> winning project reference
 	for _, o := range FindOverrides(memories) {
@@ -54,7 +57,7 @@ func (s Store) indexAt(now time.Time) string {
 		}
 		b.WriteString("\n")
 	}
-	return b.String()
+	return b.String(), nil
 }
 
 // renderQualifiedIndexLine is the provider-index variant of renderIndexLine:

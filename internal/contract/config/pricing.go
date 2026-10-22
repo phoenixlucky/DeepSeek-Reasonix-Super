@@ -262,7 +262,11 @@ func ApplyUserConfigUpgradesOnStartup(path string) (bool, error) {
 		return upgraded, err
 	}
 	released, err := releaseShippedDesktopPosture(path)
-	return upgraded || released, err
+	if err != nil {
+		return upgraded || released, err
+	}
+	declared, err := reconcileProviderKeys(path)
+	return upgraded || released || declared, err
 }
 
 func applyVersionedUpgrades(path string, from int) (bool, error) {

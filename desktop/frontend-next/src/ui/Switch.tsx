@@ -6,7 +6,7 @@ export function Switch({
   on: boolean; busy?: boolean; label: string; onClick: () => void;
 } & { [K in `data-${string}`]?: string }) {
   return (
-    <button className="sw" role="switch" aria-checked={on} aria-label={label} disabled={busy} onClick={onClick} {...id}>
+    <button type="button" className="sw" role="switch" aria-checked={on} aria-label={label} disabled={busy} onClick={onClick} {...id}>
       <i />
     </button>
   );

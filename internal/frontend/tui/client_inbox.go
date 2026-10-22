@@ -13,15 +13,20 @@ type InboxItem struct {
 	Intent  string `json:"intent"`
 	State   string `json:"state"`
 	Preview string `json:"preview"`
+	// Images marks a line that froze a picture: it cannot join a running turn.
+	Images bool `json:"images"`
 }
 
 // InboxSnapshot is the durable queue as GET /inbox answers it.
 type InboxSnapshot struct {
-	Revision   int64       `json:"revision"`
-	Paused     bool        `json:"paused"`
-	Recovered  bool        `json:"recovered"`
-	RecoveredN int         `json:"recoveredCount"`
-	Items      []InboxItem `json:"items"`
+	Revision   int64 `json:"revision"`
+	Paused     bool  `json:"paused"`
+	Recovered  bool  `json:"recovered"`
+	RecoveredN int   `json:"recoveredCount"`
+	// Unrecovered means the kernel could not read the queue at all, so Items is
+	// empty because the contents are unknown, not because nothing is queued.
+	Unrecovered bool        `json:"unrecovered"`
+	Items       []InboxItem `json:"items"`
 }
 
 // InboxReceipt says how the kernel settled an enqueue.

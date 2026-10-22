@@ -16,12 +16,16 @@ import (
 
 const providerSetupMaxBody = 20 << 10
 
-const codeProviderKeyMissing = "provider.key_missing"
+const (
+	codeProviderKeyMissing = "provider.key_missing"
+	codeProviderNoneSetUp  = "provider.none_configured"
+)
 
 type providerSetupState struct {
 	Enabled            bool   `json:"-"`
 	InProcess          bool   `json:"-"`
 	Required           bool   `json:"required"`
+	NoProvider         bool   `json:"noProvider,omitempty"`
 	ActivationPending  bool   `json:"activationPending,omitempty"`
 	Provider           string `json:"provider,omitempty"`
 	Model              string `json:"model,omitempty"`
@@ -68,6 +72,15 @@ func (s *Server) refreshProviderSetup(ref string) {
 	}
 
 	next := providerSetupState{Enabled: true, InProcess: inProcess}
+	// A runtime started with no provider owes the person a connection before
+	// anything else: there is no model whose key could be the missing piece.
+	if ref == config.UnconfiguredRef {
+		next.Required, next.NoProvider = true, true
+		s.providerSetupMu.Lock()
+		s.providerSetup = next
+		s.providerSetupMu.Unlock()
+		return
+	}
 	// Resolve the missing-key state and its credential-file revision under the
 	// same cross-process lock used by every writer. This prevents capturing a
 	// stale "missing" snapshot paired with a newer revision.
@@ -108,6 +121,10 @@ func (s *Server) refuseKeylessTurn(w http.ResponseWriter) bool {
 	setup, ok := s.providerSetupSnapshot()
 	if !ok || !setup.Required {
 		return false
+	}
+	if setup.NoProvider {
+		refuse(w, http.StatusConflict, codeProviderNoneSetUp, "no model provider is configured yet; connect one with /setup", nil)
+		return true
 	}
 	refuse(w, http.StatusConflict, codeProviderKeyMissing, "the selected model has no API key yet; add one with /setup",
 		map[string]any{"provider": setup.Provider, "model": setup.Model})
@@ -248,4 +265,23 @@ func ensureProviderSetupJSONEOF(dec *json.Decoder) error {
 		return err
 	}
 	return errors.New("multiple JSON values")
+}
+
+// leaveNoProvider moves a runtime that started on the placeholder to the first
+// of the providers just saved. Anywhere else a saved provider is picked up from
+// disk at the next switch, so nothing is done.
+func (s *Server) leaveNoProvider(ctx context.Context, saved ...config.ProviderEntry) error {
+	if currentModelRef(s.ctl()) != config.UnconfiguredRef {
+		return nil
+	}
+	for _, entry := range saved {
+		if target := firstModelRef(entry); target != "" {
+			if err := s.switchModel(ctx, target); err != nil {
+				return err
+			}
+			s.refreshProviderSetup(currentModelRef(s.ctl()))
+			return nil
+		}
+	}
+	return nil
 }

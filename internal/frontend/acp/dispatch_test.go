@@ -144,6 +144,9 @@ func TestUpdateSinkMapsEvents(t *testing.T) {
 	if u["toolCallId"] != "call-1" {
 		t.Errorf("update 2 toolCallId = %v, want call-1", u["toolCallId"])
 	}
+	if u["name"] != "read_file" {
+		t.Errorf("update 2 name = %v, want the tool's own name read_file", u["name"])
+	}
 	if ri, _ := u["rawInput"].(map[string]any); ri["path"] != "a.go" {
 		t.Errorf("update 2 rawInput = %v", u["rawInput"])
 	}
@@ -540,11 +543,12 @@ func TestUpdateSinkAskRequestUsesPermissionChoices(t *testing.T) {
 	}}
 	sink := newUpdateSink(fn, "sess-1")
 	got := make(chan []event.AskAnswer, 1)
-	sink.bindAnswer(func(id string, answers []event.AskAnswer) {
+	sink.bindAnswer(func(id string, answers []event.AskAnswer) error {
 		if id != "ask-1" {
 			t.Errorf("answer id = %q, want ask-1", id)
 		}
 		got <- answers
+		return nil
 	})
 
 	sink.Emit(event.Event{Kind: event.AskRequest, Ask: event.Ask{
@@ -577,7 +581,7 @@ func TestUpdateSinkAskCancelledReturnsNoAnswers(t *testing.T) {
 	}}
 	sink := newUpdateSink(fn, "sess-1")
 	got := make(chan []event.AskAnswer, 1)
-	sink.bindAnswer(func(_ string, answers []event.AskAnswer) { got <- answers })
+	sink.bindAnswer(func(_ string, answers []event.AskAnswer) error { got <- answers; return nil })
 
 	sink.Emit(event.Event{Kind: event.AskRequest, Ask: event.Ask{
 		ID: "ask-2",
@@ -630,7 +634,7 @@ func TestUpdateSinkApprovalUsesTurnContext(t *testing.T) {
 }
 
 func TestApprovalOptionsFreshDynamicToolOnlyAllowOnceOrReject(t *testing.T) {
-	options := approvalOptions("extension__wipe", "extension/wipe", true)
+	options := approvalOptions("extension__wipe", "extension/wipe", true, false)
 	if len(options) != 2 || options[0].Kind != OptAllowOnce || options[1].Kind != OptRejectOnce {
 		t.Fatalf("fresh dynamic-tool options = %+v, want allow-once/reject", options)
 	}
@@ -641,9 +645,22 @@ func TestApprovalOptionsFreshDynamicToolOnlyAllowOnceOrReject(t *testing.T) {
 	}
 }
 
+// A preference setting may be agreed for the session, and the grant names that
+// one setting; an elevated one is asked every time, so it offers allow-once and reject.
+func TestApprovalOptionsForASettingChange(t *testing.T) {
+	pref := approvalOptions(control.SettingApprovalTool, "ui.show_receipt", true, false)
+	if len(pref) != 3 || pref[1].Kind != OptAllowAlways || !strings.Contains(pref[1].Name, "ui.show_receipt") || pref[2].Kind != OptRejectOnce {
+		t.Fatalf("preference options = %+v", pref)
+	}
+	elevated := approvalOptions(control.SettingElevatedApprovalTool, "peers.dispatch", true, false)
+	if len(elevated) != 2 || elevated[0].Kind != OptAllowOnce || elevated[1].Kind != OptRejectOnce {
+		t.Fatalf("elevated options = %+v, want allow-once/reject only", elevated)
+	}
+}
+
 func TestDynamicBashApprovalOptionsUseExactSessionLiteral(t *testing.T) {
 	const command = "git status $(touch /tmp/reasonix-dynamic-approval)"
-	options := approvalOptions("bash", command, false)
+	options := approvalOptions("bash", command, false, false)
 	if len(options) != 3 || options[1].Kind != OptAllowAlways {
 		t.Fatalf("dynamic Bash options = %+v, want ordinary options with session grant", options)
 	}
@@ -744,7 +761,7 @@ func TestUpdateSinkDeclinesAServersFormWithoutPrompting(t *testing.T) {
 	}}
 	sink := newUpdateSink(fn, "sess-1")
 	got := make(chan []event.AskAnswer, 1)
-	sink.bindAnswer(func(_ string, answers []event.AskAnswer) { got <- answers })
+	sink.bindAnswer(func(_ string, answers []event.AskAnswer) error { got <- answers; return nil })
 	sink.Emit(event.Event{Kind: event.AskRequest, Ask: event.Ask{
 		ID:        "ask-3",
 		Origin:    &event.AskOrigin{Kind: event.AskOriginMCP, Source: "evil"},
@@ -757,5 +774,46 @@ func TestUpdateSinkDeclinesAServersFormWithoutPrompting(t *testing.T) {
 		}
 	case <-time.After(rpcCallBudget(t)):
 		t.Fatal("a server's form was never answered")
+	}
+}
+
+// A replayed call names its tool the way a live one does, so a client that
+// groups by name sees the same thing after a session is loaded.
+func TestUpdateSinkReplayNamesTheTool(t *testing.T) {
+	fn := &fakeNotifier{}
+	sink := newUpdateSink(fn, "sess-1")
+	sink.replay([]provider.Message{{
+		Role:      provider.RoleAssistant,
+		ToolCalls: []provider.ToolCall{{ID: "call-1", Name: "read_file", Arguments: `{"path":"a.go"}`}},
+	}})
+
+	u := fn.updateMap(t, 0)
+	if u["sessionUpdate"] != "tool_call" || u["name"] != "read_file" {
+		t.Fatalf("replayed call = %v, want a tool_call named read_file", u)
+	}
+}
+
+// Taking a question over is not a new question: the client is asked once.
+func TestUpdateSinkAskEngagedDoesNotAskTheClientAgain(t *testing.T) {
+	var mu sync.Mutex
+	asked := 0
+	fn := &fakeNotifier{onReq: func(method string, _ any) (json.RawMessage, error) {
+		if method == "session/request_permission" {
+			mu.Lock()
+			asked++
+			mu.Unlock()
+		}
+		return json.RawMessage(`{"outcome":{"outcome":"cancelled"}}`), nil
+	}}
+	sink := newUpdateSink(fn, "sess-1")
+	sink.bindAnswer(func(string, []event.AskAnswer) error { return nil })
+	ask := event.Ask{ID: "ask-1", Questions: []event.AskQuestion{{ID: "q1", Prompt: "Pick", Options: []event.AskOption{{Label: "A"}}}}}
+	sink.Emit(event.Event{Kind: event.AskRequest, Ask: ask})
+	sink.Emit(event.Event{Kind: event.AskEngaged, Ask: event.Ask{ID: "ask-1"}})
+	time.Sleep(300 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if asked != 1 {
+		t.Fatalf("the client was asked %d times, want 1", asked)
 	}
 }

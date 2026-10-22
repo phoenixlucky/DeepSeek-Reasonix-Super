@@ -262,6 +262,10 @@ func TestOversizeOutputSpillsRatherThanTruncates(t *testing.T) {
 	// Owning neither a transcript nor an archive is likewise not a reason to
 	// lose the middle: scratch is somewhere, and truncation drops most of a
 	// result this size.
+	scratchHome := testenv.TempDir(t)
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, scratchHome)
+	}
 	bare := New(nil, tool.NewRegistry(), sessionstore.NewSession("sys"), Options{}, event.Discard)
 	bareOut, _, bareNotice := bare.boundToolOutput(big, "bash", "call-2", "", false)
 	if bareNotice != "" {

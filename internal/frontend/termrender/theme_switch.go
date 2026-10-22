@@ -45,3 +45,30 @@ func DescribeThemes() string {
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
+
+// RestoreTheme puts back a palette ActiveTheme returned earlier, so a preview
+// that was never confirmed leaves nothing behind.
+func RestoreTheme(p Palette) {
+	activeTheme = p
+	refreshCLIStyles()
+}
+
+// ThemeChoice is one row a theme picker offers: a mode or a named style.
+type ThemeChoice struct {
+	ID          string
+	Description string
+	Active      bool
+}
+
+// ThemeChoices lists the three modes and every style, marking the active style.
+func ThemeChoices() []ThemeChoice {
+	out := []ThemeChoice{
+		{ID: "auto", Description: "follow the terminal background"},
+		{ID: "light", Description: "light palette, current accent kept when it fits"},
+		{ID: "dark", Description: "dark palette, current accent kept when it fits"},
+	}
+	for _, st := range cliThemeStyles {
+		out = append(out, ThemeChoice{ID: st.name, Description: st.mode + " · " + st.description, Active: st.name == activeTheme.Style})
+	}
+	return out
+}

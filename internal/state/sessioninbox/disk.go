@@ -2,6 +2,7 @@ package sessioninbox
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -142,9 +143,47 @@ func readRegularFile(path string, maxBytes int64) ([]byte, error) {
 	return data, nil
 }
 
+// readManifestWithoutTransaction refreshes the in-memory manifest from the
+// published file without taking the disk transaction. Commits land by atomic
+// rename, so a plain read sees a complete snapshot of another process's queue
+// and never a half-written one. Repair work (quarantine, salvage, migration)
+// needs the lock and is deliberately not attempted here.
+func (s *Store) readManifestWithoutTransaction() error {
+	data, err := readRegularFile(filepath.Join(s.dir, manifestName), maxManifestBytes)
+	if errors.Is(err, os.ErrNotExist) {
+		s.man = emptyManifest(s.runID)
+		s.readonly = false
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("sessioninbox: read manifest: %w", err)
+	}
+	man, err := decodeManifest(data)
+	if err != nil {
+		return fmt.Errorf("sessioninbox: decode manifest: %w", err)
+	}
+	if man.RunID != "" && man.RunID != s.runID {
+		// Another run owns this queue. Taking it over is the locked path's job
+		// (it marks in-flight items uncertain first), so without the transaction
+		// this read reports the foreign owner instead of adopting its items.
+		return fmt.Errorf("sessioninbox: manifest belongs to run %q: %w", man.RunID, ErrForeignRun)
+	}
+	s.man = man
+	s.readonly = man.SchemaVersion > SchemaVersion
+	if s.readonly {
+		s.man.Paused = true
+	}
+	return nil
+}
+
 func (s *Store) commitManifestLocked(next *manifest) error {
 	if next == nil {
 		return fmt.Errorf("sessioninbox: nil manifest")
+	}
+	if s.unrecovered {
+		// The queue's bodies could not be read, so no manifest may stand in for
+		// them: overwriting the corrupt bytes would turn "unknown" into "empty".
+		return fmt.Errorf("sessioninbox: refusing to overwrite the manifest while the queue bodies are unreadable: %w", ErrUnrecovered)
 	}
 	if err := validateManifest(next, false); err != nil {
 		return fmt.Errorf("sessioninbox: invalid manifest: %w", err)
@@ -219,15 +258,21 @@ func (s *Store) gcOrphansLocked() {
 }
 
 // salvageOrphanBlobsLocked rebuilds uncertain meta rows from blob files after a
-// corrupt-manifest quarantine. Bodies stay on disk; the user reviews before resume.
-func (s *Store) salvageOrphanBlobsLocked() []InboxItemMeta {
+// corrupt-manifest quarantine. Bodies stay on disk; the user reviews before
+// resume. A non-nil error means the bodies could not be read, so the caller must
+// not publish the result as the queue's contents.
+func (s *Store) salvageOrphanBlobsLocked() ([]InboxItemMeta, error) {
 	bdir := filepath.Join(s.dir, blobsDirName)
 	if err := validatePrivateDir(bdir); err != nil {
-		return nil
+		if errors.Is(err, os.ErrNotExist) {
+			// No bodies were ever written: an empty queue, not a failure.
+			return nil, nil
+		}
+		return nil, fmt.Errorf("sessioninbox: blobs dir: %w", err)
 	}
 	entries, err := os.ReadDir(bdir)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("sessioninbox: read blobs dir: %w", err)
 	}
 	now := time.Now().UTC()
 	var out []InboxItemMeta
@@ -241,7 +286,7 @@ func (s *Store) salvageOrphanBlobsLocked() []InboxItemMeta {
 		}
 		data, err := readRegularFile(filepath.Join(bdir, e.Name()), s.limits.MaxItemBytes)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("sessioninbox: salvage blob %s: %w", e.Name(), err)
 		}
 		var env PromptEnvelope
 		if err := json.Unmarshal(data, &env); err != nil {
@@ -269,7 +314,7 @@ func (s *Store) salvageOrphanBlobsLocked() []InboxItemMeta {
 			BlockCode:   BlockManifestSalvaged,
 		})
 	}
-	return out
+	return out, nil
 }
 
 func (s *Store) quarantineUnknownLocked(path string) error {

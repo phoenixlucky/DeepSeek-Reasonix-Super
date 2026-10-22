@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,6 +37,10 @@ const (
 	upstreamEdgeDir = "../../benchmarks/upstream-edge"
 	projectCheckDir = "../../benchmarks/project-check"
 )
+
+// realRepoDir holds long tasks over a pinned snapshot of this repository, so
+// its seeds and reference solutions answer to the same guards.
+const realRepoDir = "../../benchmarks/realrepo"
 
 // protectedFiles reads the manifest embedded in a no-solution grader. The
 // manifest lives inside verify.sh precisely because e2ebench drops that file
@@ -80,11 +85,17 @@ func stageSeed(t *testing.T, taskDir string) string {
 	return work
 }
 
+// gradeSeed carries the grader's output in its error: a CI log that says only
+// "exit status 1" cannot tell a missing tool from a failed check.
 func gradeSeed(t *testing.T, work string) error {
 	t.Helper()
 	cmd := exec.Command("bash", "verify.sh")
 	cmd.Dir = work
-	return cmd.Run()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // forbiddenArtifact names, per task, a file whose mere existence is the

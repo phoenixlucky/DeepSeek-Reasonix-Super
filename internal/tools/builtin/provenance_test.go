@@ -18,7 +18,7 @@ func TestExternalToolsDeclareWhereTheirContentCameFrom(t *testing.T) {
 		{"browser_open with url", browserOpen{}, `{"url":"http://intra.corp:8080/"}`, tool.Provenance{Kind: tool.ProvenanceBrowser, Source: "intra.corp"}},
 		{"browser_read without session", browserRead{}, `{}`, tool.Provenance{Kind: tool.ProvenanceBrowser}},
 		{"computer_read", computerRead{}, `{}`, tool.Provenance{Kind: tool.ProvenanceDesktop}},
-		{"read_file", readFile{}, `{"path":"a.go"}`, tool.Provenance{}},
+		{"read_file", readFile{}, `{"path":"a.go"}`, tool.Provenance{Kind: tool.ProvenanceWorkspace}},
 	}
 	for _, c := range cases {
 		if got := tool.ProvenanceOf(c.tool, json.RawMessage(c.args)); got != c.want {

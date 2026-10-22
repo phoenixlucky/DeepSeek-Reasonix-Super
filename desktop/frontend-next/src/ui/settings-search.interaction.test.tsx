@@ -44,6 +44,16 @@ function draw() {
 }
 
 describe("finding a setting", () => {
+  it("finds the mode picker visibility switch on the persona management page", async () => {
+    const { find, block } = draw();
+    await userEvent.type(find(), "显示模式选择器");
+    const hit = await screen.findByRole("option", { name: /显示模式选择器/ });
+    expect(hit.getAttribute("data-value")).toBe("persona");
+    expect(hit.getAttribute("data-target")).toBe("composition-picker");
+    await userEvent.click(hit);
+    await waitFor(() => expect(block("composition-picker")).toBeTruthy());
+    expect(screen.getByRole("switch", { name: "显示模式选择器" })).toBeTruthy();
+  });
   // The corpus is the table, not the screen. Reading the DOM could only ever
   // search the page already open, and mounting the others to search them is
   // how a hidden page starts making requests nobody asked for.

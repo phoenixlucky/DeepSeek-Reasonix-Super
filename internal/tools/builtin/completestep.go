@@ -697,3 +697,6 @@ func verifyCitedCriteria(ctx context.Context, items []stepEvidence) error {
 	}
 	return nil
 }
+
+// HostRequiredBy says why the tool cannot be removed by name: the loop advances the plan from its receipts and todo_write refuses a completion without one.
+func (completeStep) HostRequiredBy() string { return tool.FeaturePlanSteps }

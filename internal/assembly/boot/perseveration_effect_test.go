@@ -40,6 +40,10 @@ func (p *perseverationLoopProvider) Name() string { return "boot-perseveration" 
 // clear the guard's >=8 repeats and >=1 KiB floor.
 const perseverationBlock = "Let me write.\n\nHmm.\n\nOK.\n\n"
 
+// perseverationStream, when set, replaces the repeated block as what the
+// provider streams in an agent round. Tests set it for their own duration only.
+var perseverationStream string
+
 func (p *perseverationLoopProvider) Stream(_ context.Context, req provider.Request) (<-chan provider.Chunk, error) {
 	p.mu.Lock()
 	p.reqs = append(p.reqs, req)
@@ -49,7 +53,11 @@ func (p *perseverationLoopProvider) Stream(_ context.Context, req provider.Reque
 	if len(req.Tools) == 0 {
 		ch <- provider.Chunk{Type: provider.ChunkText, Text: "ok"}
 	} else {
-		ch <- provider.Chunk{Type: provider.ChunkText, Text: strings.Repeat(perseverationBlock, 400)}
+		text := strings.Repeat(perseverationBlock, 400)
+		if perseverationStream != "" {
+			text = perseverationStream
+		}
+		ch <- provider.Chunk{Type: provider.ChunkText, Text: text}
 	}
 	ch <- provider.Chunk{Type: provider.ChunkDone}
 	close(ch)
@@ -277,5 +285,32 @@ func TestEffectPerseverationProviderOverridesGlobal(t *testing.T) {
 	}
 	if len(perseverationReports(off.events)) != 0 {
 		t.Fatalf("a provider-level -1 did not disable the guard: %+v", perseverationReports(off.events))
+	}
+}
+
+// A degraded stream that never repeats a block byte for byte (report
+// FB-FSQH-2XJE: a few tiny sentences, one per line, in no fixed order) is still
+// reported through the progress-watch channel, and still not cut by default.
+func TestEffectPerseverationReportsAStreamCollapsedToAFewTinyLines(t *testing.T) {
+	fragments := []string{"go.", "End.", "I will.", "OK.", "Now.", "I wait.", "I produce the calls.", "End now.", "Done."}
+	var b strings.Builder
+	x := uint32(11)
+	for range 500 {
+		x = x*1664525 + 1013904223
+		b.WriteString(fragments[int(x>>16)%len(fragments)] + "\n\n")
+	}
+	perseverationStream = b.String()
+	t.Cleanup(func() { perseverationStream = "" })
+
+	run := runPerseveration(t, "", "")
+	if run.err != nil {
+		t.Fatalf("run error = %v, want a clean terminal", run.err)
+	}
+	if len(run.reqs) != 1 {
+		t.Fatalf("agent requests = %d, want 1: the default must not cut or retry", len(run.reqs))
+	}
+	reports := perseverationReports(run.events)
+	if len(reports) == 0 || !reports[len(reports)-1].Stalled {
+		t.Fatalf("the collapsed stream was not reported as a stall: %+v", reports)
 	}
 }

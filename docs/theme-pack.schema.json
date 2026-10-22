@@ -101,6 +101,7 @@
         "fgFaint": { "$ref": "#/$defs/hexColor" },
         "accent": { "$ref": "#/$defs/hexColor" },
         "accentFg": { "$ref": "#/$defs/hexColor" },
+        "accentInk": { "$ref": "#/$defs/hexColor" },
         "ok": { "$ref": "#/$defs/hexColor" },
         "warn": { "$ref": "#/$defs/hexColor" },
         "err": { "$ref": "#/$defs/hexColor" }

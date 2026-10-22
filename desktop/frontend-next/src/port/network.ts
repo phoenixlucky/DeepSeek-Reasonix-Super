@@ -23,4 +23,9 @@ export interface NetworkProbe {
   detail: string;
   durationMs: number;
   advice?: string;
+  // What detail and advice say, by identity, with the pieces a sentence needs;
+  // the window words them itself and shows the text only when it has no wording.
+  code?: string;
+  adviceCode?: string;
+  params?: Record<string, string | number>;
 }

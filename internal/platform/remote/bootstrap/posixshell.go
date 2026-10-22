@@ -15,7 +15,7 @@ type posixShell struct{}
 
 func (posixShell) Executable() string { return "reasonix" }
 
-func (posixShell) Home(ctx context.Context, _ Conn, fs *sftpfs.FS) (string, error) {
+func (posixShell) Home(ctx context.Context, _ Conn, fs sftpfs.Files) (string, error) {
 	return fs.RealPath(ctx, "~")
 }
 
@@ -34,6 +34,8 @@ func (posixShell) Paths(home, workspace string) StatePaths {
 func (posixShell) Launch(spec LaunchSpec, p StatePaths) string {
 	return LaunchCommand(spec, p)
 }
+
+func (posixShell) LaunchScript(LaunchSpec, StatePaths) (string, []byte) { return "", nil }
 
 func (posixShell) Fetch(d releaseasset.CLIDownload, dir, bin string) string {
 	return FetchCommand(d, dir, bin)

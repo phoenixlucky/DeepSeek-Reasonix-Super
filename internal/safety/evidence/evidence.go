@@ -487,7 +487,7 @@ func PathsProvenInSession(msgs []provider.Message, paths []string, wantWrite boo
 			if failed[tc.ID] {
 				continue
 			}
-			r := ReceiptFromToolCall(tc.Name, json.RawMessage(tc.Arguments), true, facts(tc.Name))
+			r := ReceiptFromToolCall(tc.Name, json.RawMessage(tc.ExecutionArguments()), true, facts(tc.Name))
 			if wantWrite && !r.Write {
 				continue
 			}

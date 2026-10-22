@@ -83,6 +83,17 @@ describe("a pack is delivered by a generated stylesheet", () => {
     expect(read("--page")).toBe("#101010");
   });
 
+  it("gives accent text its own ink and derives it for older packs", () => {
+    apply(pack, "light");
+    expect(read("--accent-ink")).toBe("color-mix(in srgb, #0066CC 65%, #1A1A1A)");
+    apply({ ...pack, tokens: { ...pack.tokens, light: { ...pack.tokens.light, accentInk: "#004488" } } }, "light");
+    expect(read("--accent-ink")).toBe("#004488");
+    apply(pack, "dark");
+    expect(read("--accent-ink")).toContain("#66AAFF");
+    apply(null, "dark");
+    expect(read("--accent-ink")).toBe("");
+  });
+
   it("keeps a value that would end a rule inside its declaration", () => {
     apply({ ...pack, tokens: { light: { bg: "#fff} body{display:none", fg: "#111" }, dark: {} } }, "light");
     expect(sheet()?.sheet?.cssRules).toHaveLength(1);
@@ -165,6 +176,15 @@ describe("decorative roles are themeable and the status hues are not", () => {
     expect(read("--link")).toBe("#eeeeee");
   });
 
+  it("carries a pack's own shadow onto the one variable menus, popovers and dialogs cast", () => {
+    const shadow = "0 0 0 1px #00000040, 0 8px 24px -8px #00000033";
+    apply({ ...pack, tokens: { light: { ...pack.tokens.light, shadowFloat: shadow }, dark: pack.tokens.dark } }, "light");
+    expect(read("--shadow-float")).toBe(shadow);
+    expect(read("--shadow-pack")).toBe(shadow);
+    apply({ ...pack, tokens: { light: { ...pack.tokens.light, shadowFloat: shadow }, dark: pack.tokens.dark } }, "dark");
+    expect(read("--shadow-float")).toBe("");
+  });
+
   it("tints the washes from the decorative colour on the pack's own ground", () => {
     apply(decorated, "light");
     expect(read("--brand-wash")).toBe("color-mix(in srgb, #222222 12%, #FFFFFF)");
@@ -188,5 +208,39 @@ describe("decorative roles are themeable and the status hues are not", () => {
       expect(read(name), name).toBe("");
     }
     expect(read("--link")).toBe("#111111");
+  });
+});
+
+describe("a pack's recipes step the shape and the rhythm", () => {
+  // A factor, not a size: the stylesheet owns what a radius or a gutter
+  // measures, so a pack that named a number would disagree with every
+  // declaration it does not reach. Held here because the pack is where the
+  // wrong number would have to be written.
+  it("writes the two factors and no measurement of its own", () => {
+    apply({ ...pack, recipes: { corners: "square", density: "compact" } }, "light");
+    expect(read("--r-scale")).toBe("0");
+    expect(read("--d-scale")).toBe("0.85");
+  });
+
+  it("leaves both unset when the pack declares no recipe", () => {
+    apply(pack, "light");
+    expect(read("--r-scale")).toBe("");
+    expect(read("--d-scale")).toBe("");
+  });
+
+  it("ignores a tier the schema does not publish", () => {
+    const invented = { ...pack, recipes: { corners: "bevelled", density: "sparse" } } as unknown as ThemePack;
+    apply(invented, "light");
+    expect(read("--r-scale")).toBe("");
+    expect(read("--d-scale")).toBe("");
+  });
+
+  it("steps each tier rather than pinning one value", () => {
+    apply({ ...pack, recipes: { corners: "round", density: "comfortable" } }, "light");
+    expect(read("--r-scale")).toBe("1.5");
+    expect(read("--d-scale")).toBe("1");
+    apply({ ...pack, recipes: { corners: "soft" } }, "light");
+    expect(read("--r-scale")).toBe("1");
+    expect(read("--d-scale")).toBe("");
   });
 });

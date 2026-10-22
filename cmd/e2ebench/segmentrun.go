@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -21,15 +23,22 @@ func runSegments(ctx context.Context, cfg suiteConfig, t task, work, trajDir str
 	// call on the harness's own token counts, and another found this directory
 	// by grepping the temp root for its task — moving it only helps unnamed.
 	metricsDir, err := os.MkdirTemp("", "e2ebench-metrics-")
+	// A snapshot recovered from the sidecar is the only surviving evidence of
+	// what that leg spent, so its directory is kept instead of removed.
+	keepMetrics := false
 	if err != nil {
 		metricsDir = work
 	} else {
-		defer func() { _ = os.RemoveAll(metricsDir) }()
+		defer func() {
+			if !keepMetrics {
+				_ = os.RemoveAll(metricsDir)
+			}
+		}()
 	}
 	var runErr error
 	for _, seg := range segs {
 		metricsPath := filepath.Join(metricsDir, fmt.Sprintf(".run-metrics-%d.json", seg.index))
-		trajPath := segmentTrajectoryPath(trajDir, t.ID, seg, len(segs))
+		trajPath := segmentTrajectoryPath(trajDir, trajectoryStem(t.ID, cfg.trial, cfg.trials), seg, len(segs))
 		args := buildSegmentArgs(cfg, seg, metricsPath, trajPath)
 
 		cmd := exec.CommandContext(ctx, cfg.bin, args...)
@@ -42,7 +51,17 @@ func runSegments(ctx context.Context, cfg suiteConfig, t task, work, trajDir str
 		cmd.WaitDelay = 10 * time.Second
 		runErr = cmd.Run()
 
-		if m, err := readMetrics(metricsPath); err == nil {
+		m, partial, err := legMetrics(metricsPath)
+		if err != nil {
+			// The leg left no record at all: nothing survives to say what it
+			// spent, so the run is unmeasured rather than priced at zero.
+			r.Unaccounted = true
+		} else {
+			// A snapshot is real evidence, so the run stays accounted and only
+			// Partial says its numbers stop at the last write. It is sticky: a
+			// complete later leg cannot restore the tail an earlier one lost.
+			r.Partial = r.Partial || partial || !m.Complete
+			keepMetrics = keepMetrics || partial
 			foldSegmentMetrics(r, m, seg.index)
 		}
 		// A leg that died takes the run with it: resuming a session the child
@@ -53,6 +72,48 @@ func runSegments(ctx context.Context, cfg suiteConfig, t task, work, trajDir str
 		}
 	}
 	return runErr
+}
+
+// legMetrics reads one leg's accounting. The final record is authoritative and
+// the in-flight snapshot is only read when the final one is absent, so the two
+// can never be counted together.
+func legMetrics(path string) (m runMetrics, partial bool, err error) {
+	if m, err = readMetrics(path); err == nil {
+		return m, false, nil
+	}
+	if m, err = readMetrics(path + ".partial"); err == nil {
+		return m, true, nil
+	}
+	return m, false, err
+}
+
+// trajectoryStem names one run's trajectory files: the task id, and the trial
+// when -trials repeats the task, so a later trial cannot overwrite an earlier
+// one. A single run keeps the bare id every reader already knows.
+func trajectoryStem(id string, trial, trials int) string {
+	if trials < 2 {
+		return id
+	}
+	return fmt.Sprintf("%s.trial-%d", id, trial)
+}
+
+// trajectoryTaskID is the task a trajectory file recorded: its name without
+// the trial mark of trajectoryStem or the leg mark of segmentTrajectoryPath.
+func trajectoryTaskID(path string) string {
+	id := strings.TrimSuffix(filepath.Base(path), ".trajectory.jsonl")
+	id = trimNumberedMark(id, ".seg")
+	return trimNumberedMark(id, ".trial-")
+}
+
+func trimNumberedMark(id, mark string) string {
+	i := strings.LastIndex(id, mark)
+	if i < 0 {
+		return id
+	}
+	if _, err := strconv.Atoi(id[i+len(mark):]); err != nil {
+		return id
+	}
+	return id[:i]
 }
 
 // segmentTrajectoryPath keeps one file per leg so a resumed leg cannot truncate

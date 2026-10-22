@@ -1,6 +1,9 @@
 package config
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // mcpIdentity returns the fixed part of a server's override identity: whether
 // its scope is forced, and the disambiguators that keep two packages exposing
@@ -55,7 +58,7 @@ func (s *ActivationStore) ServerDecision(entry PluginEntry, root string) (Activa
 	switch {
 	case err != nil || !found:
 		return ActivationUndecided, DeclaredDefaultOn(entry), err
-	case repoDeclared && row.Enabled && row.Identity != ProjectDeclarationDigest(entry, root):
+	case repoDeclared && row.Enabled && !slices.Contains(confirmedDeclarations(row), ProjectDeclarationDigest(entry, root)):
 		return ActivationChanged, DeclaredDefaultOn(entry), nil
 	}
 	return decisionOf(row.Enabled), DeclaredDefaultOn(entry), nil
@@ -108,7 +111,7 @@ func (s *ActivationStore) SetServerEnabled(entry PluginEntry, root string, scope
 	override := ServerOverrideFor(entry, root, scope)
 	override.Enabled = enabled
 	if repoDeclared, _, _ := mcpIdentity(entry); repoDeclared && enabled {
-		override.Identity = ProjectDeclarationDigest(entry, root)
+		return s.confirmDeclaration(override, ProjectDeclarationDigest(entry, root))
 	}
 	return s.SetOverride(override)
 }
@@ -141,4 +144,51 @@ func (s *ActivationStore) ServerOverride(entry PluginEntry, root string, scope A
 	}
 	row, ok := findOverride(file.Overrides, overrideKey(ServerOverrideFor(entry, root, scope)))
 	return row, ok, nil
+}
+
+// maxConfirmedDeclarations bounds how many declarations one slot remembers. The
+// slot is a row in a user file read at every launch, and a repository with eight
+// projects declaring one name differently is already far past a real layout; past
+// the bound the oldest confirmation is dropped, which only asks about it again.
+const maxConfirmedDeclarations = 8
+
+// confirmedDeclarations are the declaration digests the user answered yes for on
+// this row: the list a newer binary writes plus the single Identity an older one
+// did, so a file from before the list still reads.
+func confirmedDeclarations(row ActivationOverride) []string {
+	var out []string
+	for _, d := range append(slices.Clone(row.Identities), row.Identity) {
+		if d != "" && !slices.Contains(out, d) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// confirmDeclaration records an enable for digest on the slot override names. A
+// project of the same repository that declares the same name differently shares
+// the slot, so the enable adds to what the user already confirmed there instead
+// of replacing it; only a declaration on that list may start. Disabling still
+// replaces the whole row, which clears the list.
+func (s *ActivationStore) confirmDeclaration(override ActivationOverride, digest string) error {
+	if s == nil {
+		return nil
+	}
+	override = normalizeOverride(override)
+	if override.Name == "" {
+		return nil
+	}
+	return s.update(func(file *ActivationFile) {
+		confirmed := []string{}
+		if prior, ok := findOverride(file.Overrides, overrideKey(override)); ok && prior.Enabled {
+			confirmed = slices.DeleteFunc(confirmedDeclarations(prior), func(d string) bool { return d == digest })
+		}
+		confirmed = append(confirmed, digest)
+		if len(confirmed) > maxConfirmedDeclarations {
+			confirmed = confirmed[len(confirmed)-maxConfirmedDeclarations:]
+		}
+		override.Identity = digest
+		override.Identities = confirmed
+		file.Overrides = upsertOverride(file.Overrides, override)
+	})
 }

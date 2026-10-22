@@ -30,7 +30,7 @@ func TestProvenanceOfReadsTheToolsType(t *testing.T) {
 		tool Tool
 		want Provenance
 	}{
-		{plainTool{}, Provenance{}},
+		{plainTool{}, Provenance{Kind: ProvenanceWorkspace}},
 		{mcpTool{}, Provenance{Kind: ProvenanceMCP, Source: "docs"}},
 		{declaredTool{}, Provenance{Kind: ProvenanceWeb, Source: "example.com"}},
 	}
@@ -60,4 +60,36 @@ func TestProvenanceHeaderKeepsTheSourceInsideTheLabel(t *testing.T) {
 	if HostOf("not a url") != "" {
 		t.Fatalf("HostOf(not a url) = %q", HostOf("not a url"))
 	}
+}
+
+type silentDeclarer struct{ plainTool }
+
+func (silentDeclarer) Provenance(json.RawMessage) Provenance { return Provenance{} }
+
+// A tool that declares nothing external is still answered with a kind, so no
+// result reaches the model with its origin merely absent.
+func TestProvenanceOfNeverAnswersWithTheZeroValue(t *testing.T) {
+	for _, tl := range []Tool{plainTool{}, silentDeclarer{}, mcpTool{}, declaredTool{}} {
+		got := ProvenanceOf(tl, nil)
+		if got.Kind == "" {
+			t.Fatalf("ProvenanceOf(%T) answered with no kind", tl)
+		}
+		if got.Kind == ProvenanceWorkspace && (got.External() || ProvenanceHeader(got) != "") {
+			t.Fatalf("%T: a workspace result must not be labelled external: %+v", tl, got)
+		}
+	}
+}
+
+func TestSinkKeepsTheFirstExternalOriginAndIgnoresTheWorkspace(t *testing.T) {
+	ctx, sink := WithProvenanceSink(context.Background())
+	NoteProvenance(ctx, Provenance{Kind: ProvenanceWorkspace})
+	if sink.Origin().External() {
+		t.Fatal("a workspace result became an external origin")
+	}
+	NoteProvenance(ctx, Provenance{Kind: ProvenanceWeb, Source: "a.example"})
+	NoteProvenance(ctx, Provenance{Kind: ProvenanceMCP, Source: "docs"})
+	if got := sink.Origin(); got.Kind != ProvenanceWeb || got.Source != "a.example" {
+		t.Fatalf("origin = %+v, want the first external one", got)
+	}
+	NoteProvenance(context.Background(), Provenance{Kind: ProvenanceWeb}) // no sink above: no-op
 }

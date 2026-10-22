@@ -26,7 +26,7 @@ func TestResolveStartupChatModel(t *testing.T) {
 		{"legacy bare model default kept", "deepseek-flash", []ProviderEntry{keyed("deepseek", "deepseek-v4-pro", "deepseek-flash")}, "deepseek-flash", "", true},
 		{"provider-name default kept", "deepseek", []ProviderEntry{keyed("deepseek", "deepseek-flash")}, "deepseek", "", true},
 		{"empty default falls back silently", "", []ProviderEntry{keyed("deepseek", "deepseek-flash")}, "deepseek/deepseek-flash", "", true},
-		{"nothing to fall back to keeps the stale default", "gone", nil, "gone", "", true},
+		{"nothing configured opens on the stand-in, whatever the stale default", "gone", nil, UnconfiguredRef, "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := Default()

@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import "./testkit";
 import { Workspaces } from "./Workspaces";
 
-const shell = vi.hoisted(() => ({ reveals: true }));
+const shell = vi.hoisted(() => ({ reveals: true, targets: [] as { id: string; name: string; available: boolean }[] }));
 vi.mock("../port/host", () => ({ host: () => ({ revealsFiles: () => shell.reveals }) }));
 import type { TreeWorkspace } from "../port/hub";
 
@@ -18,7 +18,7 @@ function draw(over: Partial<TreeWorkspace> = {}, reveals = true) {
   shell.reveals = reveals;
   render(
     <Workspaces
-      hub={{ revealWorkspace } as never}
+      hub={{ revealWorkspace, openWithTargets: async () => shell.targets } as never}
       tree={tree}
       treeRead
       runtimes={[]}
@@ -70,4 +70,22 @@ it("reports a refusal instead of swallowing it", async () => {
   await openMenu();
   await userEvent.click(screen.getByRole("menuitem", { name: /在文件管理器中显示/ }));
   await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(refusal));
+});
+
+it("lists the other programs once, in the user's language, and not the file manager twice", async () => {
+  shell.targets = [
+    { id: "file-manager", name: "File manager", available: true },
+    { id: "vscode", name: "Visual Studio Code", available: true },
+    { id: "terminal", name: "Terminal", available: true },
+  ];
+  try {
+    draw();
+    await openMenu();
+    await screen.findByRole("menuitem", { name: /用 终端 打开/ });
+    expect(screen.getByRole("menuitem", { name: /用 Visual Studio Code 打开/ })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: /File manager|Terminal/ })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /用 文件管理器 打开/ })).toBeNull();
+  } finally {
+    shell.targets = [];
+  }
 });

@@ -25,7 +25,8 @@ function lead(retry: RetryState): string {
 function phase(retry: RetryState, elapsedMs: number): string {
   const replay = retry.scope === "stream";
   const p = retryPhase(retry, elapsedMs);
-  const vars = { attempt: retry.attempt, max: retry.max };
+  // A maximum of 0 is the kernel saying the user removed the limit.
+  const vars = { attempt: retry.attempt, max: retry.max > 0 ? retry.max : "∞" };
   if (p.kind === "backoff") {
     return replay ? t("{n}s 后重放 {attempt}/{max}", { ...vars, n: p.nextSecs }) : t("{n}s 后重试 {attempt}/{max}", { ...vars, n: p.nextSecs });
   }

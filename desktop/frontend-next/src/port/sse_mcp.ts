@@ -6,8 +6,9 @@ import { rootQuery } from "./sse_http";
 // is installed, because a paste that will not parse is the normal case while
 // typing and its message is the whole feedback.
 export class SseMcp extends SseProvider {
-  mcp(root?: string) {
-    return this.get<McpCatalog>("/mcp" + rootQuery(root));
+  async mcp(root?: string) {
+    const catalog = await this.get<McpCatalog>("/mcp" + rootQuery(root));
+    return { ...catalog, servers: catalog.servers ?? [] };
   }
   capabilityScope() {
     return this.get<CapabilityScope>("/capability-scope");
@@ -31,6 +32,15 @@ export class SseMcp extends SseProvider {
     const body = (await res.json().catch(() => ({}))) as { state?: string; tools?: number | unknown[]; error?: string };
     if (!res.ok && !body.error) throw new Error(`/mcp/trust: ${res.status}`);
     return { state: body.state ?? (res.ok ? "ready" : "failed"), tools: typeof body.tools === "number" ? body.tools : body.tools?.length, error: body.error };
+  }
+  signinMcp(name: string) {
+    return this.post0<{ name: string; state: string; host?: string; tools?: number }>("/mcp/signin", { name });
+  }
+  upgradeMcp(name: string) {
+    return this.post0<{ name: string; state: string; host?: string; tools?: number }>("/mcp/upgrade", { name });
+  }
+  followMcp(name: string, follow: boolean) {
+    return this.post0<{ name: string; follow: boolean; tools?: number }>("/mcp/follow", { name, follow });
   }
   async reconnectMcp(name: string) {
     const res = await fetch(this.base + "/mcp/reconnect", {

@@ -28,6 +28,9 @@ export interface McpEntry {
   launch?: string;
   // Why a pending server waits for the user, as the kernel's code.
   pendingReason?: string;
+  // What a signed-in server asked to be allowed, in its own words. Only the
+  // user grants it, by clicking; nothing here reads the scope names.
+  scopeUpgrade?: string[];
   // Tools this connection withheld from the model because their definition is
   // not the one the user approved. heldDigest names exactly that set, and
   // approving it hands the digest back so what is approved is what was shown.
@@ -35,6 +38,8 @@ export interface McpEntry {
   held?: McpHeld[];
   heldDigest?: string;
   heldMore?: number;
+  // The user takes this server's definition changes without being asked.
+  followsChanges?: boolean;
 }
 
 // One withheld tool and how it differs from what was approved: added, changed,

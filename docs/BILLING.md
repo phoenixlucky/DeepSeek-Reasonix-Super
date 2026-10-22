@@ -49,6 +49,30 @@ original amount is shown with `fallback_original`. Mixed originals produce
 pricing (`unavailable`). Legacy scalar aliases (`cost`, `costUsd`,
 `total_cost`) are written only when `selected` exists.
 
+## Price sources
+
+A price you enter for a model can carry where it was read and when.
+
+- `source_url` is an `http` or `https` link without credentials, control characters or blanks, at most 500 characters.
+- `checked` is a calendar date, `YYYY-MM-DD`, not later than today in UTC.
+- Both describe the price and take no part in quoting it; changing them does not rebuild a running conversation.
+- The editor shows the host of the link and opens it only when you click it. Nothing fetches it, checks that it answers, or sends anything to it.
+- Reasonix 1.x rewrites the shared config file without keys it does not know.
+- The next start puts `source_url`, `checked` and `billing_mode` back from `provider-keys.json` beside the config.
+- A price you changed does not inherit the old source, and a key you cleared in the editor is not put back.
+
+## Usage totals: billed and estimated
+
+A connection set to `billing_mode = "subscription_equivalent"` (a token plan, for example) is priced at API rates to show what the plan covered, but nothing is charged per call.
+
+- The usage page's **paid** figure and each day's cost are billed cost only.
+- The plan's figure is a separate **API-priced estimate**, per currency, shown on its own line and beside the day it belongs to. It is never added to billed cost, and a day with only an estimate shows no billed cost rather than zero.
+- The kernel answers with `cost` (billed) and `estimateCost`; the second is absent when there is no estimate, so a client that does not know it sees what it saw before.
+- The aggregate behind the page is a disposable cache, `usage-catalog/v6.sqlite`, rebuilt from the daily stats files when it is missing; until it is ready the page reads the files directly and shows the same numbers.
+- A build older than this one uses its own `v5.sqlite` and, on start, removes the files of versions it does not open.
+- Alternating between builds therefore rebuilds the cache each time.
+- A rebuild read about 18,000 records (5.4 MB, 30 daily files) in 0.7 s on a laptop, roughly 26,000 records a second; it grows with the stats directory.
+
 ## Wallets and diagnostics
 
 Wallets are never converted or cross-added. An explicit target uses the exact

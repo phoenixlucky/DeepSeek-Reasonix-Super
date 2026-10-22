@@ -103,3 +103,16 @@ func TestRecallStartsFromTheFirstLineOfAMultiLineDraft(t *testing.T) {
 		t.Fatalf("Down past the newest entry left %q, want the draft back", got)
 	}
 }
+
+// docs/GUIDE.md says Up recalls history while a turn runs too; queued
+// follow-ups are managed with /queue, not with the arrows.
+func TestRecallWorksWhileATurnRuns(t *testing.T) {
+	m, _ := testModel(t)
+	typeText(m, "old")
+	run(m, press(m, "enter"))
+	startTurn(m)
+	pressCode(m, tea.KeyUp)
+	if got := m.composer.Value(); got != "old" {
+		t.Fatalf("up during a turn left %q, want the recalled %q", got, "old")
+	}
+}

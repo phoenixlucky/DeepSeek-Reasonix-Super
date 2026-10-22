@@ -351,6 +351,37 @@ func TestRemoveProviderDropsAnUnusedOne(t *testing.T) {
 	}
 }
 
+// Removing the last provider moves the runtime to the stand-in and leaves
+// nothing to list, so the window asks for a connection rather than showing a
+// built-in provider nobody added.
+func TestRemoveProviderLastLeavesTheListEmpty(t *testing.T) {
+	s := newProviderEditServer(t)
+	s.AllowProviderEdit()
+	srv := httptest.NewServer(operatorHandler(s))
+	defer srv.Close()
+
+	resp := postProvider(t, srv.URL, "/providers/remove", `{"name":"existing"}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("remove = %d", resp.StatusCode)
+	}
+	if got := currentModelRef(s.ctl()); got != config.UnconfiguredRef {
+		t.Fatalf("conversation is on %q, want the stand-in %s", got, config.UnconfiguredRef)
+	}
+	listed, err := http.Get(srv.URL + "/providers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listed.Body.Close()
+	var got []providerView
+	if err := json.NewDecoder(listed.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("providers listed after removing the last one: %+v", got)
+	}
+}
+
 func TestProvidersListMarksTheOneInUse(t *testing.T) {
 	s := newProviderEditServer(t)
 	srv := httptest.NewServer(operatorHandler(s))

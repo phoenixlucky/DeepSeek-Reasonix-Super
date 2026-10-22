@@ -64,6 +64,8 @@ func rewriteDeclarationRun(t *testing.T, began, rewrittenTo, ran string) (*proje
 	sink := &projectCheckProbeSink{}
 	a := New(prov, reg, sessionstore.NewSession(""), Options{
 		ProjectChecks: []instruction.VerifyCheck{{Command: began, SourcePath: "AGENTS.md", Line: 3}},
+
+		CheckTargetAccess: allowTestFileAccess,
 	}, sink)
 	ctx := deliveryGoalContext("goal-probe", "edit and finish")
 

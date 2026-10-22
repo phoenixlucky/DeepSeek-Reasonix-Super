@@ -120,7 +120,7 @@ Policy: prefer means use the skill for the required change
 
 func TestCompletionContractUsesGoalScopeTaskText(t *testing.T) {
 	prov, reg := mutatingTurn()
-	a := New(prov, reg, sessionstore.NewSession("system"), Options{}, event.Discard)
+	a := New(prov, reg, sessionstore.NewSession("system"), Options{CheckTargetAccess: allowTestFileAccess}, event.Discard)
 	ctx := WithRawUserInput(context.Background(), "Continue working.")
 	ctx = WithDeliveryExecutionScope(ctx, DeliveryExecutionScope{ID: "goal-1", TaskText: "fix the parser"})
 
@@ -134,6 +134,8 @@ func TestCompletionContractUsesPristineSubagentTaskText(t *testing.T) {
 	prov, reg := mutatingTurn()
 	a := New(prov, reg, sessionstore.NewSession("system"), Options{
 		ClassifierTaskText: "fix the parser",
+
+		CheckTargetAccess: allowTestFileAccess,
 	}, event.Discard)
 	const wrapped = "<workspace-context>private host framing</workspace-context>\n\nfix the parser"
 

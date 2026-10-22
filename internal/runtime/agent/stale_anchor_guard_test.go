@@ -26,7 +26,7 @@ func TestDeleteRangeRequiresReadAfterSameTurnWrite(t *testing.T) {
 		},
 		{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}},
 	}}
-	a := New(prov, reg, sessionstore.NewSession(""), Options{}, event.Discard)
+	a := New(prov, reg, sessionstore.NewSession(""), Options{CheckTargetAccess: allowTestFileAccess}, event.Discard)
 
 	if err := a.Run(context.Background(), "edit the map"); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -59,7 +59,7 @@ func TestEditFileAllowedAfterSameTurnWriteWithoutFreshRead(t *testing.T) {
 		},
 		{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}},
 	}}
-	a := New(prov, reg, sessionstore.NewSession(""), Options{}, event.Discard)
+	a := New(prov, reg, sessionstore.NewSession(""), Options{CheckTargetAccess: allowTestFileAccess}, event.Discard)
 
 	if err := a.Run(context.Background(), "edit two independent regions"); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -88,7 +88,7 @@ func TestDeleteRangeAllowedAfterFreshRead(t *testing.T) {
 		},
 		{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}},
 	}}
-	a := New(prov, reg, sessionstore.NewSession(""), Options{}, event.Discard)
+	a := New(prov, reg, sessionstore.NewSession(""), Options{CheckTargetAccess: allowTestFileAccess}, event.Discard)
 
 	if err := a.Run(context.Background(), "edit the map with a read between edits"); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -120,7 +120,7 @@ func TestDeleteRangeStillRequiresReadAfterWindowedRead(t *testing.T) {
 		},
 		{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}},
 	}}
-	a := New(prov, reg, sessionstore.NewSession(""), Options{}, event.Discard)
+	a := New(prov, reg, sessionstore.NewSession(""), Options{CheckTargetAccess: allowTestFileAccess}, event.Discard)
 
 	if err := a.Run(context.Background(), "edit the map with a narrow read between edits"); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -151,7 +151,7 @@ func TestMultiEditAllowedAfterSameTurnWrite(t *testing.T) {
 		},
 		{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}},
 	}}
-	a := New(prov, reg, sessionstore.NewSession(""), Options{}, event.Discard)
+	a := New(prov, reg, sessionstore.NewSession(""), Options{CheckTargetAccess: allowTestFileAccess}, event.Discard)
 
 	if err := a.Run(context.Background(), "edit the map atomically"); err != nil {
 		t.Fatalf("Run: %v", err)

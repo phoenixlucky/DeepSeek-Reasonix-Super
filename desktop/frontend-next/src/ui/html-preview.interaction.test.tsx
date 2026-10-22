@@ -58,6 +58,7 @@ it.each([["before", false], ["before", true], ["after", false], ["after", true]]
   const fresh = page({ id: "fresh", target: "tf", url: "https://example.com/fresh", title: "Fresh" });
   const { container, rerender } = render(panel(port, { tabs: [agent] }));
   await user.click(await screen.findByRole("button", { name: "index.html" }));
+    await user.click(await screen.findByRole("button", { name: "交互运行" }));
   await waitFor(() => expect(open).toHaveBeenCalledTimes(1));
   await user.click(container.querySelector('[data-action="workbench.files"]')!);
   expect(container.querySelector(".workbench-body")?.hasAttribute("data-files")).toBe(true);
@@ -86,6 +87,7 @@ it("keeps a superseded successful user tab owned while a separate preview claim 
   const userTab = page({ id: "user", target: "tu", url: "https://example.com", title: "User page" });
   const { container, rerender } = render(panel(port));
   await user.click(await screen.findByRole("button", { name: "index.html" }));
+    await user.click(await screen.findByRole("button", { name: "交互运行" }));
   await waitFor(() => expect(open).toHaveBeenCalledTimes(1));
   const pending = openPage(port, userTab.url);
   await user.click(container.querySelector('[data-action="workbench.files"]')!);
@@ -106,6 +108,7 @@ describe("opening an HTML file from the explorer", () => {
     vi.spyOn(port, "workspaceFile").mockReturnValue(new Promise((resolve) => { read = resolve; }));
     const { container } = render(panel(port));
     await user.click(await screen.findByRole("button", { name: "index.html" }));
+    await user.click(await screen.findByRole("button", { name: "交互运行" }));
     await waitFor(() => expect(port.workspaceFile).toHaveBeenCalled());
     if (choice === "Files") await user.click(container.querySelector('[data-action="workbench.files"]')!);
     else await user.click(screen.getByRole("button", { name: "新建标签" }));
@@ -129,6 +132,7 @@ describe("opening an HTML file from the explorer", () => {
     const fresh = page({ id: "fresh", target: "tf", url: "https://example.com/fresh", title: "Fresh" });
     const { container, rerender } = render(panel(port, { tabs: [agent] }));
     await user.click(await screen.findByRole("button", { name: "index.html" }));
+    await user.click(await screen.findByRole("button", { name: "交互运行" }));
     await waitFor(() => expect(open).toHaveBeenCalledTimes(1));
     await user.click(container.querySelector('[data-action="workbench.files"]')!);
     const reject = () => act(async () => reply(new Response(JSON.stringify({ code: "browser.open_failed", params: { tab: page().id } }), { status: 400 })));
@@ -140,7 +144,7 @@ describe("opening an HTML file from the explorer", () => {
     }
     await waitFor(() => expect(unseenPageOpenings(port)).toHaveLength(0));
     expect(screen.getByRole("tab", { name: "Landing" }).getAttribute("aria-selected")).toBe("false");
-    expect(container.querySelector(".workbench-body")?.hasAttribute("data-files")).toBe(!mixed);
+    await waitFor(() => expect(container.querySelector(".workbench-body")?.hasAttribute("data-files")).toBe(!mixed));
     if (mixed) expect(screen.getByRole("tab", { name: "Fresh" }).getAttribute("aria-selected")).toBe("true");
     rerender(panel(port, { tabs: [{ ...agent, active: false }, page({ active: true, url: "https://reused.example" }), fresh] }));
     await waitFor(() => expect(screen.getByRole("tab", { name: "Landing" }).getAttribute("aria-selected")).toBe("true"));
@@ -151,13 +155,14 @@ describe("opening an HTML file from the explorer", () => {
     const { port, open } = setup();
     const { rerender } = render(panel(port));
     await user.click(await screen.findByRole("button", { name: "index.html" }));
+    await user.click(await screen.findByRole("button", { name: "交互运行" }));
     await waitFor(() => expect(open).toHaveBeenCalledTimes(1));
     expect(open).toHaveBeenCalledWith(`${ROOT}/index.html`, true);
     expect(unseenPageOpenings(port)).toHaveLength(1);
     rerender(panel(port, { tabs: [page()] }));
     expect(unseenPageOpenings(port)).toHaveLength(0);
     await waitFor(() => expect(document.querySelector(".workbench-canvas .bpanel")).toBeTruthy());
-    expect(screen.getByRole("button", { name: "预览" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "交互运行" }).getAttribute("aria-pressed")).toBe("true");
     expect(document.querySelector(".cm-content")).toBeNull();
     expect(unseenPageOpenings(port)).toHaveLength(0);
   });
@@ -170,6 +175,7 @@ describe("opening an HTML file from the explorer", () => {
     open.mockReturnValue(new Promise((resolve) => (answer = resolve)));
     const { rerender } = render(panel(port));
     await user.click(await screen.findByRole("button", { name: "index.html" }));
+    await user.click(await screen.findByRole("button", { name: "交互运行" }));
     await waitFor(() => expect(open).toHaveBeenCalled());
     rerender(panel(port, { tabs: [page()] }));
     expect(screen.queryByRole("tab", { name: "Landing" })).toBeNull();
@@ -187,6 +193,8 @@ describe("opening an HTML file from the explorer", () => {
     render(panel(port));
     (await screen.findByRole("button", { name: "about.htm" })).focus();
     await user.keyboard("{Enter}");
+    screen.getByRole("button", { name: "交互运行" }).focus();
+    await user.keyboard("{Enter}");
     await waitFor(() => expect(open).toHaveBeenCalledWith(`${ROOT}/about.htm`, true));
   });
 
@@ -195,11 +203,12 @@ describe("opening an HTML file from the explorer", () => {
     const { port, open } = setup();
     const { rerender } = render(panel(port));
     await user.click(await screen.findByRole("button", { name: "index.html" }));
+    await user.click(await screen.findByRole("button", { name: "交互运行" }));
     await waitFor(() => expect(open).toHaveBeenCalledTimes(1));
     rerender(panel(port, { tabs: [page()] }));
     await user.click(await screen.findByRole("button", { name: "编辑" }));
     await waitFor(() => expect(document.querySelector(".cm-content")).toBeTruthy());
-    await user.click(screen.getByRole("button", { name: "预览" }));
+    await user.click(screen.getByRole("button", { name: "交互运行" }));
     await user.click(screen.getAllByRole("button", { name: "index.html" }).find((b) => b.classList.contains("workbench-tree-row"))!);
     expect(open).toHaveBeenCalledTimes(1);
     expect(document.querySelector(".workbench-canvas .bpanel")).toBeTruthy();
@@ -211,6 +220,7 @@ describe("opening an HTML file from the explorer", () => {
     const { port, open, control } = setup({ revision: () => revision });
     const { rerender } = render(panel(port));
     await user.click(await screen.findByRole("button", { name: "index.html" }));
+    await user.click(await screen.findByRole("button", { name: "交互运行" }));
     await waitFor(() => expect(open).toHaveBeenCalled());
     rerender(panel(port, { tabs: [page()], wrote: 0 }));
     await waitFor(() => expect(document.querySelector(".bpanel")).toBeTruthy());
@@ -229,6 +239,7 @@ describe("opening an HTML file from the explorer", () => {
     render(panel(port, { tabs: [page()] }));
     expect(screen.getByRole("tab", { name: "Landing" })).toBeTruthy();
     await user.click(await screen.findByRole("button", { name: "index.html" }));
+    await user.click(await screen.findByRole("button", { name: "交互运行" }));
     await waitFor(() => expect(screen.queryByRole("tab", { name: "Landing" })).toBeNull());
     expect(open).not.toHaveBeenCalled();
     expect(document.querySelector(".workbench-canvas .bpanel")).toBeTruthy();
@@ -240,6 +251,7 @@ describe("opening an HTML file from the explorer", () => {
     vi.spyOn(port, "workspaces").mockResolvedValue({ current: "D:\\proj\\site\\", canSwitch: true, canIsolate: true, recents: [] });
     const { rerender } = render(panel(port));
     await user.click(await screen.findByRole("button", { name: "index.html" }));
+    await user.click(await screen.findByRole("button", { name: "交互运行" }));
     await waitFor(() => expect(open).toHaveBeenCalledWith("D:\\proj\\site/index.html", true));
     open.mockClear();
     rerender(panel(port, { tabs: [page({ url: "file:///D:/proj/site/index.html" })] }));
@@ -260,6 +272,7 @@ describe("opening an HTML file from the explorer", () => {
       refusedLikeTheKernel(port, "browser.open_failed", "browser.url_refused: outside the workspace");
       render(panel(port));
       await user.click(await screen.findByRole("button", { name: "index.html" }));
+    await user.click(await screen.findByRole("button", { name: "交互运行" }));
       const alert = await screen.findByRole("alert");
       expect(alert.textContent).toBe("打不开这个网页：browser.url_refused: outside the workspace");
       await waitFor(() => expect(document.querySelector(".cm-content")).toBeTruthy());
@@ -272,6 +285,7 @@ describe("opening an HTML file from the explorer", () => {
       refusedLikeTheKernel(port, "browser.network_path", "a network path");
       render(panel(port));
       await user.click(await screen.findByRole("button", { name: "index.html" }));
+    await user.click(await screen.findByRole("button", { name: "交互运行" }));
       const alert = await screen.findByRole("alert");
       expect(alert.textContent).toContain("网络上另一台机器");
       expect(alert.textContent).not.toContain("{");
@@ -300,22 +314,24 @@ describe("opening an HTML file from the explorer", () => {
       expect(open).not.toHaveBeenCalled();
     });
 
-    it("opens an HTML file in the editor where the window draws no pages", async () => {
+    it("opens static HTML where the window draws no browser pages", async () => {
       const user = userEvent.setup();
       const { port, open } = setup({ views: false });
       render(panel(port));
       await user.click(await screen.findByRole("button", { name: "index.html" }));
-      await waitFor(() => expect(document.querySelector(".cm-content")).toBeTruthy());
-      expect(screen.queryByRole("button", { name: "预览" })).toBeNull();
+      await screen.findByTitle("HTML 静态预览");
+      expect(screen.queryByRole("button", { name: "交互运行" })).toBeNull();
+      expect(screen.getByRole("button", { name: "预览" })).toBeTruthy();
       expect(open).not.toHaveBeenCalled();
     });
 
-    it("opens an HTML file in the editor when the workspace is on another machine", async () => {
+    it("opens static HTML when the workspace is on another machine", async () => {
       const user = userEvent.setup();
       const { port, open } = setup();
       render(panel(port, { remote: true }));
       await user.click(await screen.findByRole("button", { name: "index.html" }));
-      await waitFor(() => expect(document.querySelector(".cm-content")).toBeTruthy());
+      await screen.findByTitle("HTML 静态预览");
+      expect(screen.queryByRole("button", { name: "交互运行" })).toBeNull();
       expect(open).not.toHaveBeenCalled();
     });
 

@@ -38,6 +38,10 @@ func TestKeyRepoForRootAndSubdirectory(t *testing.T) {
 	if got := Key(sub); got != rootKey {
 		t.Fatalf("Key(subdir) = %q, want the repository key %q", got, rootKey)
 	}
+	info := Describe(sub)
+	if info.CheckoutRoot != canonical(repo) || info.Prefix != filepath.Join("internal", "agent") {
+		t.Fatalf("checkout ownership lost selected subdirectory: %+v", info)
+	}
 }
 
 // A linked worktree must land on the same key as the tree it was cut from, or

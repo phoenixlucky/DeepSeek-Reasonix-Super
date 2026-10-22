@@ -48,3 +48,20 @@ func TestReadOnlyCommandsRefuseTheirEscapes(t *testing.T) {
 		}
 	}
 }
+
+func TestUniqWithAWordAfterItsInputFileMayWriteThatWord(t *testing.T) {
+	for _, writes := range []string{
+		"uniq a.txt out.txt", "uniq a.txt -v", "uniq -c a.txt --", "uniq - -t", "uniq -f 1 a.txt -3", "uniq a.txt -- out.txt",
+	} {
+		base, sub, fields, ok := ClassifyReadOnlyCommand(writes)
+		if ok && !ArgsMakeReadOnlyCommandWrite(base, sub, fields) {
+			t.Errorf("%q names an output file on POSIX/BSD uniq and must not read as a read", writes)
+		}
+	}
+	for _, reads := range []string{"uniq a.txt", "uniq -c a.txt", "uniq -f 1 a.txt", "uniq -d -u", "uniq -- a.txt", "uniq -s 2 -w 4 a.txt", "uniq"} {
+		base, sub, fields, ok := ClassifyReadOnlyCommand(reads)
+		if !ok || ArgsMakeReadOnlyCommandWrite(base, sub, fields) {
+			t.Errorf("%q only reads", reads)
+		}
+	}
+}

@@ -236,3 +236,19 @@ api_key_env = "MIXED_API_KEY"
 		}
 	}
 }
+
+func TestModelListSaysWhichConnectionsAreNotAdded(t *testing.T) {
+	got := modelsByRef(t, mixedVendorConfig+"\n[desktop]\nprovider_access = [\"mixed\"]\n")
+	if got["mixed/text-only"].NotAdded {
+		t.Fatal("a connection in provider_access is added")
+	}
+	if !got["mixed-anthropic/text-only"].NotAdded {
+		t.Fatal("a connection outside provider_access must be marked not added")
+	}
+	open := modelsByRef(t, mixedVendorConfig)
+	for ref, m := range open {
+		if m.NotAdded {
+			t.Fatalf("%s: without a declared access list every connection is added", ref)
+		}
+	}
+}

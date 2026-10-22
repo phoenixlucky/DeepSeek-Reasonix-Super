@@ -14,8 +14,8 @@ func (s *Store) AvailableUndo() (*RewindUndo, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	tx := s.lastUndo
-	if tx == nil || tx.State != TxCommitted {
+	tx := s.undoOfferLocked()
+	if tx == nil || len(s.activeWriters) > 0 {
 		return nil, nil
 	}
 	return &RewindUndo{TransactionID: tx.ID, Turn: tx.Turn, Files: len(tx.Targets)}, nil
@@ -27,8 +27,8 @@ func (s *Store) unlockUndoChange(previous *TransactionManifest) {
 	if previous != nil {
 		before = previous.ID
 	}
-	if s.lastUndo != nil {
-		after = s.lastUndo.ID
+	if offer := s.undoOfferLocked(); offer != nil {
+		after = offer.ID
 	}
 	notify := s.undoChanged
 	s.mu.Unlock()
@@ -44,16 +44,15 @@ func (s *Store) LastUndoTransactionID() string {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lastUndo == nil || s.lastUndo.State != TxCommitted {
-		return ""
+	if offer := s.undoOfferLocked(); offer != nil {
+		return offer.ID
 	}
-	return s.lastUndo.ID
+	return ""
 }
 
-func (s *Store) restoreUndoOffer(tx TransactionManifest) {
-	s.mu.Lock()
-	defer s.unlockUndoChange(s.lastUndo)
-	if s.lastUndo == nil || s.lastUndo.UpdatedAt.Before(tx.UpdatedAt) {
-		s.lastUndo = &tx
+func (s *Store) undoOfferLocked() *TransactionManifest {
+	if s.undo.pending != nil || s.undo.current == nil || s.undo.current.State != TxCommitted {
+		return nil
 	}
+	return s.undo.current
 }

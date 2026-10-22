@@ -61,28 +61,104 @@ func (c *Controller) SaveAskTimeoutSettings(seconds int) error {
 // because nobody answered within the user's ask-timeout setting.
 const askOutcomeTimedOut = "timed_out"
 
-// askWaitContext bounds an ask's wait by the user's ask timeout, on top of the
-// approval timeout. The deadline's cause is the AskTimedOutError the asker
-// returns, so a skip is told apart from a cancel or a headless deadline by
-// identity. An external party's form (origin set) is theirs to wait on and is
-// never skipped.
-func (c *Controller) askWaitContext(ctx context.Context, origin *event.AskOrigin) (context.Context, context.CancelFunc) {
-	waitCtx, cancel := c.approval.waitContext(ctx)
+// askSkipDelay is how long this question may go unanswered before the host
+// skips it: zero for an external party's form, which is theirs to wait on, and
+// for a setting of off or one that cannot be used (which is said once, loudly).
+func (c *Controller) askSkipDelay(origin *event.AskOrigin) time.Duration {
 	if origin != nil {
-		return waitCtx, cancel
+		return 0
 	}
 	after, err := config.LoadForEdit(config.UserConfigPath()).AskTimeoutChecked()
 	if err != nil {
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Code: event.NoticeCodeAskTimeoutInvalid,
 			Text:   "ask_timeout_seconds in the user config is not valid, so questions wait as long as it takes until it is fixed",
 			Detail: err.Error()})
-		return waitCtx, cancel
+		return 0
 	}
+	return max(after, 0)
+}
+
+// askWaitContext bounds an ask's wait by the user's ask timeout, on top of the
+// approval timeout. The deadline's cause is the AskTimedOutError the asker
+// returns, so a skip is told apart from a cancel or a headless deadline by
+// identity.
+func (c *Controller) askWaitContext(ctx context.Context, origin *event.AskOrigin) (context.Context, context.Context, context.CancelFunc) {
+	return c.askWaitContextAfter(ctx, c.askSkipDelay(origin))
+}
+
+func (c *Controller) askWaitContextAfter(ctx context.Context, after time.Duration) (context.Context, context.Context, context.CancelFunc) {
+	waitCtx, cancel := c.approval.waitContext(ctx)
 	if after <= 0 {
-		return waitCtx, cancel
+		return waitCtx, waitCtx, cancel
 	}
 	skipCtx, cancelSkip := context.WithTimeoutCause(waitCtx, after, &agent.AskTimedOutError{After: after})
-	return skipCtx, func() { cancelSkip(); cancel() }
+	return waitCtx, skipCtx, func() { cancelSkip(); cancel() }
+}
+
+var errAskEngaged = errors.New("the user took over this question")
+
+// EngageQuestion disables automatic skipping for this pending question only.
+// It neither supplies an answer nor changes any approval or future question.
+func (c *Controller) EngageQuestion(id string) bool {
+	c.approval.mu.Lock()
+	p, ok := c.approval.asks[id]
+	if !ok || p.queued || p.origin != nil {
+		c.approval.mu.Unlock()
+		return false
+	}
+	first := false
+	select {
+	case <-p.engaged:
+	default:
+		close(p.engaged)
+		first = true
+	}
+	c.approval.mu.Unlock()
+	if first {
+		// Every window showing the question is told it will not be skipped; one
+		// holding only the first announcement would count down to nothing.
+		c.sink.Emit(event.Event{Kind: event.AskEngaged, Ask: event.Ask{ID: id}})
+	}
+	return true
+}
+
+func (c *Controller) waitForAsk(ctx context.Context, id string, reply <-chan []event.AskAnswer, after time.Duration) ([]event.AskAnswer, error) {
+	base, waitCtx, cancel := c.askWaitContextAfter(ctx, after)
+	defer cancel()
+	c.approval.mu.Lock()
+	engaged := c.approval.asks[id].engaged
+	c.approval.mu.Unlock()
+	for {
+		select {
+		case ans := <-reply:
+			c.closeBarrier(id, barrierResolved)
+			return ans, nil
+		case <-engaged:
+			waitCtx, engaged = base, nil
+		case <-waitCtx.Done():
+			ans, err := c.endUnansweredAsk(waitCtx, id, reply)
+			if errors.Is(err, errAskEngaged) {
+				waitCtx, engaged = base, nil
+				continue
+			}
+			return ans, err
+		}
+	}
+}
+
+func (a *approvalManager) resolveAskForTimeout(id string) (pendingAsk, bool, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	p, ok := a.asks[id]
+	if ok {
+		select {
+		case <-p.engaged:
+			return p, true, true
+		default:
+		}
+	}
+	delete(a.asks, id)
+	return p, ok, false
 }
 
 // endUnansweredAsk settles an ask whose wait ended without an answer. A skip
@@ -96,7 +172,10 @@ func (c *Controller) endUnansweredAsk(waitCtx context.Context, id string, reply 
 		c.closeBarrier(id, barrierCancelled)
 		return nil, waitCtx.Err()
 	}
-	pending, open := c.approval.resolveAsk(id)
+	pending, open, engaged := c.approval.resolveAskForTimeout(id)
+	if engaged {
+		return nil, errAskEngaged
+	}
 	if !open {
 		select {
 		case ans := <-reply:
@@ -146,7 +225,7 @@ func askTimeoutArgItems(prior []string) []SlashItem {
 		return nil
 	}
 	return []SlashItem{
-		{Label: "off", Insert: "off", Hint: "wait for an answer as long as it takes"},
-		{Label: "300", Insert: "300", Hint: "skip after five minutes"},
+		{Label: "off", Insert: "off", Hint: i18n.M.ArgAskTimeoutOff},
+		{Label: "300", Insert: "300", Hint: i18n.M.ArgAskTimeout300},
 	}
 }

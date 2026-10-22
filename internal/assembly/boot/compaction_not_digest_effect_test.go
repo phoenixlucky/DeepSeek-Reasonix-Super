@@ -13,8 +13,7 @@ import (
 
 const pseudoToolCall = "<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"read_file\">\n<｜｜DSML｜｜ parameter name=\"path\">internal/a.go</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>"
 
-// notDigestProvider answers its first summary request the way a model carrying
-// on the agent's work does, and later ones with a briefing.
+// notDigestProvider rejects both permitted shapes before returning a briefing.
 type notDigestProvider struct {
 	mu        sync.Mutex
 	reqs      []provider.Request
@@ -31,14 +30,20 @@ func (p *notDigestProvider) Stream(_ context.Context, req provider.Request) (<-c
 	if isSummaryRequest(req) {
 		p.summaries++
 		text = "## Goal\n- keep working"
-		if p.summaries == 1 {
+		if p.summaries <= 2 {
 			text = pseudoToolCall
 		}
 	}
 	p.mu.Unlock()
 	ch := make(chan provider.Chunk, 3)
 	ch <- provider.Chunk{Type: provider.ChunkText, Text: text}
-	ch <- provider.Chunk{Type: provider.ChunkUsage, Usage: &provider.Usage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110}}
+	// What a real provider counts for the prompt it was sent: the trigger follows
+	// the reported count, so a fixed small figure would never reach it.
+	prompt := 0
+	for _, m := range req.Messages {
+		prompt += len(m.Content) / 4
+	}
+	ch <- provider.Chunk{Type: provider.ChunkUsage, Usage: &provider.Usage{PromptTokens: prompt, CompletionTokens: 10, TotalTokens: prompt + 10}}
 	ch <- provider.Chunk{Type: provider.ChunkDone}
 	close(ch)
 	return ch, nil
@@ -100,8 +105,8 @@ context_window = 32000
 	if len(gotCodes) == 0 || gotCodes[0] != "summary_not_digest" {
 		t.Fatalf("failure codes %v, want the first to be summary_not_digest", gotCodes)
 	}
-	if gotBilled < 1 {
-		t.Fatalf("the rejected summary was not billed to the compaction (%d usage events)", gotBilled)
+	if gotBilled != rec.summaries {
+		t.Fatalf("summary attempts were not billed individually (%d usage events)", gotBilled)
 	}
 	installed := false
 	for _, req := range rec.reqs {

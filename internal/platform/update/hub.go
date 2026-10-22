@@ -66,6 +66,17 @@ const catalogTimeout = 15 * time.Second
 // Hub reads the rollback catalog for one install, so no shell holds a copy of
 // what "newer", "pinned" or "latest" mean.
 func Hub(ctx context.Context, in Install) VersionHub {
+	return HubRefreshing(ctx, in, false)
+}
+
+// HubRefreshing is Hub that can skip the answer a recent read left behind, for
+// a reader who asked to try again.
+func HubRefreshing(ctx context.Context, in Install, refresh bool) VersionHub {
+	key := in.Version + "\x00" + PinnedVersion()
+	return memo.get(ctx, key, refresh, time.Now, func(ctx context.Context) VersionHub { return readHub(ctx, in) })
+}
+
+func readHub(ctx context.Context, in Install) VersionHub {
 	client, err := netclient.NewHTTPClient(ProxySpec(), netclient.TransportOptions{})
 	if err != nil {
 		hub := VersionHub{Current: in.Version, Pinned: PinnedVersion()}
@@ -144,6 +155,27 @@ func PinnedVersion() string {
 func Pin(version string) error {
 	cfg := config.LoadForEdit(config.UserConfigPath())
 	if err := cfg.SetDesktopPinnedVersion(version); err != nil {
+		return err
+	}
+	return cfg.SaveTo(config.UserConfigPath())
+}
+
+// Mode is what this machine does about new releases on its own, read from the
+// user's config: manual unless the user chose otherwise.
+func Mode() string {
+	if cfg, err := config.Load(); err == nil && cfg != nil {
+		return cfg.DesktopUpdateMode()
+	}
+	return config.UpdateModeManual
+}
+
+// SetMode records the user's choice, refusing a mode this build does not offer
+// with config.ErrUpdateModeInvalid.
+func SetMode(mode string) error {
+	unlock := config.LockUserConfigEdits()
+	defer unlock()
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	if err := cfg.SetDesktopUpdateMode(mode); err != nil {
 		return err
 	}
 	return cfg.SaveTo(config.UserConfigPath())

@@ -17,9 +17,10 @@ func init() { tool.RegisterBuiltin(multiEdit{}) }
 // session-data targets (see SessionDataGuard); workDir, when non-empty, is the
 // directory a relative path resolves against (see resolveIn).
 type multiEdit struct {
-	roots   []string
-	guard   SessionDataGuard
-	managed ManagedConfigPaths
+	readPolicy editReadPolicy
+	roots      []string
+	guard      SessionDataGuard
+	managed    ManagedConfigPaths
 	// sessionTemp, when non-nil, adds the session's own temporary directory
 	// to the writable surface — the same directory bash writes through $TMPDIR.
 	sessionTemp *sessiontemp.Manager
@@ -91,7 +92,7 @@ func (m multiEdit) Execute(ctx context.Context, args json.RawMessage) (string, e
 		return "", err
 	}
 
-	src, err := readEditSource(ctx, m.overlay, p.Path)
+	src, err := m.readPolicy.source(ctx, m.overlay, p.Path)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", p.Path, err)
 	}

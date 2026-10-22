@@ -218,9 +218,7 @@ func applyConfigItem(cfg *config.Config, it Item) error {
 	return fmt.Errorf("%w: kind %q", ErrUnknownItem, it.Kind)
 }
 
-// applyHooks adds each restored hook that is not already configured. A hook
-// is never replaced: the name is derived from what it runs, so "the same
-// hook" with a different command is a different hook.
+// applyHooks adds each native hook configuration that is not already present.
 func applyHooks(items []Item) error {
 	settings, err := globalHooks()
 	if err != nil {
@@ -229,6 +227,7 @@ func applyHooks(items []Item) error {
 	if settings.Hooks == nil {
 		settings.Hooks = map[hook.Event][]hook.HookConfig{}
 	}
+	added := false
 	for _, it := range items {
 		var d hookData
 		if err := json.Unmarshal(it.Data, &d); err != nil {
@@ -239,17 +238,23 @@ func applyHooks(items []Item) error {
 			return fmt.Errorf("%s: unknown hook event %q", it.ID, d.Event)
 		}
 		if slices.ContainsFunc(settings.Hooks[event], func(h hook.HookConfig) bool {
-			return hookName(d.Event, h) == hookName(d.Event, d.Hook)
+			return nativeHookName(d.Event, h) == nativeHookName(d.Event, d.Hook)
 		}) {
 			continue
 		}
 		settings.Hooks[event] = append(settings.Hooks[event], d.Hook)
+		added = true
+	}
+	if !added {
+		return nil
 	}
 	return hook.Save(hook.ScopeGlobal, "", settings)
 }
 
 func writeOne(it Item) error {
 	switch it.Kind {
+	case KindAgentPreset:
+		return restoreCompositionItem(it)
 	case KindSkill:
 		var d skillData
 		if err := json.Unmarshal(it.Data, &d); err != nil {

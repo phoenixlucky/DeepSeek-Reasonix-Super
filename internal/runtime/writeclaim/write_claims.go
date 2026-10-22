@@ -11,18 +11,9 @@ import (
 	"reasonix/internal/base/fileutil"
 )
 
-// DefaultMaxSubagentConcurrency is the session-wide sub-agent concurrency
-// default (task, fleet items, profile skills, nested children).
-const DefaultMaxSubagentConcurrency = 6
-
-// DefaultMaxParallelWriters is the default cap on concurrent writer-capable
-// sub-agents that declare non-overlapping write_paths.
-const DefaultMaxParallelWriters = 3
-
-// MaxSubagentConcurrencyLimit is the upper bound for both concurrency knobs.
-const MaxSubagentConcurrencyLimit = 32
-
 // WritePathSet is a normalized claim over workspace paths a sub-agent may write.
+// An Optimistic claim is scoped to the workspace for audit and bash, but each
+// write holds only its own path while it executes.
 // WholeWorkspace is true when a writer-capable task omitted write_paths and
 // therefore claims the entire workspace (forcing writer serialization).
 type WritePathSet struct {
@@ -32,6 +23,8 @@ type WritePathSet struct {
 	WholeWorkspace bool
 	// WorkspaceRoot is the absolute workspace root used for WholeWorkspace claims.
 	WorkspaceRoot string
+	// Optimistic marks a whole-workspace claim that reserves nothing up front.
+	Optimistic bool
 }
 
 // Empty reports whether the set claims nothing (read-only work).
@@ -39,23 +32,13 @@ func (s WritePathSet) Empty() bool {
 	return !s.WholeWorkspace && len(s.Paths) == 0
 }
 
-// NormalizeConcurrencyLimits clamps total/writer limits into the public range
-// 1–32 and ensures writers never exceed total. Zero inputs become defaults so
-// old configs stay at 6/3 without migration.
+// NormalizeConcurrencyLimits reads the two user settings. Zero is no limit, the
+// default: the claims on write paths, not a count, are what keep writers from
+// colliding. A negative value reads as none, and a writer limit above a set total
+// is brought down to it, since a writer is also a sub-agent.
 func NormalizeConcurrencyLimits(total, writers int) (int, int) {
-	if total <= 0 {
-		total = DefaultMaxSubagentConcurrency
-	}
-	if writers <= 0 {
-		writers = DefaultMaxParallelWriters
-	}
-	if total > MaxSubagentConcurrencyLimit {
-		total = MaxSubagentConcurrencyLimit
-	}
-	if writers > MaxSubagentConcurrencyLimit {
-		writers = MaxSubagentConcurrencyLimit
-	}
-	if writers > total {
+	total, writers = max(total, 0), max(writers, 0)
+	if total > 0 && writers > total {
 		writers = total
 	}
 	return total, writers
@@ -130,10 +113,19 @@ func WholeWorkspaceWriteClaim(workspaceRoot string) (WritePathSet, error) {
 	return WritePathSet{WholeWorkspace: true, WorkspaceRoot: root}, nil
 }
 
+// OptimisticWorkspaceClaim is the claim an undeclared writer takes when the user
+// chose optimistic sub-agent claims: workspace-scoped, reserving nothing.
+func OptimisticWorkspaceClaim(workspaceRoot string) (WritePathSet, error) {
+	whole, err := WholeWorkspaceWriteClaim(workspaceRoot)
+	whole.Optimistic = true
+	return whole, err
+}
+
 // Overlaps reports whether two write claims conflict (identical, parent/child,
-// or case-equivalent on case-insensitive filesystems).
+// or case-equivalent on case-insensitive filesystems). An optimistic claim
+// reserves nothing up front, so it collides with no other claim.
 func (s WritePathSet) Overlaps(other WritePathSet) bool {
-	if s.Empty() || other.Empty() {
+	if s.Empty() || other.Empty() || s.Optimistic || other.Optimistic {
 		return false
 	}
 	if s.WholeWorkspace || other.WholeWorkspace {

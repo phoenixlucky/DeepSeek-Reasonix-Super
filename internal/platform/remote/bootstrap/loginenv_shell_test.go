@@ -33,7 +33,7 @@ func (c *shellConn) Exec(ctx context.Context, cmd string) (remote.ExecResult, er
 	return res, err
 }
 
-func (c *shellConn) SFTP() (*sftpfs.FS, error) { return nil, errors.New("no sftp") }
+func (c *shellConn) Files() (sftpfs.Files, error) { return nil, errors.New("no sftp") }
 
 func TestCaptureScriptThroughRealShells(t *testing.T) {
 	if runtime.GOOS == "windows" {

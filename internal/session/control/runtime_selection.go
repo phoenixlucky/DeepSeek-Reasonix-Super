@@ -23,11 +23,7 @@ func (c *Controller) RuntimeSelection() RuntimeSelection {
 	if c == nil {
 		return RuntimeSelection{}
 	}
-	return RuntimeSelection{
-		ModelRef:            strings.TrimSpace(c.modelRef),
-		Effort:              normalizeRuntimeEffort(c.effort),
-		ProviderFingerprint: strings.TrimSpace(c.providerFingerprint),
-	}
+	return c.runtimeSelectionNow()
 }
 
 // MatchesRuntimeSelection reports whether target names the running controller.

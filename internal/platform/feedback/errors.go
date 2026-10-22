@@ -2,6 +2,7 @@ package feedback
 
 import (
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -24,6 +25,29 @@ var (
 	ErrReplyLimit        = errors.New("feedback: reply limit reached")
 	ErrNotReplyable      = errors.New("feedback: report takes no reply")
 	ErrChallengeRequired = errors.New("feedback: verification required")
+	// ErrNotWithdrawable: the report already has an outcome, or this machine can
+	// no longer speak for it. ErrNotFound: the service has no such report for
+	// this install.
+	ErrNotWithdrawable = errors.New("feedback: report can no longer be withdrawn")
+	ErrNotFound        = errors.New("feedback: no such report")
+	// The account-link sentinels: ErrAccountRequired is a missing, expired or
+	// refused sign-in assertion, ErrLinkConflict an install another account holds,
+	// ErrLinkLimit an account at its cap, ErrNoInstall an install with no report yet.
+	ErrAccountRequired = errors.New("feedback: account sign-in required")
+	ErrLinkConflict    = errors.New("feedback: install linked to another account")
+	ErrLinkLimit       = errors.New("feedback: account link limit reached")
+	ErrNoInstall       = errors.New("feedback: this install has not sent a report")
+	// The contribution-board sentinels: a display name the service refused as
+	// malformed, as reserved or as another person's, an account a maintainer
+	// removed, and a join before any install is linked. ErrRouteAbsent is a
+	// service that has no such route, which is a version or a switch, not a fault;
+	// it is also an ErrUnavailable.
+	ErrBoardNameInvalid  = errors.New("feedback: board name is not allowed")
+	ErrBoardNameReserved = errors.New("feedback: board name is reserved")
+	ErrBoardNameTaken    = errors.New("feedback: board name is taken")
+	ErrBoardDelisted     = errors.New("feedback: account was removed from the board")
+	ErrBoardNoLink       = errors.New("feedback: no install is linked to this account")
+	ErrRouteAbsent       = fmt.Errorf("%w: the service has no such route", ErrUnavailable)
 	ErrOffline           = errors.New("feedback: service unreachable")
 	ErrUnavailable       = errors.New("feedback: service failed")
 )
@@ -37,6 +61,7 @@ const (
 	FieldImages      = "images"
 	FieldReceipt     = "receipt"
 	FieldReplyID     = "replyId"
+	FieldInstall     = "install"
 )
 
 // Reasons an InvalidError can carry.

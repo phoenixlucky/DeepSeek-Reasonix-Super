@@ -82,3 +82,7 @@ func (d deleteSymbol) WritePaths(args json.RawMessage) ([]string, error) {
 func (m moveFile) WritePaths(args json.RawMessage) ([]string, error) {
 	return ResolveWritePaths(m.workDir, m.sessionTemp, m.roots, args, true)
 }
+
+func (w webImage) WritePaths(args json.RawMessage) ([]string, error) {
+	return ResolveWritePaths(w.workDir, nil, w.roots, args, false)
+}

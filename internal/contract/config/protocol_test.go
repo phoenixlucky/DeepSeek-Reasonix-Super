@@ -6,6 +6,7 @@ import (
 
 	"reasonix/internal/contract/provider"
 	_ "reasonix/internal/model/anthropic"
+	_ "reasonix/internal/model/gemini"
 	_ "reasonix/internal/model/openai"
 	_ "reasonix/internal/model/responses"
 )

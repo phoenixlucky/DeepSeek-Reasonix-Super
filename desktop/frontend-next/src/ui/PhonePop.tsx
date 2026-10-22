@@ -7,6 +7,7 @@ import { copyText } from "./CopyButton";
 import { useDismiss } from "./dismiss";
 import { clock, deviceLabel, type Share, useShare } from "./PhoneAccess";
 import { Switch } from "./Switch";
+import { TooltipButton } from "./TooltipButton";
 
 /** The chrome's way to put a phone on this window: a code on a card, one
  *  press from anywhere. Drawn only where the kernel has a window to share —
@@ -62,7 +63,7 @@ export function PhonePop({ hub }: { hub: HubPort }) {
   const online = share.st.devices.filter((d) => d.online).length + share.st.cloudDevices.length;
   return (
     <div className="phonepop" ref={box}>
-      <button
+      <TooltipButton
         className="thbtn phone-action"
         data-action="share.card"
         data-live={shareOpen ? "" : undefined}
@@ -79,7 +80,7 @@ export function PhonePop({ hub }: { hub: HubPort }) {
           <path d="M9.5 9.5h1.6v1.6M13.5 9.5v.01M9.5 13.5h.01M12 12h1.5v1.5H12Z" />
         </svg>
         {online > 0 && <b className="pc-count">{online}</b>}
-      </button>
+      </TooltipButton>
       {open && <PhoneCard share={share} failure={failure} />}
       {(cloudNote || localNote) && <div className="pc-note-pop" role="status">{cloudNote || localNote}</div>}
     </div>

@@ -43,4 +43,18 @@ describe("the session cost chip when the display currency changes", () => {
     await waitFor(() => expect(figure()).toMatch(/^US?\$0\.21$/));
     expect(balance.mock.calls.length).toBeGreaterThan(reads);
   });
+
+  it("shows no cost figure before anything has been priced, instead of a currency it never chose", async () => {
+    const port = new MockPort();
+    const status = port.status.bind(port);
+    vi.spyOn(port, "status").mockImplementation(async () => ({ ...(await status()), sessionCostQuote: undefined }));
+    const { container } = render(
+      <Pane port={port as AgentPort} rt={rt} title="w" active visible sideHost={null} side={false}
+        onFocus={() => {}} onReport={() => {}} onSessionChanged={() => {}} pulse={0} findPulse={0}
+        onSettings={() => {}} needsProject={false} onOpenProject={() => {}} onKeepHere={() => {}}
+        theme="dark" dockW={560} dockMax={880} onDockW={() => {}} />,
+    );
+    await waitFor(() => expect(container.querySelector(".studio-meterrail")).not.toBeNull());
+    expect(container.querySelector(".studio-meter-cost")).toBeNull();
+  });
 });

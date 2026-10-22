@@ -14,6 +14,7 @@ const PARTS: [Fold, string, string][] = [
 
 const MODE: Record<FoldMode, string> = {
   folded: "收起",
+  peek: "收起并预览首句",
   live: "进行中展开",
   failed: "失败时展开",
   changed: "改动时展开",

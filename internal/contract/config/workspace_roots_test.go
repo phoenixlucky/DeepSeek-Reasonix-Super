@@ -264,3 +264,24 @@ func TestVetExtraRootComparesFileIdentityNotSpelling(t *testing.T) {
 		}
 	}
 }
+
+// The skills folder is judged apart from the other protected data: it is the
+// one whose refusal has a supported way forward to name.
+func TestSkillStoreRefusalIsItsOwnIdentity(t *testing.T) {
+	cfg, home, _, primary, _ := rootsFixture(t)
+	skills := filepath.Join(home, UserSkillsDirName)
+	if err := os.MkdirAll(filepath.Join(skills, "my-skill"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, dir := range map[string]string{"the folder": skills, "one skill in it": filepath.Join(skills, "my-skill")} {
+		if got := refusalOf(t, cfg, primary, dir); got != RootSkillStore {
+			t.Fatalf("%s: refusal = %s, want %s", name, got, RootSkillStore)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(home, "memory"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := refusalOf(t, cfg, primary, filepath.Join(home, "memory")); got != RootProtected {
+		t.Fatalf("a sibling data folder = %s, want it still plainly protected", got)
+	}
+}

@@ -41,13 +41,15 @@ files:
   - assets/**/*
   - package.json
 extraResources:
+  - from: ../../internal/platform/computer/cua-driver.lock.json
+    to: bin/cua-driver.lock.json
   - from: bin
     to: bin
     filter:
       - reasonix-studio-host
       - reasonix-studio-host.exe
-      - reasonix-computer-helper
-      - reasonix-computer-helper.exe
+      - cua-driver
+      - cua-driver.exe
   - from: ../frontend-next/dist
     to: frontend-next/dist
 
@@ -97,9 +99,17 @@ linux:
   target:
     - deb
     - rpm
+    # Download only: it does not update itself, and nothing here installs it.
+    - AppImage
   icon: assets/icon.png
   category: Development
   maintainer: esengine <esengine@users.noreply.github.com>
+  artifactName: ReasonixStudio-linux-${arch}.${ext}
+
+appImage:
+  # Stated rather than inherited: the release vocabulary is the same for every
+  # Linux file, and canonical-artifact-names.js turns whatever architecture
+  # spelling electron-builder puts here (x64, x86_64) into amd64 or fails.
   artifactName: ReasonixStudio-linux-${arch}.${ext}
 
 deb:

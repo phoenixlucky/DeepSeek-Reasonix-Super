@@ -34,17 +34,19 @@ type replyStub struct {
 type replyHit struct {
 	path, id, token string
 	body            string
+	attachments     []wireAttachment
 }
 
 func (r *replyStub) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/feedback/{receipt}/reply", func(w http.ResponseWriter, req *http.Request) {
 		var b struct {
-			Body string `json:"body"`
+			Body        string           `json:"body"`
+			Attachments []wireAttachment `json:"attachments"`
 		}
 		_ = json.NewDecoder(req.Body).Decode(&b)
 		r.mu2.Lock()
-		r.hits = append(r.hits, replyHit{req.URL.Path, req.Header.Get("X-Install-Id"), req.Header.Get("X-Install-Token"), b.Body})
+		r.hits = append(r.hits, replyHit{req.URL.Path, req.Header.Get("X-Install-Id"), req.Header.Get("X-Install-Token"), b.Body, b.Attachments})
 		n := len(r.hits)
 		r.mu2.Unlock()
 		if r.answer != nil {
@@ -530,5 +532,51 @@ func TestSeenCannotClaimRepliesBeyondTheNewestOneHeld(t *testing.T) {
 	got, _ := svc.ListMine(context.Background())
 	if got.Items[0].UnreadReplies != 1 {
 		t.Fatalf("a mark past the newest held reply masked a later one: %+v", got.Items[0])
+	}
+}
+
+func TestReplyCarriesImagesThroughTheReportGate(t *testing.T) {
+	svc, rs := replySetup(t)
+	shot := Image{Name: "shot.png", Data: pngBytes(t, 8, 8)}
+	if _, err := svc.Reply(context.Background(), "FB-7K3M-9QX2", "here", shot); err != nil {
+		t.Fatal(err)
+	}
+	got := rs.hits[0].attachments
+	if len(got) != 1 || got[0].ContentType != "image/png" || got[0].DataBase64 == "" {
+		t.Fatalf("attachments on the wire = %+v", got)
+	}
+}
+
+func TestReplyImageRefusalsNeverReachTheWire(t *testing.T) {
+	svc, rs := replySetup(t)
+	ok := Image{Name: "a.png", Data: pngBytes(t, 4, 4)}
+	cases := []struct {
+		name   string
+		images []Image
+		reason string
+	}{
+		{"too many", []Image{ok, ok, ok, ok}, ReasonTooMany},
+		{"not an image", []Image{{Name: "a.png", Data: []byte("not an image")}}, ReasonFormat},
+		{"empty", []Image{{Name: "a.png"}}, ReasonUndecodable},
+	}
+	for _, c := range cases {
+		_, err := svc.Reply(context.Background(), "FB-7K3M-9QX2", "hi", c.images...)
+		var inv *InvalidError
+		if !errors.As(err, &inv) || inv.Field != FieldImages || inv.Reason != c.reason {
+			t.Errorf("%s: err = %v", c.name, err)
+		}
+	}
+	if len(rs.hits) != 0 {
+		t.Fatalf("%d requests left the machine", len(rs.hits))
+	}
+}
+
+func TestReplyWithoutImagesSendsNoAttachmentField(t *testing.T) {
+	svc, rs := replySetup(t)
+	if _, err := svc.Reply(context.Background(), "FB-7K3M-9QX2", "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if rs.hits[0].attachments != nil {
+		t.Fatalf("attachments = %+v, want none", rs.hits[0].attachments)
 	}
 }

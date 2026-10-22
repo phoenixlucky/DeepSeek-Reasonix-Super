@@ -37,7 +37,9 @@ const (
 	MethodExtensionToolCall Method = "extension/tool/call"
 
 	// Externalized content reads (Extension → Host).
-	MethodHostContentRead Method = "host/content/read"
+	MethodHostContentRead  Method = "host/content/read"
+	MethodHostSessionRead  Method = "host/session/read"
+	MethodHostPromptSubmit Method = "host/prompt/submit"
 )
 
 // MethodSpec is one frozen registry entry: the method name, its direction,
@@ -92,6 +94,8 @@ var frozenRegistry = []MethodSpec{
 	extensionRequest[UIPublishParams, UIPublishResult](MethodHostUIPublish, ClassUI),
 	extensionRequest[UIRequestParams, UIRequestResult](MethodHostUIRequest, ClassUI),
 	extensionRequest[ContentReadParams, ContentReadResult](MethodHostContentRead, ClassContent),
+	extensionRequest[SessionReadParams, SessionReadResult](MethodHostSessionRead, ClassSession),
+	extensionRequest[PromptSubmitParams, PromptSubmitResult](MethodHostPromptSubmit, ClassSession),
 }
 
 var frozenRegistryByName = buildRegistryIndex(frozenRegistry)
@@ -177,11 +181,11 @@ func ValidateRegistry() error {
 		}
 	}
 	// Extension Protocol v2: 9 lifecycle/intercept/provider/UI/tool Host →
-	// Extension requests, 3 Extension → Host requests (UI publish/request,
-	// content read), 3 Host → Extension notifications, 2 provider stream
-	// notifications.
-	if len(frozenRegistry) != 17 || hostReq != 9 || extReq != 3 || hostNotif != 3 || extNotif != 2 {
-		return fmt.Errorf("registry count = total=%d hostReq=%d extReq=%d hostNotif=%d extNotif=%d, want 17/9/3/3/2",
+	// Extension requests, 5 Extension → Host requests (UI publish/request,
+	// content read, session read, prompt submit), 3 Host → Extension
+	// notifications, 2 provider stream notifications.
+	if len(frozenRegistry) != 19 || hostReq != 9 || extReq != 5 || hostNotif != 3 || extNotif != 2 {
+		return fmt.Errorf("registry count = total=%d hostReq=%d extReq=%d hostNotif=%d extNotif=%d, want 19/9/5/3/2",
 			len(frozenRegistry), hostReq, extReq, hostNotif, extNotif)
 	}
 	return nil

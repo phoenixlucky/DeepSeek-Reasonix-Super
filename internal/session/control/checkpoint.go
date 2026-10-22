@@ -68,23 +68,31 @@ func (m *checkpointManager) enabled() bool {
 
 // beginWithObserver opens a checkpoint and updates the mutation observer's
 // ownership turn for subsequent captures.
-func (m *checkpointManager) beginWithObserver(input string, msgIndex int, obs *checkpoint.MutationObserver) (int, *checkpoint.Store, bool) {
+func (m *checkpointManager) beginWithObserver(input string, msgIndex int, obs *checkpoint.MutationObserver) (int, *checkpoint.Store, bool, error) {
 	m.mu.Lock()
 	store := m.store
 	if store == nil {
 		m.mu.Unlock()
-		return 0, nil, false
+		return 0, nil, false, nil
 	}
 	turn := m.turn
 	m.turn++
 	m.bound[turn] = msgIndex
 	m.mu.Unlock()
+	if err := store.Begin(turn, input, msgIndex); err != nil {
+		m.mu.Lock()
+		if m.turn == turn+1 {
+			m.turn = turn
+			delete(m.bound, turn)
+		}
+		m.mu.Unlock()
+		return 0, nil, false, err
+	}
 	if obs != nil {
 		obs.NoteCrossTurnBackgroundWriter(turn)
 		obs.SetOwnershipTurn(turn)
 	}
-	store.Begin(turn, input, msgIndex)
-	return turn, store, true
+	return turn, store, true, nil
 }
 
 type guardedTurnCheckpoint struct {
@@ -99,27 +107,32 @@ type guardedTurnCompletion struct {
 	checkpoint *guardedTurnCheckpoint
 	// workMs sums what each run of the turn reports up to its final answer.
 	workMs atomic.Int64
+	// startedAt is the wall-clock unix ms the turn was admitted.
+	startedAt int64
 }
 
 type guardedTurnCompletionKey struct{}
 
 func withGuardedTurnCompletion(ctx context.Context) (context.Context, *guardedTurnCompletion) {
-	completion := &guardedTurnCompletion{}
+	completion := &guardedTurnCompletion{startedAt: time.Now().UnixMilli()}
 	return context.WithValue(ctx, guardedTurnCompletionKey{}, completion), completion
 }
 
 // beginCheckpoint opens a rewind checkpoint before the visible user message is
 // appended. Guarded turns retain the exact boundary so TurnDone can identify
 // the corresponding optimistic frontend item without positional guessing.
-func (c *Controller) beginCheckpoint(ctx context.Context, input string) {
+func (c *Controller) beginCheckpoint(ctx context.Context, input string) error {
 	if c.executor == nil || c.executor.Session() == nil {
-		return
+		return nil
 	}
 	session := c.executor.Session()
 	messageIndex := session.Len()
 	openedAt := time.Now().UnixMilli()
+	turn, store, ok, err := c.checkpoints.beginWithObserver(input, messageIndex, c.mutationObserver)
+	if err != nil {
+		return err
+	}
 	atomic.AddInt64(&c.sessionRevision, 1)
-	turn, store, ok := c.checkpoints.beginWithObserver(input, messageIndex, c.mutationObserver)
 	if ok {
 		if completion, _ := ctx.Value(guardedTurnCompletionKey{}).(*guardedTurnCompletion); completion != nil {
 			completion.checkpoint = &guardedTurnCheckpoint{
@@ -142,6 +155,17 @@ func (c *Controller) beginCheckpoint(ctx context.Context, input string) {
 	c.mu.Lock()
 	c.lastResumeDecision = d
 	c.mu.Unlock()
+	return nil
+}
+
+// Synthetic continuations share the visible turn's checkpoint. The boundary
+// precedes its user message, and the label uses raw text rather than transient
+// provider composition because rewind exposes it in the picker and composer.
+func (c *Controller) beginOrchestratedCheckpoint(ctx context.Context, turn orchestratedTurn) error {
+	if turn.synthetic {
+		return nil
+	}
+	return c.beginCheckpoint(ctx, firstNonEmpty(turn.raw, turn.input))
 }
 
 // validatedCheckpointTurn returns the checkpoint only while its original
@@ -220,6 +244,29 @@ func (m *checkpointManager) endOfTurn(turn, tip int) (int, bool) {
 		}
 	}
 	return end, true
+}
+
+// namesUserMessage reports whether msg is the prompt recorded for the turn that
+// starts at index: the identity a recorded boundary is checked against before
+// it is trusted to cut a conversation that is still being written.
+func (m *checkpointManager) namesUserMessage(index int, msg provider.Message) bool {
+	m.mu.Lock()
+	next, found := 0, false
+	for turn, at := range m.bound {
+		if at == index && (!found || turn < next) {
+			next, found = turn, true
+		}
+	}
+	m.mu.Unlock()
+	if !found || msg.Role != provider.RoleUser {
+		return false
+	}
+	for _, meta := range m.list() {
+		if meta.Turn == next {
+			return sessionstore.UserMessageText(msg) == strings.TrimSpace(sessionstore.StripTransientUserBlocks(meta.Prompt))
+		}
+	}
+	return false
 }
 
 // list returns the checkpoint metadata (nil when disabled).

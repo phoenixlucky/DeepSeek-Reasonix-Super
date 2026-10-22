@@ -204,27 +204,6 @@ export function AddProvider({
       </div>
       {baseUrl.trim() === "" && <PresetGallery load={loadPresets} onPick={setPreset} disabled={busy || checkingModel !== ""} />}
       <div className="fields">
-        <div className="grow name-cell">
-        <label>
-          <span>{t("来源名称")}</span>
-          <input
-            aria-label={t("来源名称")}
-            data-action="provider.draft" data-value="name"
-            value={name}
-            placeholder={t("例如：公司中转站")}
-            onChange={(e) => { setName(e.target.value); setNameErr(""); }}
-            disabled={busy || testing}
-            spellCheck={false}
-            aria-invalid={nameBad || nameErr !== "" || undefined}
-            aria-describedby="addp-name-rule"
-            onCompositionStart={() => setComposing(true)}
-            onCompositionEnd={() => setComposing(false)}
-          />
-        </label>
-        <p id="addp-name-rule" className="name-rule" data-bad={nameBad || nameErr !== "" || undefined} aria-live="polite">
-          {nameErr !== "" ? nameErr : t("名称只能用字母、数字、点、连字符和下划线，以字母或数字开头，最长 64 个字符")}
-        </p>
-        </div>
         <label className="grow">
           <span>{t("接口协议")}</span>
           <select aria-label={t("接口协议")} data-action="provider.draft" data-value="protocol" value={kind} onChange={(e) => {
@@ -264,6 +243,27 @@ export function AddProvider({
             }} disabled={busy || testing} spellCheck={false} />
         </label>
         <p className="addp-privacy">{t("API Key 仅保存在运行内核的这台机器上。")}</p>
+        <div className="grow full name-cell">
+        <label>
+          <span>{t("来源名称")}</span>
+          <input
+            aria-label={t("来源名称")}
+            data-action="provider.draft" data-value="name"
+            value={name}
+            placeholder={t("连接后自动生成，可改")}
+            onChange={(e) => { setName(e.target.value); setNameErr(""); }}
+            disabled={busy || testing}
+            spellCheck={false}
+            aria-invalid={nameBad || nameErr !== "" || undefined}
+            aria-describedby="addp-name-rule"
+            onCompositionStart={() => setComposing(true)}
+            onCompositionEnd={() => setComposing(false)}
+          />
+        </label>
+        <p id="addp-name-rule" className="name-rule" data-bad={nameBad || nameErr !== "" || undefined} aria-live="polite">
+          {nameErr !== "" ? nameErr : t("名称只能用字母、数字、点、连字符和下划线，以字母或数字开头，最长 64 个字符")}
+        </p>
+        </div>
         {sibling && (
           <p className="acct-note">
             {t("这个地址上已经有「{name}」了。留空 key", { name: vendorLabel(hostOf(sibling.baseUrl)) })}
@@ -421,7 +421,7 @@ export function AddProvider({
       )}
       <div className="acts-bar">
         {err && errOnSave && (
-          <div className="find" data-lvl="warn">
+          <div className="find" data-lvl="err" role="alert">
             <span className="t">{t("无法保存")}</span>
             <span className="why">{err}</span>
           </div>

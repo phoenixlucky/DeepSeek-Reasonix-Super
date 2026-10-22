@@ -42,6 +42,12 @@ func renderDesktopSection(b *strings.Builder, c *Config) {
 	if c.Desktop.Welcomed {
 		b.WriteString("welcomed = true   # the opening sequence has played on this machine\n")
 	}
+	if c.Desktop.MaxWorkspaces > 0 {
+		fmt.Fprintf(b, "max_workspaces = %d   # desktop: most projects the sidebar remembers; 0 or absent = no limit\n", c.Desktop.MaxWorkspaces)
+	}
+	if c.Desktop.SessionRefTokens > 0 {
+		fmt.Fprintf(b, "session_ref_tokens = %d   # desktop: most tokens one referenced past conversation adds; absent = %d\n", c.Desktop.SessionRefTokens, DefaultSessionRefTokens)
+	}
 	if opener := c.DesktopExternalOpener(); opener != "" {
 		fmt.Fprintf(b, "external_opener = %q   # desktop Open control: installed application id\n", opener)
 	} else {
@@ -65,6 +71,9 @@ func renderDesktopSection(b *strings.Builder, c *Config) {
 	// Only written while held; an absent key follows the catalog. It has to
 	// outlive the install that set it, or the next launch updates the user
 	// back off the build they chose.
+	if mode := c.DesktopUpdateMode(); mode != UpdateModeManual {
+		fmt.Fprintf(b, "update_mode = %q   # desktop: manual (default) | notify tells you when a release is newer | download also leaves it downloaded and verified; never installs or restarts; user file only\n", mode)
+	}
 	if pinned := c.DesktopPinnedVersion(); pinned != "" {
 		fmt.Fprintf(b, "pinned_version = %q   # desktop: hold this machine on a release; empty follows the catalog\n", pinned)
 	}
@@ -100,12 +109,12 @@ func renderDesktopSection(b *strings.Builder, c *Config) {
 // written.
 func renderAppearanceSection(b *strings.Builder, a AppearanceConfig) {
 	paper := strings.TrimSpace(a.Wallpaper.File)
-	if a.Zoom == 0 && a.ReadSize == 0 && a.FontUI == "" && a.FontMono == "" && paper == "" {
+	if a.Zoom == 0 && a.ReadSize == 0 && a.TextSize == 0 && a.FontUI == "" && a.FontMono == "" && paper == "" {
 		return
 	}
 	// The child table implies the parent, so an empty [desktop.appearance] is
 	// noise in a file people read.
-	if a.Zoom != 0 || a.ReadSize != 0 || a.FontUI != "" || a.FontMono != "" {
+	if a.Zoom != 0 || a.ReadSize != 0 || a.TextSize != 0 || a.FontUI != "" || a.FontMono != "" {
 		b.WriteString("\n[desktop.appearance]\n")
 	}
 	if a.Zoom != 0 {
@@ -113,6 +122,9 @@ func renderAppearanceSection(b *strings.Builder, a AppearanceConfig) {
 	}
 	if a.ReadSize != 0 {
 		fmt.Fprintf(b, "read_size = %g   # transcript body size in px\n", a.ReadSize)
+	}
+	if a.TextSize != 0 {
+		fmt.Fprintf(b, "text_size = %g   # interface text scale, %g..%g\n", a.TextSize, TextSizeMin, TextSizeMax)
 	}
 	if a.FontUI != "" {
 		fmt.Fprintf(b, "font_ui = %q   # interface font family\n", a.FontUI)

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useModalFocus } from "./useModalFocus";
 import { createPortal } from "react-dom";
 import { t } from "../i18n";
 import { reason } from "../i18n/kernel";
@@ -42,10 +43,14 @@ export function DirRows({
         {/* The first answer may be a cold dial, and it may stop to ask for a
             host key on the way. A dimmed empty box says none of that. */}
         {!listing && busy ? <p className="pickempty">{t("正在建立连接…")}</p> : null}
-        {listing && !listing.folders.length && !busy ? (
+        {listing && !listing.folders.length && !listing.unlisted && !busy ? (
           <p className="pickempty">{t("该目录下没有子目录 —— 它本身即可作为工作区")}</p>
         ) : null}
       </div>
+      {/* Empty rows under a folder that has contents would read as "nothing here". */}
+      {listing?.unlisted ? (
+        <p className="picknote">{t("这台机器不让列出该目录里的内容，但目录存在，可以直接使用它。")}</p>
+      ) : null}
       {/* A cap that says nothing reads as "that folder is not there". */}
       {listing?.truncated ? (
         <p className="picknote">{t("该目录内容过多，仅列出前一部分。如需查找靠后的项，请直接输入路径。")}</p>
@@ -59,6 +64,8 @@ export function DirRows({
 // the selection — a separately highlighted row would be a second way to say
 // which one is meant, and the two disagree the moment a path is typed.
 export function RemoteDirs({ hub, host, start, onPick, onClose }: Props) {
+  const sheet = useRef<HTMLDivElement>(null);
+  useModalFocus(sheet);
   const [listing, setListing] = useState<RemoteListing | null>(null);
   // What the path field holds, kept apart from where we are: typing is not
   // navigating, or every keystroke would be a round trip to another machine.
@@ -109,6 +116,7 @@ export function RemoteDirs({ hub, host, start, onPick, onClose }: Props) {
   // the sheet rather than the window.
   return createPortal(
     <div
+      ref={sheet}
       className="pickveil"
       role="dialog"
       aria-modal="true"

@@ -46,7 +46,8 @@ func TestHostModeLaunchIsRecordedAsUnconfined(t *testing.T) {
 }
 
 func TestConfinedLaunchIsUnconfinedOnlyWithoutABackend(t *testing.T) {
-	if got := launchProbe(t, unconfinedProbeSpec(t, MCPProcessConfined)); got == sandbox.Available() {
-		t.Fatalf("LaunchedUnconfinedProcess = %v with sandbox available = %v", got, sandbox.Available())
+	spec := unconfinedProbeSpec(t, MCPProcessConfined)
+	if got, usable := launchProbe(t, spec), sandbox.AvailableFor(spec.Sandbox); got == usable {
+		t.Fatalf("LaunchedUnconfinedProcess = %v with sandbox available = %v", got, usable)
 	}
 }

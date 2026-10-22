@@ -1,5 +1,7 @@
 import { useCallback, useRef } from "react";
 import { host } from "../port/host";
+import { PATH_TYPE } from "./filedrag";
+import { listenAction } from "./listen";
 
 // What a drop hands over depends on which shell the page is in, and the two
 // halves are not interchangeable. A window reports where the file lives, which
@@ -98,7 +100,7 @@ let lit: Zone | null = null;
 
 function carriesFiles(e: DragEvent): boolean {
   const types = e.dataTransfer ? [...e.dataTransfer.types] : [];
-  return types.includes("Files") || types.includes("text/uri-list") || types.includes("text/plain");
+  return types.includes(PATH_TYPE) || types.includes("Files") || types.includes("text/uri-list") || types.includes("text/plain");
 }
 
 function zoneAt(target: EventTarget | null): Zone | null {
@@ -149,6 +151,7 @@ export function install() {
     },
     true,
   );
+  listenAction(window, "dragend", { action: "file-drop.finish", listener: () => light(null) }, true);
   addEventListener(
     "drop",
     (e: DragEvent) => {
@@ -158,6 +161,13 @@ export function install() {
       light(null);
       if (!zone) return;
       const dt = e.dataTransfer;
+      const path = dt?.types.includes(PATH_TYPE) ? dt.getData(PATH_TYPE) : "";
+      if (path) {
+        // Internal paths have no native follow-up event and must not enter the
+        // external-file deduplication window, which would swallow rapid drags.
+        zone.onDrop({ paths: [path], files: [] });
+        return;
+      }
       const files = [...(dt?.files ?? [])];
       const text = files.length > 0 ? undefined : dt?.getData("text/uri-list") || dt?.getData("text/plain") || undefined;
       router?.dropped(zone, files, text);

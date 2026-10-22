@@ -79,6 +79,7 @@ var (
 	ErrClosed              = errors.New("inbox is closed")
 	ErrEmpty               = errors.New("inbox item body is empty")
 	ErrPaused              = errors.New("inbox is paused")
+	ErrForeignRun          = errors.New("sessioninbox.foreign_run")
 	ErrIdempotencyConflict = errors.New("idempotency key was already used for different input")
 )
 
@@ -102,9 +103,12 @@ type InboxItemMeta struct {
 	Idempotency string       `json:"idempotencyKey,omitempty"`
 	Origin      PromptOrigin `json:"origin,omitempty"`
 	Refs        []RefSummary `json:"refs,omitempty"`
-	BlockReason string       `json:"blockReason,omitempty"`
-	BlockCode   BlockCode    `json:"blockCode,omitempty"`
-	RunID       string       `json:"runId,omitempty"`
+	// Images is true when the item froze a picture for direct input: such an
+	// item cannot be a mid-turn steer and waits for the turn to end.
+	Images      bool      `json:"images,omitempty"`
+	BlockReason string    `json:"blockReason,omitempty"`
+	BlockCode   BlockCode `json:"blockCode,omitempty"`
+	RunID       string    `json:"runId,omitempty"`
 }
 
 // RefSummary is a short reference summary stored in the manifest.
@@ -177,17 +181,45 @@ type Capacity struct {
 	MaxItemBytes int64 `json:"maxItemBytes"`
 }
 
+// PauseCode says why a queue is paused, so a client can say it and offer the
+// right way on. An empty code is a pause written before codes existed.
+type PauseCode string
+
+const (
+	PauseUser             PauseCode = "user"
+	PauseSessionChanged   PauseCode = "session_changed"
+	PauseReferenceBlocked PauseCode = "reference_blocked"
+	PauseWriteAuthority   PauseCode = "write_authority"
+	PauseTurnRecord       PauseCode = "turn_record"
+	PauseRecovered        PauseCode = "recovered"
+)
+
+// GuardsStaleInput reports a pause the host set on its own to keep queued input
+// from running unseen. Only these can be overridden by a standing consent; a
+// pause the user set, an unknown one or a failure that needs inspection cannot.
+func (c PauseCode) GuardsStaleInput() bool {
+	return c == PauseSessionChanged || c == PauseReferenceBlocked || c == PauseRecovered
+}
+
 // InboxSnapshot is the frontend-safe view: metadata only, never full bodies.
+// ErrUnrecovered reports that the queue bodies could not be read, so no manifest
+// may stand in for them. It is the identity a caller matches instead of the text.
+var ErrUnrecovered = errors.New("sessioninbox.queue_unreadable")
+
 type InboxSnapshot struct {
-	SchemaVersion int             `json:"schemaVersion"`
-	Revision      int64           `json:"revision"`
-	Paused        bool            `json:"paused"`
-	Recovered     bool            `json:"recovered"`
-	RecoveredN    int             `json:"recoveredCount,omitempty"`
-	Readonly      bool            `json:"readonly,omitempty"`
-	RunID         string          `json:"runId,omitempty"`
-	Items         []InboxItemMeta `json:"items"`
-	Capacity      Capacity        `json:"capacity"`
+	SchemaVersion int       `json:"schemaVersion"`
+	Revision      int64     `json:"revision"`
+	Paused        bool      `json:"paused"`
+	PauseCode     PauseCode `json:"pauseCode,omitempty"`
+	Recovered     bool      `json:"recovered"`
+	RecoveredN    int       `json:"recoveredCount,omitempty"`
+	// Unrecovered means the queue could not be read at all, so its contents are
+	// unknown. It is how a caller tells an empty queue from an unreadable one.
+	Unrecovered bool            `json:"unrecovered,omitempty"`
+	Readonly    bool            `json:"readonly,omitempty"`
+	RunID       string          `json:"runId,omitempty"`
+	Items       []InboxItemMeta `json:"items"`
+	Capacity    Capacity        `json:"capacity"`
 }
 
 // InboxReceipt is returned after a durable enqueue or admission attempt.
@@ -210,6 +242,10 @@ type EnqueueRequest struct {
 	SessionID   string
 }
 
+// NoItemLimit as Limits.MaxItems queues without counting; the byte limits still
+// bound the store.
+const NoItemLimit = -1
+
 // Limits configures capacity. Zero fields use defaults.
 type Limits struct {
 	MaxItems      int
@@ -218,7 +254,7 @@ type Limits struct {
 }
 
 func (l Limits) withDefaults() Limits {
-	if l.MaxItems <= 0 {
+	if l.MaxItems == 0 {
 		l.MaxItems = DefaultMaxItems
 	}
 	if l.MaxItemBytes <= 0 {

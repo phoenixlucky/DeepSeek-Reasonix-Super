@@ -55,7 +55,7 @@ func (runScript) Name() string { return Name }
 func (runScript) Description() string {
 	return "Run a short Starlark (Python-like) script that calls tools, so several dependent steps take one round trip and only what the script prints comes back. " +
 		"Use it to read or search many files and keep only what matters, run a command and act on its output, or repeat one tool over a list. " +
-		"In the script: call(name, **args) runs a tool and returns its output as a string, stopping the script if the call fails; " +
+		"In the script: call(name, **args) runs a tool and returns its output as a string, stopping the script if the call fails (read_file returns the file's exact text, ready to edit and pass to write_file); " +
 		"try_call(name, **args) returns a struct with ok, output and error instead of stopping; json.decode/json.encode convert JSON; print(...) writes the result. " +
 		"Every call is checked and approved exactly as if you made it directly. The script has no file, network or clock access of its own, " +
 		"at most 64 tool calls, and cannot call run_script. Prefer ordinary calls for one or two independent steps."

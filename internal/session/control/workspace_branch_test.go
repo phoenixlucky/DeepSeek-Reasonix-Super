@@ -99,7 +99,7 @@ func TestSwitchWorkspaceBranchRefusedWhileATurnRuns(t *testing.T) {
 	if !errors.Is(err, ErrTurnRunning) {
 		t.Fatalf("want ErrTurnRunning, got %v", err)
 	}
-	info, ok := gitstatus.Summary(context.Background(), c.workspaceRepo)
+	info, ok := gitstatus.Summary(context.Background(), c.WorkspaceRepo())
 	if !ok || info.Branch != "main" {
 		t.Fatalf("the refused switch must not move HEAD: %+v ok=%v", info, ok)
 	}
@@ -127,11 +127,11 @@ func branchSignal(t *testing.T, signal <-chan struct{}) {
 
 func assertWorkspaceBranch(t *testing.T, c *Controller, branch, contents string) {
 	t.Helper()
-	info, ok := gitstatus.Summary(t.Context(), c.workspaceRepo)
+	info, ok := gitstatus.Summary(t.Context(), c.WorkspaceRepo())
 	if !ok || info.Branch != branch {
 		t.Fatalf("branch = %+v, ok=%v, want %s", info, ok, branch)
 	}
-	got, err := os.ReadFile(filepath.Join(c.workspaceRepo.WorkTree, "a.txt"))
+	got, err := os.ReadFile(filepath.Join(c.WorkspaceRepo().WorkTree, "a.txt"))
 	if err != nil || string(got) != contents {
 		t.Fatalf("workspace bytes = %q, err=%v, want %q", got, err, contents)
 	}
@@ -281,7 +281,7 @@ func TestSwitchWorkspaceBranchExcludesConcurrentTurnAdmission(t *testing.T) {
 	var pending []pendingPeer
 	for _, action := range []string{"cancel direct", "close direct", "cancel queued", "close queued", "keep queued"} {
 		r := &inboxDispatchRunner{inputs: make(chan string, 8)}
-		pendingController := New(Options{Runner: r, WorkspaceRoot: dir, WorkspaceRepo: c.workspaceRepo,
+		pendingController := New(Options{Runner: r, WorkspaceRoot: dir, WorkspaceRepo: c.WorkspaceRepo(),
 			SessionDir: testenv.TempDir(t), SessionPath: filepath.Join(testenv.TempDir(t), "session.jsonl"), Sink: event.Discard})
 		t.Cleanup(func() { pendingController.Close(); pendingController.autosaveWG.Wait() })
 		pending = append(pending, pendingPeer{pendingController, r, action})
@@ -426,7 +426,7 @@ func TestSwitchWorkspaceBranchGuardSpansFinishingAndParkedTurns(t *testing.T) {
 	finishing, releaseFinishing := make(chan struct{}, 1), make(chan struct{})
 	releaseFirst := sync.OnceFunc(func() { close(releaseFinishing) })
 	t.Cleanup(releaseFirst)
-	peer := New(Options{WorkspaceRoot: dir, WorkspaceRepo: c.workspaceRepo, Sink: holdFinishingWindow(releaseFinishing, finishing, nil)})
+	peer := New(Options{WorkspaceRoot: dir, WorkspaceRepo: c.WorkspaceRepo(), Sink: holdFinishingWindow(releaseFinishing, finishing, nil)})
 	t.Cleanup(peer.Close)
 	if got := peer.runGuarded(func(context.Context) error { return nil }); got != turnStarted {
 		t.Fatal(got)
@@ -459,7 +459,7 @@ func TestSwitchWorkspaceBranchGuardSpansFinishingAndParkedTurns(t *testing.T) {
 
 func assertWorkspaceGuardReleased(t *testing.T, c *Controller) {
 	t.Helper()
-	key, err := workspacelease.CanonicalWorkspace(c.workspaceRepo.WorkTree)
+	key, err := workspacelease.CanonicalWorkspace(c.WorkspaceRepo().WorkTree)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -554,7 +554,7 @@ func TestSwitchWorkspaceBranchDoesNotBlockOtherWorkspaces(t *testing.T) {
 func TestCancelWithInboxItemsRestartsSurvivorAfterCheckoutWake(t *testing.T) {
 	c, dir := branchFixture(t)
 	runner := &inboxDispatchRunner{inputs: make(chan string, 8)}
-	peer := New(Options{Runner: runner, WorkspaceRoot: dir, WorkspaceRepo: c.workspaceRepo,
+	peer := New(Options{Runner: runner, WorkspaceRoot: dir, WorkspaceRepo: c.WorkspaceRepo(),
 		SessionDir: testenv.TempDir(t), SessionPath: filepath.Join(testenv.TempDir(t), "session.jsonl"), Sink: event.Discard})
 	t.Cleanup(func() { peer.Close(); peer.autosaveWG.Wait() })
 	releaseCheckout, err := c.excludeWorkspaceActivity()

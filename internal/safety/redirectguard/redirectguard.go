@@ -94,6 +94,17 @@ func StayOnOrigin() func(*http.Request, []*http.Request) error {
 	}
 }
 
+// SameOrigin reports whether two addresses share scheme, host and port. An
+// address that does not parse as absolute is no origin and matches nothing.
+func SameOrigin(a, b string) bool {
+	left, errL := url.Parse(strings.TrimSpace(a))
+	right, errR := url.Parse(strings.TrimSpace(b))
+	if errL != nil || errR != nil || left.Host == "" || right.Host == "" {
+		return false
+	}
+	return strings.EqualFold(left.Scheme, right.Scheme) && sameOrigin(left, right)
+}
+
 func sameOrigin(origin, target *url.URL) bool {
 	if !strings.EqualFold(strings.TrimSuffix(origin.Hostname(), "."), strings.TrimSuffix(target.Hostname(), ".")) {
 		return false

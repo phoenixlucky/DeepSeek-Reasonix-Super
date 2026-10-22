@@ -2,6 +2,8 @@
 // the app learns which shell it is running in. Electron exposes a preload
 // bridge; a browser tab has none, and answers for itself.
 
+import type { FeedbackProcessMemory } from "./feedback";
+
 export type Shell = "electron" | "browser";
 
 export interface HostInfo {
@@ -31,9 +33,18 @@ export interface HostPort {
   toggleMaximiseWindow(): void;
   isWindowMaximised(): Promise<boolean>;
   closeWindow(): void;
+  /** Whether this shell can hand back a picture of its own window. */
+  capturesWindow(): boolean;
+  /** A PNG of this window as drawn now; null when the shell cannot or the
+   *  window has nothing to show. It names no window: only the asker's own. */
+  captureWindow(): Promise<Uint8Array | null>;
   /** How the shell draws this launch; null where it has no say, as in a tab. */
   graphics(): Promise<GraphicsInfo | null>;
+  /** The shell's own processes as a type and two sizes each, for the memory a
+   *  report may carry; empty where there is no shell to ask, as in a tab. */
+  processMemory(): Promise<FeedbackProcessMemory[]>;
   openExternal(url: string): void | Promise<void>;
+  setUnreadBadge(unread: boolean): Promise<void>;
   /** Where dropped files live. Empty where the shell cannot say — a browser
    *  tab never learns a path. */
   pathsForFiles(files: File[]): string[];
@@ -52,6 +63,8 @@ export interface HostPort {
    *  root. The shell asks the kernel where that is and selects only the answer;
    *  null once shown, otherwise why it was not. */
   revealPath(base: string, path: string): Promise<Refusal | null>;
+  opensFiles(): boolean;
+  openFile(base: string, path: string): Promise<Refusal | null>;
   /** Show a project the sidebar lists, which needs no pane. The hub answers
    *  where it is and refuses any folder it does not list. */
   revealWorkspace(root: string): Promise<Refusal | null>;
@@ -60,6 +73,11 @@ export interface HostPort {
   /** Open that folder in the platform's file manager; null once shown,
    *  otherwise why it was not. */
   revealLogs(): Promise<Refusal | null>;
+  /** Whether this shell can enter a folder in the platform's file manager. */
+  opensFolders(): boolean;
+  /** Enter a project the sidebar lists: the same kernel answer revealWorkspace
+   *  asks for, opened rather than selected in its parent folder. */
+  openWorkspace(root: string): Promise<Refusal | null>;
   /** Whether this shell draws the agent's browser pages inside the window. */
   drawsBrowserViews(): boolean;
   /** Draw one of the agent's pages over rect, in on-screen coordinates, and
@@ -147,15 +165,20 @@ interface ElectronBridge {
   toggleMaximiseWindow(): Promise<void>;
   isWindowMaximised(): Promise<boolean>;
   closeWindow(): Promise<void>;
+  captureWindow?(): Promise<Uint8Array | null>;
   graphics?(): Promise<GraphicsInfo | null>;
+  processMemory?(): Promise<unknown>;
   openExternal(url: string): Promise<void>;
+  setUnreadBadge?(unread: boolean): Promise<void>;
   pathForFile(file: File): string;
   saveText(name: string, content: string): Promise<string>;
   saveBytes(name: string, bytes: Uint8Array): Promise<string>;
   pickFolder(startIn: string): Promise<string>;
   revealPath?(base: string, path: string): Promise<Refusal | null>;
+  openFile?(base: string, path: string): Promise<Refusal | null>;
   revealWorkspace?(root: string): Promise<Refusal | null>;
   revealLogs?(): Promise<Refusal | null>;
+  openWorkspace?(root: string): Promise<Refusal | null>;
   showBrowserView?(target: string, rect: ViewRect): Promise<void>;
   hideBrowserView?(): Promise<void>;
   freezeBrowserView?(): Promise<string>;
@@ -200,11 +223,23 @@ class ElectronHost implements HostPort {
   closeWindow() {
     void this.api.closeWindow();
   }
+  capturesWindow() {
+    return typeof this.api.captureWindow === "function";
+  }
+  captureWindow() {
+    return this.api.captureWindow?.().then((b) => (b?.byteLength ? new Uint8Array(b) : null)).catch(() => null) ?? Promise.resolve(null);
+  }
   graphics() {
     return this.api.graphics?.().catch(() => null) ?? Promise.resolve(null);
   }
+  processMemory() {
+    return this.api.processMemory?.().then((rows: unknown) => (Array.isArray(rows) ? (rows as FeedbackProcessMemory[]) : [])).catch(() => []) ?? Promise.resolve([]);
+  }
   openExternal(url: string) {
     return this.api.openExternal(url);
+  }
+  setUnreadBadge(unread: boolean) {
+    return this.api.setUnreadBadge?.(unread) ?? Promise.resolve();
   }
   pathsForFiles(files: File[]) {
     // Resolved one at a time because that is the shape the platform offers;
@@ -226,6 +261,10 @@ class ElectronHost implements HostPort {
   revealPath(base: string, path: string) {
     return this.api.revealPath?.(base, path) ?? Promise.resolve({ error: "this shell cannot show files" });
   }
+  opensFiles() { return typeof this.api.openFile === "function"; }
+  openFile(base: string, path: string) {
+    return this.api.openFile?.(base, path) ?? Promise.resolve({ error: "this shell cannot open files" });
+  }
   revealWorkspace(root: string) {
     return this.api.revealWorkspace?.(root) ?? Promise.resolve({ error: "this shell cannot show files" });
   }
@@ -234,6 +273,12 @@ class ElectronHost implements HostPort {
   }
   revealLogs() {
     return this.api.revealLogs?.() ?? Promise.resolve({ error: "this shell cannot show files" });
+  }
+  opensFolders() {
+    return typeof this.api.openWorkspace === "function";
+  }
+  openWorkspace(root: string) {
+    return this.api.openWorkspace?.(root) ?? Promise.resolve({ error: "this shell cannot open folders" });
   }
   // A shell older than the verbs has no views to draw, and says so by lacking them.
   drawsBrowserViews() {
@@ -283,11 +328,23 @@ class BrowserHost implements HostPort {
     return Promise.resolve(false);
   }
   closeWindow() {}
+  capturesWindow() {
+    return false;
+  }
+  captureWindow() {
+    return Promise.resolve(null);
+  }
   graphics() {
     return Promise.resolve(null);
   }
+  processMemory() {
+    return Promise.resolve([]);
+  }
   openExternal(url: string) {
     window.open(url, "_blank", "noopener,noreferrer");
+  }
+  setUnreadBadge() {
+    return Promise.resolve();
   }
   pathsForFiles() {
     return [];
@@ -307,6 +364,8 @@ class BrowserHost implements HostPort {
   revealPath() {
     return Promise.resolve({ error: "a browser tab cannot show files" });
   }
+  opensFiles() { return false; }
+  openFile() { return Promise.resolve({ error: "a browser tab cannot open files" }); }
   revealWorkspace() {
     return Promise.resolve({ error: "a browser tab cannot show files" });
   }
@@ -315,6 +374,12 @@ class BrowserHost implements HostPort {
   }
   revealLogs() {
     return Promise.resolve({ error: "a browser tab cannot show files" });
+  }
+  opensFolders() {
+    return false;
+  }
+  openWorkspace() {
+    return Promise.resolve({ error: "a browser tab cannot open folders" });
   }
   drawsBrowserViews() {
     return false;

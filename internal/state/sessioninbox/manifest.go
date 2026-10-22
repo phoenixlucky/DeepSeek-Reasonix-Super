@@ -28,6 +28,7 @@ type manifest struct {
 	Revision      int64             `json:"revision"`
 	RunID         string            `json:"runId,omitempty"`
 	Paused        bool              `json:"paused"`
+	PauseCode     PauseCode         `json:"pauseCode,omitempty"`
 	Recovered     bool              `json:"recovered"`
 	RecoveredN    int               `json:"recoveredCount,omitempty"`
 	Items         []InboxItemMeta   `json:"items"`

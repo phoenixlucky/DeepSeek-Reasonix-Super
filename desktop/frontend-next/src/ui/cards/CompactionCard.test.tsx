@@ -88,3 +88,26 @@ describe("the live progress line", () => {
     expect(live({ trigger: "manual", messages: 21, summary: "## Summary\nfirst\nsecond" })).toContain("comp-live");
   });
 });
+
+describe("what a fold leaves behind", () => {
+  const folded = { messages: 354, sourceTokens: 607_000, projectionTokens: 316_000 };
+  const remains = { total: 316_000, at: 800_000, active: 0, parts: [{ name: "reply", tokens: 150_000 }, { name: "tool_output", tokens: 98_000 }, { name: "user", tokens: 40_000 }, { name: "system", tokens: 0 }], largest: [{ role: "tool", tool: "browser_read", tokens: 60_000 }] };
+
+  it("says what the rest is made of when the fold left a large share", () => {
+    const html = renderToStaticMarkup(<CompactionCard c={{ ...folded, remains }} done />);
+    expect(html).toContain("折叠后仍有");
+    expect(html).toContain("模型回复");
+    expect(html).toContain("工具输出");
+    expect(html).not.toContain("系统提示");
+    expect(html).toContain("browser_read");
+  });
+
+  it("says nothing extra when the host sent no composition", () => {
+    expect(renderToStaticMarkup(<CompactionCard c={folded} done />)).not.toContain("折叠后仍有");
+  });
+
+  it("names the running turn as untouchable", () => {
+    const html = renderToStaticMarkup(<CompactionCard c={{ ...folded, remains: { ...remains, active: 12_000 } }} done />);
+    expect(html).toContain("折叠动不了它");
+  });
+});

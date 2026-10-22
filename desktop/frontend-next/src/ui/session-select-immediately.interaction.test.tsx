@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "./testkit";
@@ -8,6 +8,10 @@ import { MockHub } from "../port/mock_hub";
 import type { RuntimeView, TreeWorkspace } from "../port/hub";
 import { Workspaces } from "./Workspaces";
 
+beforeAll(() => {
+  HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  HTMLDialogElement.prototype.close = function () { this.open = false; };
+});
 afterEach(cleanup);
 
 interface Gate {
@@ -83,7 +87,7 @@ describe("a session row selects on the click, not on the kernel's answer", () =>
     const { hub, gates } = window();
     render(<App hub={hub} />);
     const first = await row(/上一次的会话/);
-    await userEvent.click(await row(/my-website/));
+    expect((await row(/my-website/)).getAttribute("aria-expanded")).toBe("true");
     const second = await row(/站点改版/);
 
     await userEvent.click(first);
@@ -106,7 +110,7 @@ describe("a session row selects on the click, not on the kernel's answer", () =>
     const { hub, gates } = window();
     render(<App hub={hub} />);
     const first = await row(/上一次的会话/);
-    await userEvent.click(await row(/my-website/));
+    expect((await row(/my-website/)).getAttribute("aria-expanded")).toBe("true");
     const second = await row(/站点改版/);
 
     await userEvent.click(first);
@@ -188,7 +192,7 @@ describe("a session row selects on the click, not on the kernel's answer", () =>
     const before = reads;
     fireEvent.contextMenu(current);
     await userEvent.click(await screen.findByRole("menuitem", { name: /重命名/ }));
-    const field = await screen.findByLabelText("重命名该会话");
+    const field = await screen.findByLabelText("聊天标题");
     await userEvent.type(field, "x{Enter}");
     await waitFor(() => expect(reads).toBeGreaterThan(before));
 

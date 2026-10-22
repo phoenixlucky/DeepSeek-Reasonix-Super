@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { t } from "../i18n";
 import type { ContextBreakdown, McpEntry } from "../port/port";
 import { CompactNow, type CompactAction } from "./CompactNow";
@@ -12,6 +13,8 @@ export function ContextSummaryCard({ context, mcp, percent, onManage, compact: a
   compact?: CompactAction;
   className?: string;
 }) {
+  // One class open at a time: two lists in a card this narrow push the rest off the screen.
+  const [listed, setListed] = useState<string | null>(null);
   const active = mcp.filter((entry) => entry.enabled);
   const ready = active.filter((entry) => entry.state === "ready");
   const tools = ready.reduce((sum, entry) => sum + (entry.tools || 0), 0);
@@ -22,6 +25,8 @@ export function ContextSummaryCard({ context, mcp, percent, onManage, compact: a
     [t("模型回复"), context.reply, "reply"],
     [t("工具输出"), context.output, "output"],
   ] as const : [];
+  const holdersOf = (key: string) => (context?.largest ?? []).filter((h) => h.class === key);
+  const opened = parts.find(([, , key]) => key === listed);
 
   return (
     <div className={["chrome-context-card", className].filter(Boolean).join(" ")} role="dialog" aria-label={t("上下文详情")}>
@@ -30,7 +35,26 @@ export function ContextSummaryCard({ context, mcp, percent, onManage, compact: a
         <>
           <div className="chrome-context-total"><span>{t("已使用")} <b>{compact(context.used)}</b></span><span>{t("模型容量")} <b>{compact(context.window)}</b></span></div>
           <div className="chrome-context-bar">{parts.map(([label, value, key]) => <i key={key} data-part={key} title={`${label} ${compact(value)}`} style={{ width: `${context.used ? Math.max(1, (value / context.used) * 100) : 0}%` }} />)}</div>
-          <div className="chrome-context-parts">{parts.map(([label, value, key]) => <div key={key}><i data-part={key} /><span>{label}</span><b>{compact(value)}</b></div>)}</div>
+          <div className="chrome-context-parts">{parts.map(([label, value, key]) => (
+            <div key={key}>
+              <i data-part={key} /><span>{label}</span>
+              {holdersOf(key).length > 0
+                ? <button type="button" className="chrome-context-more" data-action="context.largest" data-value={key} aria-expanded={listed === key} aria-label={t("展开{name}中最大的几项", { name: label })} onClick={() => setListed(listed === key ? null : key)}>{compact(value)}</button>
+                : <b>{compact(value)}</b>}
+            </div>
+          ))}</div>
+          {opened && (
+            <ul className="chrome-context-items" aria-labelledby="chrome-context-items-title">
+              <li id="chrome-context-items-title" className="head">{t("{name}中最大的几项", { name: opened[0] })}</li>
+              {holdersOf(opened[2]).map((h, i) => (
+                <li key={i}>
+                  <span data-tool={h.tool ? "" : undefined}>{h.tool || opened[0]}</span>
+                  {h.active && <em>{t("进行中的回合")}</em>}
+                  <b>{compact(h.tokens)}</b>
+                </li>
+              ))}
+            </ul>
+          )}
         </>
       ) : <p>{t("暂时没有上下文数据")}</p>}
       {action && <CompactNow action={action} />}

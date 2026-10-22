@@ -36,7 +36,7 @@ function transcript(items: Item[]) {
   return (
     <Transcript
       items={items} entering={[]} onEntered={() => {}} revision={1} waiting={{}} scroll={{ current: null }}
-      hidden={false} onPinned={() => {}} jump={0} focus={null} onApprove={noop} onFullAccess={noop} onPlan={noop}
+      hidden={false} focus={null} onApprove={noop} onFullAccess={noop} onPlan={noop}
       onAnswer={noop} onForget={noop} onExtInvoke={() => {}} onExtSubmit={noop} checkpoints={new Map()}
       onPrepareRewind={noop} onCommitRewind={noop} onPrepareFileRevert={noop}
       onCommitFileRevert={noop} needsProject={false} onOpenProject={() => {}} onKeepHere={() => {}}

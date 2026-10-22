@@ -68,6 +68,10 @@ type Host struct {
 
 	link relayLink
 
+	// saved reads the device identity this Studio registered with. It is a field
+	// so a test can supply one; New sets it to the credential store.
+	saved func() (*identity, error)
+
 	mu    sync.RWMutex
 	state hostState
 }
@@ -112,6 +116,7 @@ type controllerSession struct {
 	ordinal int
 	nonce   string
 	lastSeq int64
+	uploads uploads
 }
 
 func New(client *account.Client, dialer *websocket.Dialer, relayURL, version string, tasks ...TaskService) *Host {
@@ -131,7 +136,7 @@ func New(client *account.Client, dialer *websocket.Dialer, relayURL, version str
 	}
 	host := &Host{
 		client: client, dialer: dialer, relayURL: strings.TrimRight(relayURL, "/"),
-		version: version, name: name, token: account.Token, disconnect: make(chan controllerDisconnect),
+		version: version, name: name, token: account.Token, disconnect: make(chan controllerDisconnect), saved: loadIdentity,
 	}
 	if len(tasks) > 0 {
 		host.tasks = tasks[0]
@@ -322,6 +327,9 @@ type controllerCommand struct {
 	Method  string `json:"method,omitempty"`
 	Path    string `json:"path,omitempty"`
 	Body    string `json:"body,omitempty"`
+	// Index and Total number the parts of an upload; see upload.go.
+	Index   int    `json:"index,omitempty"`
+	Total   int    `json:"total,omitempty"`
 	Session string `json:"session,omitempty"`
 	Seq     int64  `json:"seq,omitempty"`
 }
@@ -481,7 +489,7 @@ func (h *Host) handle(
 		ready, err := created.seal(map[string]any{
 			"v": protocolVersion, "type": "ready", "deviceId": saved.DeviceID,
 			"name": h.name, "platform": platformName(runtime.GOOS), "version": h.version,
-			"features": []string{"replay"}, "session": nonce, "instance": h.instance(),
+			"features": []string{"replay", "upload"}, "session": nonce, "instance": h.instance(),
 		})
 		if err != nil {
 			return err
@@ -498,6 +506,7 @@ func (h *Host) handle(
 	if command.Version != protocolVersion || command.ID == "" {
 		return errors.New("remote cloud: unsupported controller command")
 	}
+	session.uploads.expire(time.Now())
 	if err := session.admit(command); err != nil {
 		return err
 	}
@@ -509,6 +518,8 @@ func (h *Host) handle(
 		response = h.taskCommand(ctx, "cloud:"+message.ConnectionID, session.ordinal, message.Scopes, command)
 	case "desktop.request":
 		return h.desktopCommand(ctx, conn, session.cipher, "cloud:"+message.ConnectionID, session.ordinal, message.ConnectionID, message.Scopes, command)
+	case "desktop.request.part":
+		return h.uploadPart(ctx, conn, session, "cloud:"+message.ConnectionID, message.ConnectionID, message.Scopes, command)
 	default:
 		return errors.New("remote cloud: unsupported controller command")
 	}
@@ -536,24 +547,65 @@ func (h *Host) desktopCommand(
 	if err != nil {
 		return h.writeDesktopError(conn, session, connectionID, command.ID, "desktop request body is invalid")
 	}
-	replay := replayable(command.Method)
-	key := replayKey(command.ID, command.Method, command.Path, body)
+	return h.runDesktop(ctx, conn, session, deviceID, ordinal, connectionID, command.ID, DesktopRequest{Method: command.Method, Path: command.Path, Body: body})
+}
+
+// uploadPart takes one part of a request too large for one message and runs the
+// whole once the last arrives. The scope is checked on every part, so a link
+// that lost it mid-upload stops there.
+func (h *Host) uploadPart(
+	ctx context.Context,
+	conn *websocket.Conn,
+	session *controllerSession,
+	deviceID string,
+	connectionID string,
+	scopes []account.RemoteCapability,
+	command controllerCommand,
+) error {
+	if h.desktop == nil || !hasScope(scopes, account.RemoteDesktop) {
+		session.uploads.drop(command.ID)
+		return h.writeDesktopError(conn, session.cipher, connectionID, command.ID, "desktop access is unavailable")
+	}
+	request, done, err := session.uploads.add(command, time.Now())
+	if err != nil {
+		return h.writeDesktopError(conn, session.cipher, connectionID, command.ID, err.Error())
+	}
+	if !done {
+		return nil
+	}
+	return h.runDesktop(ctx, conn, session.cipher, deviceID, session.ordinal, connectionID, command.ID, request)
+}
+
+// runDesktop is the one door a desktop request, whole or reassembled, goes
+// through: the answer to a state-changing request is kept, so a resend of the
+// same request returns it instead of running the request again.
+func (h *Host) runDesktop(
+	ctx context.Context,
+	conn *websocket.Conn,
+	session *sessionCipher,
+	deviceID string,
+	ordinal int,
+	connectionID string,
+	id string,
+	request DesktopRequest,
+) error {
+	replay := replayable(request.Method)
+	key := replayKey(id, request.Method, request.Path, request.Body)
 	if replay {
 		if payloads, ok := h.link.replay.get(key, time.Now()); ok {
 			return writeSealed(conn, session, connectionID, payloads)
 		}
 	}
-	response, err := h.desktop.CloudDesktop(ctx, DesktopRequest{
-		Method: command.Method, Path: command.Path, Body: body, Ordinal: ordinal,
-	}, deviceID)
+	request.Ordinal = ordinal
+	response, err := h.desktop.CloudDesktop(ctx, request, deviceID)
 	if err != nil {
-		payloads := []map[string]any{{"v": protocolVersion, "type": "error", "id": command.ID, "error": err.Error()}}
+		payloads := []map[string]any{{"v": protocolVersion, "type": "error", "id": id, "error": err.Error()}}
 		if replay {
 			h.link.replay.put(key, payloads, len(err.Error()), time.Now())
 		}
 		return writeSealed(conn, session, connectionID, payloads)
 	}
-	payloads := desktopPayloads(command.ID, response)
+	payloads := desktopPayloads(id, response)
 	if replay {
 		h.link.replay.put(key, payloads, len(response.Body), time.Now())
 	}

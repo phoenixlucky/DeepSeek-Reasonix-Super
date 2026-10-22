@@ -130,3 +130,26 @@ func TestRetryOfUnappliedSteerQueuesItAndKeepsThePause(t *testing.T) {
 		t.Fatal("a retry must not release the pause that also holds the other entries")
 	}
 }
+
+// After a stop the steer it left unapplied waits, held. Telling the agent again
+// in the same words, which is what the notice says to do, is that steer's retry
+// and not a second copy: every copy that waits runs as a turn of its own once
+// the queue is released, so the same instruction would be answered again each time.
+func TestSendingTheSameWordsAgainAfterAStopDoesNotStackCopies(t *testing.T) {
+	c, _, _, _, done := steeringTurn(t)
+	acceptedSteer(t, c, "stop now and write the handoff")
+	c.Cancel()
+	waitForDoneWithin(t, done, 30*time.Second)
+	if snap := c.InboxSnapshot(); !snap.Paused || len(snap.Items) != 1 || snap.Items[0].State != sessioninbox.StateUncertain {
+		t.Fatalf("after the stop: %+v, want one uncertain steer and a paused queue", snap)
+	}
+	for range 3 {
+		if _, err := c.TryEnqueueAndSteer(InboxRequest{Submit: "stop now and write the handoff", Source: "test"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snap := c.InboxSnapshot()
+	if len(snap.Items) != 1 || snap.Items[0].State != sessioninbox.StateQueued || !snap.Paused {
+		t.Fatalf("after three resends: %+v, want the one steer retried and the pause kept", snap)
+	}
+}

@@ -93,6 +93,55 @@ test("only a confirmed upload produces the notes pointer", () => {
   assert.match(run.stdout, /ARGS=20 https:\/\/dl\.reasonix\.io\/studio\/notes\/2\.32\.0\.md$/m);
 });
 
+test("stable publications deploy from website without widening Pages or signing permissions", () => {
+  const job = workflow.match(/^  website:\n[\s\S]*?(?=^  [a-z][a-z-]*:|$(?![\s\S]))/m)?.[0] ?? "";
+  assert.match(job, /needs: \[resolve, publish\]/);
+  assert.match(job, /github\.repository == 'esengine\/DeepSeek-Reasonix'/);
+  assert.match(job, /needs\.resolve\.outputs\.candidate != 'true'/);
+  assert.match(job, /actions: write/);
+  assert.doesNotMatch(job, /id-token:|pages:|secrets:/);
+  assert.match(job, /ref: \$\{\{ github\.workflow_sha \}\}/);
+  assert.match(job, /VERSION: \$\{\{ needs\.resolve\.outputs\.version \}\}/);
+  assert.match(job, /scripts\/publish-studio-changelog\.sh/);
+  const registration = readFileSync(path.join(dir, "..", ".github", "workflows", "pages.yml"), "utf8");
+  assert.match(registration, /workflow_dispatch:/);
+  for (const input of ["release_version", "release_request", "studio_version"]) assert.ok(registration.includes(`${input}:`));
+  assert.match(registration, /permissions: \{\}/);
+  assert.match(registration, /exit 1/);
+});
+
+test("website publication waits for its own deployment and propagates dispatch, API and deployment failures", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "website-publish-"));
+  const calls = path.join(root, "calls");
+  writeFileSync(path.join(root, "gh"), `#!/bin/sh
+echo "$*" >> "$CALLS"
+case "$1" in
+  workflow) exit "$DISPATCH_STATUS" ;;
+  api) [ "$API_STATUS" = 0 ] || exit "$API_STATUS"; printf '%s' "$RUN_ID" ;;
+  run) exit "$WATCH_STATUS" ;;
+  *) exit 99 ;;
+esac
+`);
+  chmodSync(path.join(root, "gh"), 0o755);
+  writeFileSync(path.join(root, "sleep"), "#!/bin/sh\nexit 0\n");
+  chmodSync(path.join(root, "sleep"), 0o755);
+  const run = (extra = {}) => spawnSync("bash", [path.join(dir, "publish-studio-changelog.sh")], {
+    encoding: "utf8", env: { ...process.env, PATH: `${root}:${process.env.PATH}`, CALLS: calls,
+      GITHUB_REPOSITORY: "example/reasonix", GITHUB_RUN_ID: "456", GITHUB_RUN_ATTEMPT: "2", VERSION: "v2.45.0",
+      DISPATCH_STATUS: "0", API_STATUS: "0", WATCH_STATUS: "0", RUN_ID: "123", ...extra },
+  });
+  assert.equal(run().status, 0);
+  const log = readFileSync(calls, "utf8");
+  assert.match(log, /workflow run pages\.yml --repo example\/reasonix --ref website/);
+  assert.match(log, /studio_version=2\.45\.0/);
+  assert.match(log, /release_request=studio-456-2/);
+  assert.match(log, /endswith\(" \[studio-456-2\]"\)/);
+  assert.match(log, /run watch 123 .*--exit-status/);
+  for (const extra of [{ DISPATCH_STATUS: "1" }, { API_STATUS: "1" }, { WATCH_STATUS: "1" }, { RUN_ID: "" }, { VERSION: "v2.46.0-preview.1" }]) {
+    assert.notEqual(run(extra).status, 0, JSON.stringify(extra));
+  }
+});
+
 function sandbox({ catalog, bucket = {}, busy = "0", tags }) {
   const root = mkdtempSync(path.join(tmpdir(), "bf-"));
   const store = path.join(root, "bucket");

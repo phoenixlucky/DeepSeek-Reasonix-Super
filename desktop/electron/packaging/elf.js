@@ -6,7 +6,7 @@ const fs = require("node:fs");
 // an older system, so the Linux package refuses one.
 const PT_INTERP = 3;
 
-function elfInterpreter(bytes) {
+function elfHeader(bytes) {
   if (bytes.length < 52 || bytes.readUInt32BE(0) !== 0x7f454c46) throw new Error("not an ELF file");
   const wide = bytes[4] === 2;
   const little = bytes[5] === 1;
@@ -15,6 +15,27 @@ function elfInterpreter(bytes) {
   if (wide && bytes.length < 64) throw new Error("truncated ELF header");
   const u16 = (at) => (little ? bytes.readUInt16LE(at) : bytes.readUInt16BE(at));
   const u32 = (at) => (little ? bytes.readUInt32LE(at) : bytes.readUInt32BE(at));
+  return { wide, little, u16, u32 };
+}
+
+function elfArchitecture(bytes) {
+  const { wide, little, u16 } = elfHeader(bytes);
+  if (!wide || !little) throw new Error("Linux packages require little-endian ELF64");
+  const arch = { 62: "amd64", 183: "arm64" }[u16(18)];
+  if (!arch) throw new Error(`unsupported ELF machine ${u16(18)}`);
+  return arch;
+}
+
+function assertArchitecture(files, arch) {
+  if (!["amd64", "arm64"].includes(arch)) throw new Error(`unsupported release architecture ${arch}`);
+  for (const file of files) {
+    const actual = elfArchitecture(fs.readFileSync(file));
+    if (actual !== arch) throw new Error(`${file} is ${actual}, expected ${arch}`);
+  }
+}
+
+function elfInterpreter(bytes) {
+  const { wide, little, u16, u32 } = elfHeader(bytes);
   const word = (at) => (wide ? Number(little ? bytes.readBigUInt64LE(at) : bytes.readBigUInt64BE(at)) : u32(at));
   const phoff = word(wide ? 32 : 28);
   const phentsize = u16(wide ? 54 : 42);
@@ -40,7 +61,7 @@ function dynamicallyLinked(files) {
   return found;
 }
 
-module.exports = { elfInterpreter, dynamicallyLinked };
+module.exports = { elfInterpreter, dynamicallyLinked, elfArchitecture, assertArchitecture };
 
 if (require.main === module) {
   const files = process.argv.slice(2);

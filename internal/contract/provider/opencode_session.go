@@ -13,8 +13,13 @@ const openCodeSessionHeader = "x-opencode-session"
 // OpenCode Go for as long as it lives.
 func NewOpenCodeSessionID() string { return "reasonix-" + rand.Text() }
 
-// IsOpenCodeGoEndpoint reports whether rawURL is on OpenCode Go's gateway
-// (opencode.ai/zen/go/...). Zen and relays at other hosts do not match.
+// openCodeGoPrefixes are the path prefixes OpenCode Go serves its gateway under:
+// the original one and the one its documentation now names. A prefix is added
+// here once the service is seen answering on it.
+var openCodeGoPrefixes = []string{"/zen/go", "/inference/go"}
+
+// IsOpenCodeGoEndpoint reports whether rawURL is on OpenCode Go's gateway. Zen
+// and relays at other hosts do not match.
 func IsOpenCodeGoEndpoint(rawURL string) bool {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	return err == nil && isOpenCodeGoURL(u)
@@ -25,7 +30,12 @@ func isOpenCodeGoURL(u *url.URL) bool {
 		return false
 	}
 	path := strings.ToLower(u.Path)
-	return path == "/zen/go" || strings.HasPrefix(path, "/zen/go/")
+	for _, prefix := range openCodeGoPrefixes {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // ApplyOpenCodeGoIdentity sets the client identity OpenCode Go requires of a

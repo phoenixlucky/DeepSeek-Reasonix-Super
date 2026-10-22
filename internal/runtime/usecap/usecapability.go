@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"reasonix/internal/contract/agentcomposition"
 	"reasonix/internal/contract/config"
 	"reasonix/internal/contract/event"
 	"reasonix/internal/contract/tool"
@@ -32,10 +33,13 @@ type MCPCapabilityRuntime struct {
 	// startup and tools/call. Calls may run concurrently under RLock; a disable,
 	// uninstall, or hot update waits for in-flight dispatch and invalidates every
 	// target that has not begun its final runtime-bound execution check.
-	dispatchMu sync.RWMutex
-	mu         sync.RWMutex
-	servers    map[string]mcpRuntimeServer
-	gates      mcpServerGates
+	dispatchMu        sync.RWMutex
+	compositionFrozen bool
+	composition       *agentcomposition.Definition
+	source            *inventorySource
+	mu                sync.RWMutex
+	servers           map[string]mcpRuntimeServer
+	gates             mcpServerGates
 	// shared connection observation across all frontends on this session.
 	state *mcpProxySharedState
 }
@@ -89,6 +93,9 @@ func (r *MCPCapabilityRuntime) ConfigureServers(entries []config.PluginEntry, sp
 	next := make(map[string]mcpRuntimeServer, len(specs))
 	for _, raw := range specs {
 		spec := cloneMCPSpec(raw)
+		if !r.compositionAllows(spec) {
+			continue
+		}
 		name := strings.TrimSpace(spec.Name)
 		if name == "" {
 			continue
@@ -111,46 +118,23 @@ func (r *MCPCapabilityRuntime) ConfigureServers(entries []config.PluginEntry, sp
 		}
 	}
 	r.mu.Lock()
+	previous := r.servers
 	r.servers = next
 	r.mu.Unlock()
+	for name, old := range previous {
+		current, exists := next[name]
+		if !exists || !current.enabled || old.spec.Authorized != current.spec.Authorized || !plugin.MCPRuntimeSpecMatches(old.spec, current.spec) {
+			r.state.clearServer(name)
+			if r.source != nil && r.host != nil {
+				r.host.Remove(name)
+			}
+		}
+	}
 	for name := range next {
 		if !next[name].enabled {
 			r.state.clearServer(name)
 		}
 	}
-}
-
-// UpsertServer makes a hot-added or updated MCP spec authoritative for every
-// frontend on this controller. Dynamic state stays host-local and never changes
-// the provider-visible use_capability schema.
-func (r *MCPCapabilityRuntime) UpsertServer(entry config.PluginEntry, raw plugin.Spec, enabled bool) {
-	if r == nil {
-		return
-	}
-	r.dispatchMu.Lock()
-	defer r.dispatchMu.Unlock()
-	spec := cloneMCPSpec(raw)
-	name := strings.TrimSpace(spec.Name)
-	if name == "" {
-		return
-	}
-	entry = runtimePluginEntry(entry)
-	if strings.TrimSpace(entry.Name) == "" {
-		entry.Name = name
-	}
-	cached, keyOK := cachedToolsForSpec(spec)
-	r.mu.Lock()
-	r.servers[name] = mcpRuntimeServer{
-		entry:      entry,
-		spec:       spec,
-		enabled:    enabled,
-		cached:     cached,
-		cacheKeyOK: keyOK,
-	}
-	r.mu.Unlock()
-	// Endpoint/tool metadata may have changed. Never route a stale live snapshot
-	// across an update; a connected client or the next call will repopulate it.
-	r.state.clearServer(name)
 }
 
 // SetServerEnabled revokes or restores this controller's right to use a server.
@@ -210,6 +194,9 @@ func (r *MCPCapabilityRuntime) CatalogState() (entries []config.PluginEntry, cac
 // spec with a stale pre-update live-tool directory.
 func (r *MCPCapabilityRuntime) CapabilityCatalogState() (entries []config.PluginEntry, cached map[string][]plugin.CachedTool, keyOK map[string]bool, disabled map[string]bool, proxyTools map[string][]plugin.CachedTool) {
 	if r == nil {
+		return nil, nil, nil, nil, nil
+	}
+	if r.refreshInventory() != nil {
 		return nil, nil, nil, nil, nil
 	}
 	r.dispatchMu.RLock()
@@ -421,70 +408,6 @@ type UseCapabilityTool struct {
 	state *mcpProxySharedState
 }
 
-// runtimeBoundMCPTool keeps the provider-visible MCP adapter unchanged while
-// binding execution to the current controller runtime. The underlying Host may
-// be shared by sibling tabs, so a server name alone must never authorize reuse.
-type runtimeBoundMCPTool struct {
-	proxy      *UseCapabilityTool
-	target     tool.Tool
-	server     string
-	authorized bool
-}
-
-func (b *runtimeBoundMCPTool) Name() string              { return b.target.Name() }
-func (b *runtimeBoundMCPTool) Description() string       { return b.target.Description() }
-func (b *runtimeBoundMCPTool) Schema() json.RawMessage   { return b.target.Schema() }
-func (b *runtimeBoundMCPTool) ReadOnly() bool            { return b.target.ReadOnly() }
-func (b *runtimeBoundMCPTool) MCPServerAuthorized() bool { return b.authorized }
-func (b *runtimeBoundMCPTool) MCPServerName() string     { return b.server }
-func (b *runtimeBoundMCPTool) MCPRawToolName() string    { return mcpRawToolName(b.target) }
-func (b *runtimeBoundMCPTool) MCPDestructiveHint() bool  { return tool.HasMCPDestructiveHint(b.target) }
-func (b *runtimeBoundMCPTool) MCPVisibleToolName() string {
-	if meta, ok := b.target.(tool.MCPVisibleMetadata); ok {
-		return meta.MCPVisibleToolName()
-	}
-	return b.MCPRawToolName()
-}
-func (b *runtimeBoundMCPTool) MCPPackageName() string {
-	if meta, ok := b.target.(tool.MCPPackageMetadata); ok {
-		return meta.MCPPackageName()
-	}
-	return ""
-}
-
-func (b *runtimeBoundMCPTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
-	var out string
-	err := b.proxy.withRuntimeBoundMCP(ctx, b.server, b.target, func() error {
-		var execErr error
-		out, execErr = b.target.Execute(ctx, args)
-		return execErr
-	})
-	return out, err
-}
-
-func (b *runtimeBoundMCPTool) ExecuteWithImages(ctx context.Context, args json.RawMessage) (string, []string, error) {
-	var out string
-	var images []string
-	err := b.proxy.withRuntimeBoundMCP(ctx, b.server, b.target, func() error {
-		if imageTool, ok := b.target.(tool.ImageTool); ok {
-			var execErr error
-			out, images, execErr = imageTool.ExecuteWithImages(ctx, args)
-			return execErr
-		}
-		var execErr error
-		out, execErr = b.target.Execute(ctx, args)
-		return execErr
-	})
-	return out, images, err
-}
-
-func mcpRawToolName(target tool.Tool) string {
-	if meta, ok := target.(tool.MCPMetadata); ok {
-		return meta.MCPRawToolName()
-	}
-	return ""
-}
-
 // NewUseCapabilityTool builds a standalone capability proxy (tests and simple
 // boots). Prefer MCPCapabilityRuntime.NewFrontend when multiple agents share
 // one session Host.
@@ -578,6 +501,11 @@ func (t *UseCapabilityTool) ResolveCall(ctx context.Context, args json.RawMessag
 		ProxyAction:  action,
 		CapabilityID: id,
 		Args:         p.Arguments,
+	}
+	if t.runtime != nil {
+		if err := t.runtime.refreshInventory(); err != nil {
+			return tool.ResolvedCall{}, err
+		}
 	}
 	if resolved, ok := t.resolveDisabled(base, id, ""); ok {
 		return resolved, nil
@@ -899,8 +827,8 @@ func (t *UseCapabilityTool) resolveCall(ctx context.Context, id string, args jso
 		if lockErr != nil {
 			return t.resolveUnavailable(base, id, plugin.ModelToolName(server, raw), lockErr.Error()), nil
 		}
-		defer unlock()
 		runtimeSpec = spec
+		unlock()
 	}
 	// Prefer already-exposed registry tool (auto-started MCP). The model name
 	// MUST come from the plugin layer's canonical constructor: it appends a
@@ -909,8 +837,8 @@ func (t *UseCapabilityTool) resolveCall(ctx context.Context, id string, args jso
 	// let them silently miss.
 	modelName := plugin.ModelToolName(server, raw)
 	if t.registry != nil {
-		if tl, ok := t.registry.Get(modelName); ok {
-			if t.runtime != nil && !plugin.MCPToolMatchesSpec(tl, runtimeSpec) {
+		if tl, ok := routableRegistryTool(t.registry, modelName); ok {
+			if t.runtime != nil && !mcpToolMatchesRuntime(tl, runtimeSpec) {
 				return t.resolveUnavailable(base, id, modelName, fmt.Sprintf("connected MCP server %q identity does not match the current runtime configuration", server)), nil
 			}
 			base.TargetName = modelName
@@ -1168,7 +1096,7 @@ func (o *onDemandMCPTool) executeWithImages(ctx context.Context, args json.RawMe
 		}
 		return "", nil, fmt.Errorf("%s", msg)
 	}
-	if !plugin.MCPToolMatchesSpec(target, spec) {
+	if !mcpToolMatchesRuntime(target, spec) {
 		return "", nil, fmt.Errorf("connected MCP server %q identity does not match the current runtime configuration; reconnect this server before retrying", o.server)
 	}
 	if _, err := plugin.ReconcileCachedToolSafety(o.server, o.raw, plugin.CachedToolSafety{
@@ -1318,6 +1246,9 @@ func (t *UseCapabilityTool) lockAuthorizedRuntimeServer(ctx context.Context, ser
 		return spec, func() {}, nil
 	}
 
+	if err := t.runtime.refreshInventory(); err != nil {
+		return plugin.Spec{}, func() {}, err
+	}
 	t.runtime.dispatchMu.RLock()
 	unlock := t.runtime.dispatchMu.RUnlock
 	t.runtime.mu.RLock()
@@ -1343,6 +1274,9 @@ func (t *UseCapabilityTool) bindRuntimeMCP(spec plugin.Spec, target tool.Tool) t
 	if t.runtime == nil || target == nil {
 		return target
 	}
+	if bound, ok := target.(*runtimeBoundMCPTool); ok && bound.proxy.runtime == t.runtime {
+		return target
+	}
 	return &runtimeBoundMCPTool{
 		proxy:      t,
 		target:     target,
@@ -1360,6 +1294,9 @@ func (t *UseCapabilityTool) withRuntimeBoundMCP(ctx context.Context, server stri
 		return err
 	}
 	defer unlock()
+	if !spec.ToolEnabled(mcpRawToolName(target)) {
+		return fmt.Errorf("MCP tool %s is disabled", target.Name())
+	}
 	if !plugin.MCPToolMatchesSpec(target, spec) {
 		return fmt.Errorf("connected MCP server %q identity does not match the current runtime configuration; reconnect this server before retrying", server)
 	}

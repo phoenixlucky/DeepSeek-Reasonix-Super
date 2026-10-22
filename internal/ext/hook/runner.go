@@ -29,8 +29,9 @@ type Runner struct {
 // hookSet is what a session and every runner derived from it with ForRole
 // fire, so an edit reaches them all and a repeat is judged once for the user.
 type hookSet struct {
-	mu    sync.RWMutex
-	hooks []ResolvedHook
+	source func() []ResolvedHook
+	mu     sync.RWMutex
+	hooks  []ResolvedHook
 	// lastOutcome holds the message each hook reported last, so a repeat of the
 	// same one is not surfaced again. Keyed by hook, so it is bounded by the
 	// configured hook count rather than by how often they run.
@@ -116,8 +117,18 @@ func (r *Runner) snapshot() []ResolvedHook {
 		return nil
 	}
 	r.set.mu.RLock()
-	defer r.set.mu.RUnlock()
-	return r.set.hooks
+	source, hooks := r.set.source, r.set.hooks
+	r.set.mu.RUnlock()
+	if source != nil {
+		return source()
+	}
+	return hooks
+}
+
+func (r *Runner) ConfigureSource(source func() []ResolvedHook) {
+	r.set.mu.Lock()
+	defer r.set.mu.Unlock()
+	r.set.source = source
 }
 
 // Enabled reports whether any hooks are configured.

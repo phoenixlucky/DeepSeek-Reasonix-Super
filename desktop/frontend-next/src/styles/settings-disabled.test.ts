@@ -19,3 +19,20 @@ it.each(Object.entries(CSS))("excludes disabled navigation from every hover over
   expect(stylesheet.match(/\.prefs-nav button:hover(?:\s|\{)/)).toBeNull();
   expect(stylesheet.match(/\.prefs-nav button:not\(:disabled\):hover\s*\{[^}]*background:/)).not.toBeNull();
 });
+
+it("keeps the selected settings section's fill under the pointer in the light theme", () => {
+  const studio = CSS["./studio.css"];
+  const hover = studio.lastIndexOf(':root[data-theme="light"] .prefs-nav button:not(:disabled):hover');
+  const selected = studio.match(/:root\[data-theme="light"\] \.prefs-nav button\[aria-selected="true"\]:not\(:disabled\):hover\s*\{([^}]*)\}/);
+  expect(hover).toBeGreaterThan(-1);
+  expect(selected).not.toBeNull();
+  expect(selected![1]).toMatch(/background:\s*var\(--border\)/);
+  expect(studio.indexOf(selected![0])).toBeGreaterThan(hover);
+});
+
+it("keeps the selected settings section's icon ink under the pointer", () => {
+  const studio = CSS["./studio.css"];
+  const rule = studio.match(/\.prefs-nav button\[aria-selected="true"\]:not\(:disabled\):hover svg\s*\{([^}]*)\}/);
+  expect(rule).not.toBeNull();
+  expect(rule![1]).toMatch(/color:\s*var\(--text\)/);
+});

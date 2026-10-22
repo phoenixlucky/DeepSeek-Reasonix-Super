@@ -24,8 +24,6 @@ function draw(items: Item[]) {
       waiting={{}}
       scroll={{ current: null }}
       hidden={false}
-      onPinned={() => {}}
-      jump={0}
       focus={null}
       onApprove={noop}
       onFullAccess={noop}

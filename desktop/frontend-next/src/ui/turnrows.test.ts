@@ -118,3 +118,13 @@ describe("keeping a set when nothing in it changed", () => {
     expect(sameMembers(new Set(["a", "c"]), new Set(["a", "b"]))).toBe(false);
   });
 });
+it("keeps published action surfaces outside work disclosures",()=>{
+ const item: Item={t:"tool",id:"surface",running:false,children:[],tool:{id:"call",name:"render_surface",readOnly:true,args:JSON.stringify({spec_version:1,body:[{kind:"button",label:"Continue",actionId:"continue"}]}),output:'{"nonblocking":true}'}};
+ expect(transcriptRows([item])).toEqual([{item}]);
+});
+it("keeps a completed dashboard visible and leaves failed publications as tools", () => {
+ const item: Item = { t: "tool", id: "dashboard", running: false, children: [], tool: { name: "render_surface", readOnly: true, args: JSON.stringify({ spec_version: 1, body: [{ kind: "dashboard", dataset: { categories: ["Jan"], series: [{ id: "sales", label: "Sales", values: [10] }] } } ] }), output: "Displayed" } };
+ expect(transcriptRows([item])).toEqual([{ item }]);
+ const failed = { ...item, tool: { ...item.tool, err: "refused" } };
+ expect(transcriptRows([failed])).toEqual([{ activity: [failed] }]);
+});

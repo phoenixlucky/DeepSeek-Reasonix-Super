@@ -44,9 +44,35 @@ export interface Primitive {
 }
 
 export const PRIMITIVES: Primitive[] = [
+  { file: "ui/TooltipButton.tsx", callbacks: { onClick: "click", onPointerDown: "pointerdown" } },
   { file: "ui/Switch.tsx", callbacks: { onClick: "click" } },
   { file: "ui/Menu.tsx", callbacks: { onPick: "click" } },
 ];
+
+export const LIBRARY_PRIMITIVES: { module: string; name: string; callbacks: Record<string, string> }[] = [
+  { module: "@mantine/core", name: "Modal", callbacks: { onClose: "click", onKeyDown: "keydown" } },
+  { module: "@mantine/core", name: "UnstyledButton", callbacks: { onClick: "click" } },
+  { module: "@mantine/core", name: "Button", callbacks: { onClick: "click" } },
+  { module: "@mantine/core", name: "TextInput", callbacks: { onChange: "change" } },
+  { module: "@mantine/core", name: "Textarea", callbacks: { onChange: "change" } },
+  { module: "@mantine/core", name: "Checkbox", callbacks: { onChange: "change" } },
+  { module: "@mantine/core", name: "Radio.Card", callbacks: { onClick: "click" } },
+  { module: "@mantine/core", name: "Checkbox.Card", callbacks: { onClick: "click" } },
+];
+
+function libraryPrimitive(tree: Node, target: string): { callbacks: Record<string, string> } | undefined {
+  const [local, ...members] = target.split(".");
+  let contract: { callbacks: Record<string, string> } | undefined;
+  walk(tree, n => {
+    if (n.type !== "ImportDeclaration") return;
+    for (const sp of (n.specifiers as Node[])) {
+      if (sp.type !== "ImportSpecifier" || (sp.local as Node).name !== local) continue;
+      const name = [(sp.imported as Node).name, ...members].join(".");
+      contract = LIBRARY_PRIMITIVES.find(p => p.module === (n.source as Node).value && p.name === name);
+    }
+  });
+  return contract;
+}
 
 /** A primitive is the file, wherever the tree being scanned is rooted. The
  *  callers key their trees three different ways — the gate relative to the
@@ -195,6 +221,31 @@ function declaresLocally(tree: Node, name: string): boolean {
   return found;
 }
 
+/** An explicit signal type proves a runtime target, only in its binding's scope. */
+function isAbortSignalBinding(name: string, stack: Node[]): boolean {
+  const typed = (binding: Node) => {
+    const annotation = (binding.typeAnnotation as Node)?.typeAnnotation as Node | undefined;
+    return annotation?.type === "TSTypeReference" && flat(annotation.typeName as Node) === "AbortSignal";
+  };
+  for (const scope of stack.slice().reverse()) {
+    const body = /^(BlockStatement|Program)$/.test(scope.type) ? scope.body as Node[] : [];
+    for (const statement of body) {
+      if (/^(FunctionDeclaration|ClassDeclaration)$/.test(statement.type) && (statement.id as Node)?.name === name) return false;
+      if (statement.type === "VariableDeclaration") {
+        for (const declaration of statement.declarations as Node[]) {
+          const binding = declaration.id as Node;
+          if (bindsName(binding, name)) return binding.type === "Identifier" && typed(binding);
+        }
+      }
+    }
+    const parameter = (scope.params as Node[] | undefined)?.find(binding => bindsName(binding, name));
+    if (parameter) return parameter.type === "Identifier" && typed(parameter);
+    if (scope.type === "CatchClause" && bindsName(scope.param as Node, name)) return false;
+    if (/FunctionDeclaration|ClassDeclaration/.test(scope.type) && (scope.id as Node)?.name === name) return false;
+  }
+  return false;
+}
+
 /** What both readers of a tree need: the module graph, the bindings a file
  *  declares, and what a receiver expression is proven to be. Built once and
  *  handed to whoever asks, so a second reader cannot answer differently. */
@@ -262,13 +313,14 @@ function analysisContext(sources: Map<string, string | Node>, opts: Options) {
       }
     });
   }
-  const targetTypeOf = (node: Node | null, path: string, depth = 0): string | null => {
+  const targetTypeOf = (node: Node | null, path: string, depth = 0, stack: Node[] = []): string | null => {
     if (!node || depth > 6) return null;
-    if (node.type === "TSAsExpression" || node.type === "TSNonNullExpression") return targetTypeOf(node.expression as Node, path, depth + 1);
+    if (node.type === "TSAsExpression" || node.type === "TSNonNullExpression") return targetTypeOf(node.expression as Node, path, depth + 1, stack);
     if (node.type === "Identifier") {
       if (/^(window|document|globalThis)$/.test(node.name as string)) return "Window";
+      if (isAbortSignalBinding(node.name as string, stack)) return "AbortSignal";
       const init = localsOf(path).get(node.name as string);
-      return init ? targetTypeOf(init, path, depth + 1) : null;
+      return init ? targetTypeOf(init, path, depth + 1, stack) : null;
     }
     if (node.type === "MemberExpression" || node.type === "OptionalMemberExpression") {
       const prop = (node.property as Node)?.name as string | undefined;
@@ -444,10 +496,10 @@ function registrationsIn(ctx: ReturnType<typeof analysisContext>, opts: Options)
         return;
       }
       if (declared) {
-        fact.target = recvNode ? targetTypeOf(recvNode, path) : null;
+        fact.target = recvNode ? targetTypeOf(recvNode, path, 0, stack) : null;
         fact.targetProvenance = fact.target ? "declared-wrapper" : null;
       } else if (member) {
-        fact.target = targetTypeOf(recvNode, path);
+        fact.target = targetTypeOf(recvNode, path, 0, stack);
         fact.targetProvenance = fact.target ? "typed-receiver" : null;
       } else {
         fact.target = "Window";
@@ -502,13 +554,13 @@ export function certifyRoots(sources: Map<string, string | Node>, opts: Options 
         let abstraction: "host" | "primitive" | "wiring" | "unknown" = "host";
         // Set only for a certified primitive: the contract that says which of
         // its props are inputs, so this does not fall back to reading names.
-        let contract: Primitive | undefined;
+        let contract: { callbacks: Record<string, string> } | undefined;
         if (/^[A-Z]/.test(el)) {
           const imp = importsOf.get(path)?.get(el);
           const decl = imp?.file ?? (declaresLocally(trees.get(path)!, imp?.name ?? el) ? path : null);
           const prim = decl === null ? undefined : primitiveAt(certified, decl);
-          contract = prim;
-          abstraction = decl === null ? "unknown" : prim ? "primitive" : "wiring";
+          contract = prim ?? libraryPrimitive(tree, el);
+          abstraction = contract ? "primitive" : decl === null ? "unknown" : "wiring";
         }
         const a: Record<string, unknown> = {};
         for (const at of (n.attributes as Node[])) {

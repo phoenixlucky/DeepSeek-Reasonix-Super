@@ -3,35 +3,54 @@ package billing
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
+
+	"reasonix/internal/contract/walletformat"
 )
 
-// walletShapes maps a vendor's own API hostname to the decoder for its balance
-// response. Host equality is the test, the same as pricing.OfficialProviderForEndpoint:
-// only the vendor's own endpoint is known to answer in its own shape, and an
-// entry merely named after a vendor is not evidence of that endpoint.
-var walletShapes = map[string]func(host string, body []byte) (*Balance, error){
-	"api.deepseek.com": decodeDeepSeek,
-	"api.moonshot.cn":  decodeMoonshot,
-	"api.moonshot.ai":  decodeMoonshot,
-	"openrouter.ai":    decodeOpenRouter,
+// Format is a declared balance response shape; the set lives in walletformat so
+// the configuration can validate it without importing a reader.
+type Format = walletformat.Format
+
+const (
+	FormatDeepSeek   = walletformat.DeepSeek
+	FormatMoonshot   = walletformat.Moonshot
+	FormatOpenRouter = walletformat.OpenRouter
+)
+
+// Formats is every format a provider may declare.
+func Formats() []Format { return walletformat.All() }
+
+// walletDecoders maps each format to the decoder for its response.
+var walletDecoders = map[Format]func(host string, body []byte) (*Balance, error){
+	FormatDeepSeek:   decodeDeepSeek,
+	FormatMoonshot:   decodeMoonshot,
+	FormatOpenRouter: decodeOpenRouter,
 }
 
-// decodeWallet picks the decoder for endpoint and applies it. An address no
-// table entry claims is read as DeepSeek's shape, which is what every custom
-// balance_url has always been read as.
-func decodeWallet(endpoint string, body []byte) (*Balance, error) {
-	host := ""
-	if u, err := url.Parse(strings.TrimSpace(endpoint)); err == nil {
-		host = strings.ToLower(u.Hostname())
+// ImpliedFormat is the format a vendor's own hostname answers in, empty for any
+// other host.
+func ImpliedFormat(endpoint string) Format { return walletformat.Implied(endpoint) }
+
+// Resolve is the format a read of endpoint decodes with: the declared one, else
+// the one the host implies, else none. A relay on its own domain has no implied
+// format, so it must declare one before its answer is read as any vendor's.
+func Resolve(endpoint string, declared Format) (Format, bool) {
+	if declared != "" {
+		return declared, declared.Valid()
 	}
-	decode := walletShapes[host]
-	if decode == nil {
-		decode = decodeDeepSeek
+	f := ImpliedFormat(endpoint)
+	return f, f != ""
+}
+
+// decodeWallet applies the decoder of the resolved format to a response.
+func decodeWallet(endpoint string, declared Format, body []byte) (*Balance, error) {
+	f, ok := Resolve(endpoint, declared)
+	if !ok {
+		return nil, ErrFormatNotDeclared
 	}
-	return decode(host, body)
+	return walletDecoders[f](walletformat.Host(endpoint), body)
 }
 
 // deepseekResp mirrors the GET /user/balance response shape.

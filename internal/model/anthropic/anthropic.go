@@ -351,7 +351,7 @@ func (c *client) buildRequest(_ context.Context, req provider.Request) anthReque
 		msgs = append(msgs, anthMessage{Role: role, Content: blocks})
 	}
 
-	for _, m := range provider.SanitizeToolPairing(req.Messages) {
+	for _, m := range provider.SanitizeToolPairing(provider.WithoutVideosAll(req.Messages, provider.VideoNotSentNote)) {
 		switch m.Role {
 		case provider.RoleSystem:
 			if m.Content != "" {
@@ -488,7 +488,7 @@ func (c *client) buildRequest(_ context.Context, req provider.Request) anthReque
 			r.Thinking = &thinkingConfig{Type: t}
 		}
 	}
-	return r
+	return r.forSummary(req.Summary)
 }
 
 // readStream parses the Messages API SSE stream into Chunks. Text deltas emit live;
@@ -752,6 +752,7 @@ type anthRequest struct {
 	System       []textBlock     `json:"system,omitempty"`
 	Messages     []anthMessage   `json:"messages"`
 	Tools        []anthTool      `json:"tools,omitempty"`
+	ToolChoice   *toolChoice     `json:"tool_choice,omitempty"`
 	Temperature  *float64        `json:"temperature,omitempty"`
 	Thinking     *thinkingConfig `json:"thinking,omitempty"`
 	OutputConfig *outputConfig   `json:"output_config,omitempty"`

@@ -4,6 +4,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "./testkit";
 import { Policy } from "./Policy";
+import studioCss from "../styles/studio.css?raw";
 import { MockPort } from "../port/mock";
 import type { AgentPort, ApprovalMode, SessionStatus } from "../port/port";
 
@@ -30,6 +31,31 @@ describe("execution permission control", () => {
     const { container } = draw("yolo");
     expect(container.querySelector(".polrisk")?.textContent).toContain("全部放行");
     expect(container.querySelector(".polwarn svg")).not.toBeNull();
+  });
+
+  it("draws its chevron with the icon every other picker uses", () => {
+    const { container } = draw("yolo");
+    const chevron = container.querySelector(".studio-control-chevron");
+    expect(chevron?.tagName.toLowerCase()).toBe("svg");
+    expect(chevron?.querySelector("path")?.getAttribute("d")).toBe("m6 9 6 6 6-6");
+  });
+
+  it.each(["light", "dark"])("draws the warning icon, label and chevron in one colour in the %s theme", (theme) => {
+    const sheet = document.createElement("style");
+    sheet.textContent = studioCss;
+    document.head.append(sheet);
+    document.documentElement.dataset.theme = theme;
+    try {
+      const { container } = draw("yolo");
+      container.classList.add("turntools");
+      const colour = (selector: string) => getComputedStyle(container.querySelector(selector)!).color;
+      expect(colour(".policy .ic")).not.toBe("");
+      expect(colour(".policy .ic")).toBe(colour(".policy .lb"));
+      expect(colour(".policy .studio-control-chevron")).toBe(colour(".policy .lb"));
+    } finally {
+      sheet.remove();
+      delete document.documentElement.dataset.theme;
+    }
   });
 
   it("contains permission choices only", async () => {

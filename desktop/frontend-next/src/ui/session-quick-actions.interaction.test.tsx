@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "./testkit";
 import { Workspaces } from "./Workspaces";
@@ -35,8 +35,19 @@ function draw(over: Partial<TreeSession> = {}, live = false) {
 }
 
 const row = () => screen.getByRole("treeitem", { name: new RegExp(TITLE) });
-const archive = () => within(row()).getByRole("button", { name: `归档会话：${TITLE}` });
-const trash = () => within(row()).getByRole("button", { name: `删除会话：${TITLE}` });
+const menuItem = (name: string) => {
+  fireEvent.contextMenu(row());
+  return screen.getByRole("menuitem", { name });
+};
+const archive = () => menuItem("归档会话");
+const trash = () => menuItem("删除会话");
+
+it("keeps the full local title available and deletion off the hover row", () => {
+  const title = "这是什么？ @.reasonix/attachments/" + "clipboard-long-title".repeat(10);
+  draw({ title });
+  expect(screen.getByTitle(title).textContent).toBe(title);
+  expect(within(screen.getByRole("treeitem", { name: new RegExp(title.slice(0, 10)) })).queryByRole("button", { name: /删除/ })).toBeNull();
+});
 
 it.each([undefined, "r1"])("archives directly without opening or focusing the session held by %j", async (runtimeId) => {
   const { onArchive, onOpen, onFocus } = draw({ runtimeId });
@@ -44,12 +55,11 @@ it.each([undefined, "r1"])("archives directly without opening or focusing the se
   expect(onArchive).toHaveBeenCalledExactlyOnceWith(PATH, true, runtimeId);
   expect(onOpen).not.toHaveBeenCalled();
   expect(onFocus).not.toHaveBeenCalled();
-  expect(screen.queryByRole("menu")).toBeNull();
 });
 
 it("restores an archived session through the same callback", async () => {
   const { onArchive } = draw({ archived: true });
-  await userEvent.click(within(row()).getByRole("button", { name: `取消归档：${TITLE}` }));
+  await userEvent.click(menuItem("取消归档"));
   expect(onArchive).toHaveBeenCalledExactlyOnceWith(PATH, false, undefined);
 });
 

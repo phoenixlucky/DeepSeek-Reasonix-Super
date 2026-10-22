@@ -128,6 +128,10 @@
             "description": "Shell command to execute",
             "type": "string"
           },
+          "description": {
+            "description": "Optional short name for this call, in the user's language, shown in task lists.",
+            "type": "string"
+          },
           "preserve_background_processes": {
             "description": "After the shell command exits normally, keep any process-group members it intentionally left behind. Use only for deliberate daemonization, browser/GUI/session launchers such as playwright-cli open, or nohup/disown/setsid; cancellation and timeouts still kill the process group.",
             "type": "boolean"
@@ -556,6 +560,42 @@
       }
     },
     {
+      "name": "setting",
+      "description": "Find and change the user's own settings. op=list finds settings by words of their id (for example \"peers dispatch\"). op=propose asks the user to confirm one change: give the id, the new value and a short reason; nothing changes until the user answers, and the result says what changed or that they declined. op=open points the user at a setting that only they may change. Use it when a refusal ends with (fix: setting ...), or when a tool you need is not offered because a switch is off. Do not change a setting the task did not call for.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "The setting's id, for propose and open",
+            "type": "string"
+          },
+          "op": {
+            "enum": [
+              "list",
+              "propose",
+              "open"
+            ],
+            "type": "string"
+          },
+          "query": {
+            "description": "Words of the setting's id, for op=list",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why the change helps the user, shown on the card, for op=propose",
+            "type": "string"
+          },
+          "value": {
+            "description": "The new value as JSON, for op=propose"
+          }
+        },
+        "required": [
+          "op"
+        ],
+        "type": "object"
+      }
+    },
+    {
       "name": "todo_write",
       "description": "Record and update a structured task list for the current work. Send the COMPLETE list every call — it replaces the previous one. Use it to plan multi-step work and show progress: keep exactly one item in_progress at a time, and flip an item to completed the moment it's done (don't batch completions). Skip it for trivial single-step tasks. The list is two-level: a `level` 0 item is a PHASE (a milestone) and the `level` 1 items after it are its concrete sub-steps. COPY `step_id` VERBATIM for every item that already has one: it is how a completion stays attached to its step when you retitle it, insert a step above it, or reorder the list. Give a new item a fresh unique id (e.g. \"plan_step_07\"); never reuse or renumber an existing one.",
       "parameters": {
@@ -729,15 +769,13 @@
     },
     {
       "name": "write_file",
-      "description": "Write content to a file at the given path (overwriting existing content). Creates parent directories as needed. Sends the whole file every time: for a change to part of one that already exists, edit_file and multi_edit send only the changed region.",
+      "description": "Write full file content, overwriting and creating parent directories. Prefer edit_file/multi_edit for partial changes.",
       "parameters": {
         "properties": {
           "content": {
-            "description": "Full content to write",
             "type": "string"
           },
           "path": {
-            "description": "File path",
             "type": "string"
           }
         },

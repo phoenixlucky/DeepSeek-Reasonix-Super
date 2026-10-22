@@ -1,22 +1,20 @@
 // Package config loads Reasonix's runtime configuration from TOML. Resolution order:
-// flag > project ./reasonix.toml > user config.toml (in the OS user-config dir) > built-in defaults.
+// flag > project config > user config.toml (in the OS user-config dir) > built-in defaults.
+// Project config is ./reasonix.toml, falling back to .reasonix/reasonix.toml.
 // Secrets come from the environment via api_key_env and are never stored in config files.
 package config
 
 import (
 	"errors"
 	"fmt"
-	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"golang.org/x/text/unicode/norm"
 
 	"reasonix/internal/base/netclient"
-	"reasonix/internal/contract/provider"
 )
 
 // Config is Reasonix's runtime configuration.
@@ -48,11 +46,18 @@ type Config struct {
 	Browser          BrowserConfig       `toml:"browser"`
 	Bot              map[string]any      `toml:"bot"` // opaque; see passthrough.go
 	Serve            ServeConfig         `toml:"serve"`
+	Attachments      AttachmentsConfig   `toml:"attachments,omitempty"`
 	Secrets          SecretsConfig       `toml:"secrets"`
 	Remote           RemoteConfig        `toml:"remote"`
 	// AutoSubmit commits a multi-question ask once its last question is answered,
 	// instead of showing the Submit tab. User/global only; a repo cannot set it.
 	AutoSubmit bool `toml:"auto_submit"`
+	// Peers governs messages between sessions; see PeersConfig.
+	Peers PeersConfig `toml:"peers"`
+	// Observability governs the opt-in trace export. User/global only.
+	Observability ObservabilityConfig `toml:"observability"`
+	// Mods governs Claude Code mods; see ModsConfig.
+	Mods ModsConfig `toml:"mods"`
 	// Storage relocates the movable roots, keyed by RootID. User/global only.
 	Storage map[string]string `toml:"storage"`
 
@@ -260,9 +265,24 @@ type NotificationsConfig struct {
 	ApprovalRequest bool `toml:"approval_request"`
 	AskRequest      bool `toml:"ask_request"`
 	FeedbackReply   bool `toml:"feedback_reply"`
+	DiskLow         bool `toml:"disk_low"`
 	// Sound plays a short system chime for the events switched on above, whether
 	// or not system notifications are; off unless asked for.
 	Sound bool `toml:"sound"`
+	// Phone says what this desktop tells its enrolled phones about. Off unless
+	// asked for, because it tells the account service that something is waiting.
+	Phone PhoneNotificationsConfig `toml:"phone"`
+}
+
+// PhoneNotificationsConfig is the desktop's half of phone notifications: the
+// master switch and which of the three occasions it reports. What a phone does
+// with a report is that phone's own choice. Only the type of occasion and a
+// count are ever sent.
+type PhoneNotificationsConfig struct {
+	Enabled  bool `toml:"enabled"`
+	Approval bool `toml:"approval"`
+	Input    bool `toml:"input"`
+	Error    bool `toml:"error"`
 }
 
 // EnvironmentEnabled reports whether startup environment probing should feed the
@@ -675,6 +695,10 @@ type ServeConfig struct {
 	// SharePort fixes the port of the phone-access LAN link; zero picks a free
 	// one each time the door opens. User-global like the rest of [serve].
 	SharePort int `toml:"share_port"`
+	// RememberPairedDevices keeps paired phones across restarts: the next process
+	// reopens the share where it was and adopts the devices that paired against it.
+	// Off by default, like every other promise about a device you are not holding.
+	RememberPairedDevices bool `toml:"remember_paired_devices"`
 }
 
 // NetworkConfig controls ordinary outbound HTTP traffic such as model providers,
@@ -693,6 +717,7 @@ type NetworkConfig struct {
 	// process environment instead.
 	NoProxy string             `toml:"no_proxy"`
 	Proxy   NetworkProxyConfig `toml:"proxy"`
+	NetworkResolverConfig
 }
 
 // NetworkProxyConfig is the structured custom-proxy editor shape. Password is
@@ -885,6 +910,11 @@ type SandboxConfig struct {
 	// command when an OS sandbox is available and refuses bash otherwise; "off"
 	// runs it unconfined. Empty uses the platform default.
 	Bash string `toml:"bash"`
+	// WindowsIntegrity turns the bash sandbox on for Windows: commands run under a
+	// write-restricted, Low-integrity token, and the workspace and cache roots are
+	// granted to it once (ACL entries on your disk, listed by `reasonix sandbox`).
+	// Off by default and user file only; it bounds writes, not reads or the network.
+	WindowsIntegrity bool `toml:"windows_integrity"`
 	// Network allows network egress from inside the bash sandbox. Defaults true
 	// so module/package downloads keep working; the boundary is then writes.
 	Network bool `toml:"network"`
@@ -892,12 +922,19 @@ type SandboxConfig struct {
 	// ssh_agent alone: signing is routine, a daemon socket is host-wide
 	// execution. User-global (LoadForRoot); a repo cannot grant itself one.
 	HostAuthorities []string `toml:"host_authorities"`
+	// AllowDevices lists host device nodes (globs under /dev, such as
+	// /dev/nvidia*) bound into the Linux bash sandbox, which otherwise shows a
+	// private /dev. User-global: a repo cannot grant itself a device.
+	AllowDevices []string `toml:"allow_devices"`
 	// AllowedDomains, when set with Network, limits bash egress (not MCP
 	// servers') to these hosts through the host's egress proxy; "*.x" names
 	// every host beneath x. A repo may set it only where the user has not.
 	AllowedDomains []string `toml:"allowed_domains"`
 	// DeniedDomains outrank AllowedDomains. The repo's are added to the user's.
 	DeniedDomains []string `toml:"denied_domains"`
+	// EgressUnlisted "allow" stops the question about hosts AllowedDomains does
+	// not name. User file only: a repo cannot switch its own prompts off.
+	EgressUnlisted string `toml:"egress_unlisted"`
 }
 
 // WriteRoots returns the directories file-writer tools may modify: the
@@ -984,11 +1021,14 @@ func (c *Config) BashMode() string {
 }
 
 // BashModeForGOOS normalises the bash-sandbox mode for tests and cross-platform
-// rendering. Windows has no OS-level Bash sandbox and forces the effective mode
-// off, even when older configs explicitly requested "enforce". macOS/Linux keep
-// the existing explicit-mode behavior.
+// rendering. Windows enforces only when the user turned on windows_integrity;
+// an older config's explicit "enforce" there stays off. macOS/Linux keep the
+// existing explicit-mode behavior.
 func (c *Config) BashModeForGOOS(goos string) string {
 	if goos == "windows" {
+		if c.Sandbox.WindowsIntegrity {
+			return "enforce"
+		}
 		return "off"
 	}
 	switch strings.TrimSpace(c.Sandbox.Bash) {
@@ -1003,6 +1043,17 @@ func (c *Config) BashModeForGOOS(goos string) string {
 	}
 }
 
+// BashModeUnderOverride is the mode a caller's request for override wins. On
+// Windows a request to enforce is honoured only when the user turned on
+// windows_integrity: enforcing there edits permissions on the user's folders,
+// which a caller must not do on its own account.
+func (c *Config) BashModeUnderOverride(override string) string {
+	if override == "enforce" && runtimeGOOS == "windows" && !c.Sandbox.WindowsIntegrity {
+		return c.BashMode()
+	}
+	return override
+}
+
 // AgentConfig configures the harness loop. PlannerModel is optional: when set
 // to another provider's name it enables two-model collaboration, where the
 // planner handles low-frequency planning in its own session (kept separate so
@@ -1014,12 +1065,14 @@ type AgentConfig struct {
 	// Deprecated compatibility fields. Old TOML and desktop clients may still
 	// send them, but config loading normalizes both to zero and rendering omits
 	// them. The one-off CLI limit remains a separate control.
-	MaxSteps            int     `toml:"max_steps"`
-	PlannerMaxSteps     int     `toml:"planner_max_steps"`
-	Temperature         float64 `toml:"temperature"`
-	PlannerModel        string  `toml:"planner_model"`
-	GuardianModel       string  `toml:"guardian_model"`
-	GuardianTemperature float64 `toml:"guardian_temperature"`
+	MaxSteps            int               `toml:"max_steps"`
+	PlannerMaxSteps     int               `toml:"planner_max_steps"`
+	Temperature         float64           `toml:"temperature"`
+	PlannerModel        string            `toml:"planner_model"`
+	TitleModel          string            `toml:"title_model"`
+	RoleEfforts         map[string]string `toml:"role_efforts"`
+	GuardianModel       string            `toml:"guardian_model"`
+	GuardianTemperature float64           `toml:"guardian_temperature"`
 	// RecoveryModel optionally names a dedicated model for the independent
 	// recovery reviewer. Empty falls back to GuardianModel, then the main model.
 	RecoveryModel string `toml:"recovery_model"`
@@ -1055,10 +1108,18 @@ type AgentConfig struct {
 	// DecisionModel names the backend system_one asks. It is on a decision
 	// wire, so it never falls back to the main model: a chat model has no
 	// answer for a question set, and falling back would hide that.
-	DecisionModel    string            `toml:"decision_model"`
-	SubagentEffort   string            `toml:"subagent_effort"`
-	SubagentEfforts  map[string]string `toml:"subagent_efforts"`
-	MaxSubagentDepth int               `toml:"max_subagent_depth"`
+	DecisionModel      string            `toml:"decision_model"`
+	SubagentEffort     string            `toml:"subagent_effort"`
+	SubagentEfforts    map[string]string `toml:"subagent_efforts"`
+	MaxSubagentDepth   int               `toml:"max_subagent_depth"`   // delegation layers; default 8 stops runaway recursion, 0 removes the stop; the user file only
+	MaxSideSessions    int               `toml:"max_side_sessions"`    // 0 (default) opens as many side conversations as asked; the user file only
+	MaxQueuedInputs    int               `toml:"max_queued_inputs"`    // 0 (default) queues as many prompts as asked; the user file only
+	MaxProviderRetries int               `toml:"max_provider_retries"` // default 10; 0 retries until cancelled; the user file only
+	// Guidance sent to a running sub-agent: the bytes in one message (default 16384,
+	// which keeps one message from filling the child's context) and the messages
+	// per minute to one sub-agent (default 30, a stop for a loop); 0 lifts either.
+	SubagentSteerBytes     int `toml:"max_subagent_steer_bytes"`       // the user file only
+	SubagentSteerPerMinute int `toml:"max_subagent_steers_per_minute"` // the user file only
 	// TaskCostBudget lands a task on one summary once it spends this much.
 	TaskCostBudget float64 `toml:"task_cost_budget"`
 	// TaskTimeBudgetMinutes is the same gate on wall clock. All three ship off.
@@ -1070,17 +1131,26 @@ type AgentConfig struct {
 	GoalTokenBudget int `toml:"goal_token_budget"`
 	// MaxSubagentConcurrency bounds how many sub-agents (task, fleet items,
 	// profile skills, nested children) may run at once in one session.
-	// 0 means the default (6). Values outside 1–32 are clamped on load.
+	// 0, the default, sets no limit. The user file only.
 	MaxSubagentConcurrency int `toml:"max_subagent_concurrency"`
 	// MaxParallelWriters bounds concurrent writer-capable sub-agents that
-	// declare non-overlapping write_paths. 0 means the default (3). Must not
-	// exceed MaxSubagentConcurrency after normalization.
+	// declare non-overlapping write_paths. 0, the default, sets no limit: the
+	// path claims keep writers apart, not a count. The user file only.
 	MaxParallelWriters int    `toml:"max_parallel_writers"`
-	WriteLease         string `toml:"write_lease"` // "strict" (default) or "optimistic"; the user file only
-	// OutputStyle selects a persona/tone block folded into the system prompt at
-	// startup (a built-in like "explanatory"/"learning"/"concise", or a custom
-	// .reasonix/output-styles/<name>.md). Empty = the unmodified prompt.
-	OutputStyle string `toml:"output_style"`
+	SubagentClaims     string `toml:"subagent_claims"`   // "strict" (default) or "optimistic"; the user file only
+	WriteLease         string `toml:"write_lease"`       // "strict" (default) or "optimistic"; the user file only
+	PlanApproval       string `toml:"plan_approval"`     // "ask" (default) or "auto": the plan card answers itself; the user file only
+	DefaultMode        string `toml:"default_mode"`      // "normal" (default) or "plan": how a new conversation starts; the user file only
+	GoalAutoRetry      int    `toml:"goal_auto_retry"`   // 0 (default) stops at an unavailable completion check; N retries it up to N times in a row; the user file only
+	HostVerification   string `toml:"host_verification"` // "on" (default) or "off"; the user file only
+
+	// WriteLeaseMaxWaitMinutes bounds one wait behind another session's write
+	// claim; 0, the default, waits for as long as the turn lasts. The user file only.
+	WriteLeaseMaxWaitMinutes int `toml:"write_lease_max_wait_minutes"`
+	// OutputStyle selects built-in tone guidance or .reasonix/output-styles/<name>.md.
+	// Empty leaves the prompt unmodified.
+	OutputStyle string        `toml:"output_style"`
+	Persona     PersonaConfig `toml:"persona"`
 	// Deprecated compatibility field. Automatic plan mode was retired in config
 	// version 5; old TOML remains readable, but loading normalizes it to "off"
 	// and rendering omits it. Plan mode remains available as an explicit user
@@ -1090,6 +1160,7 @@ type AgentConfig struct {
 	// text. Empty/auto follows the conversation language. Applied as transient
 	// turn context, not the stable prompt.
 	ReasoningLanguage string `toml:"reasoning_language"`
+	TurnNarration     string `toml:"turn_narration"` // brief|detailed: how much the model says between tool calls; a turn-tail instruction, user-level only
 	// Deprecated compatibility field paired with AutoPlan. Old TOML remains
 	// readable, but loading clears it and rendering omits it.
 	AutoPlanClassifier string `toml:"auto_plan_classifier"`
@@ -1128,79 +1199,11 @@ type AgentConfig struct {
 	PlanModeReadOnlyCommands []string `toml:"plan_mode_read_only_commands"`
 }
 
-// HasModel reports whether m is one of the provider's models.
-func (e *ProviderEntry) HasModel(m string) bool {
-	return slices.Contains(e.ModelList(), m)
-}
-
-// PriceForModel returns the configured per-1M-token price for model. Per-model
-// prices win; the legacy provider-wide price is a fallback for older configs.
-func (e *ProviderEntry) PriceForModel(model string) *provider.Pricing {
-	if e == nil {
-		return nil
-	}
-	if e.Prices != nil {
-		if p := e.Prices[strings.TrimSpace(model)]; p != nil {
-			return clonePricing(p)
-		}
-	}
-	return clonePricing(e.Price)
-}
-
-func (e *ProviderEntry) applyModelPrice() {
-	if e == nil {
-		return
-	}
-	e.Price = e.PriceForModel(e.Model)
-}
-
-func (e *ProviderEntry) applyModelOverride() {
-	if e == nil || len(e.ModelOverrides) == 0 {
-		return
-	}
-	ov, ok := e.modelOverrideForModel(e.Model)
-	if !ok {
-		return
-	}
-	if ov.ReasoningProtocol != "" {
-		e.ReasoningProtocol = ov.ReasoningProtocol
-	}
-	if ov.SupportedEfforts != nil {
-		e.SupportedEfforts = append([]string(nil), ov.SupportedEfforts...)
-	}
-	if ov.DefaultEffort != "" || ov.SupportedEfforts != nil {
-		e.DefaultEffort = ov.DefaultEffort
-	}
-	if ov.Vision != nil {
-		e.visionOverride = ov.Vision
-	}
-	if ov.ContextWindow > 0 {
-		e.ContextWindow = ov.ContextWindow
-	}
-	if ov.MaxOutputTokens != 0 {
-		e.MaxOutputTokens = ov.MaxOutputTokens
-	}
-}
-
-func (e *ProviderEntry) modelOverrideForModel(model string) (ProviderModelOverride, bool) {
-	key, ok := e.modelOverrideKey(model)
-	if !ok {
-		return ProviderModelOverride{}, false
-	}
-	return e.ModelOverrides[key], true
-}
-
-func clonePricing(p *provider.Pricing) *provider.Pricing {
-	if p == nil {
-		return nil
-	}
-	cp := *p
-	return &cp
-}
-
 // ToolsConfig selects which built-in tools are enabled. Empty means all of them.
 type ToolsConfig struct {
-	Enabled                  []string             `toml:"enabled"`
+	Enabled []string `toml:"enabled"`
+	// Disabled removes tools by name from every surface; a project file can only add to it.
+	Disabled                 []string             `toml:"disabled"`
 	BashTimeoutSeconds       *int                 `toml:"bash_timeout_seconds"`
 	MCPStartupTimeoutSeconds *int                 `toml:"mcp_startup_timeout_seconds"`
 	MCPCallTimeoutSeconds    *int                 `toml:"mcp_call_timeout_seconds"`
@@ -1210,6 +1213,16 @@ type ToolsConfig struct {
 	SystemOne                SystemOneConfig      `toml:"system_one"`
 	ProtectChangedFiles      *bool                `toml:"protect_changed_files"`
 	BrowserTools             *bool                `toml:"browser_tools"`
+	SettingTool              *bool                `toml:"setting_tool"`
+	// MCPResources offers a tool that reads a connected server's resource; user file only, off by default.
+	MCPResources bool `toml:"mcp_resources"`
+	// PresentFiles offers file-delivery cards to the model; user file only, off by default.
+	PresentFiles bool `toml:"present_files"`
+	WebAccessSettings
+	// VideoNativeMaxBytes lowers the size read_video sends natively below the endpoint's limit; 0 keeps it. User file only.
+	VideoNativeMaxBytes int64 `toml:"video_native_max_bytes"`
+	// VideoURLPassthrough lets the model hand a public video address the user gave to the vendor, which then visits it. User file only; off by default.
+	VideoURLPassthrough bool `toml:"video_url_passthrough"`
 	// MCPLoad maps a server name to "always" or "deferred", overriding what
 	// the server's own declaration says.
 	MCPLoad map[string]string `toml:"mcp_load"`
@@ -1255,25 +1268,6 @@ func (c *Config) MCPStartupTimeoutSeconds() int {
 	return *c.Tools.MCPStartupTimeoutSeconds
 }
 
-// BackgroundJobsConfig tunes parent-created background jobs.
-type BackgroundJobsConfig struct {
-	StalledWarningSeconds *int `toml:"stalled_warning_seconds"`
-}
-
-// BackgroundJobStalledWarningSeconds returns the stalled warning threshold in
-// seconds. Omitted/negative values keep the default, explicit 0 disables the
-// notice, and oversized values clamp to one day so a typo cannot become
-// effectively invisible.
-func (c *Config) BackgroundJobStalledWarningSeconds() int {
-	if c.Tools.BackgroundJobs.StalledWarningSeconds == nil || *c.Tools.BackgroundJobs.StalledWarningSeconds < 0 {
-		return defaultBackgroundJobStalledWarningSec
-	}
-	if *c.Tools.BackgroundJobs.StalledWarningSeconds > maxBackgroundJobStalledWarningSec {
-		return maxBackgroundJobStalledWarningSec
-	}
-	return *c.Tools.BackgroundJobs.StalledWarningSeconds
-}
-
 // SearchConfig tunes the grep tool's engine. Engine is "auto" (default — use
 // ripgrep when it's on PATH, else the native Go scanner), "native" (always Go),
 // or "rg" (require ripgrep; warn at startup and fall back to native if absent).
@@ -1294,6 +1288,9 @@ type PermissionsConfig struct {
 	Ask              []string `toml:"ask"`
 	Deny             []string `toml:"deny"`
 	AllowDynamicBash bool     `toml:"allow_dynamic_bash"`
+	// AskOnExternalOrigin asks you before a call that repeats text an external
+	// result gave the task runs on the strength of the mode alone. User file only.
+	AskOnExternalOrigin bool `toml:"ask_on_external_origin"`
 }
 
 // MCPConfigSource records where a merged MCP entry came from. It is runtime
@@ -1371,10 +1368,10 @@ func Default() *Config {
 	return &Config{
 		ConfigVersion:    freshConfigVersion,
 		DefaultModel:     "deepseek-flash",
-		CredentialsStore: CredentialsStoreAuto,
-		UI:               UIConfig{Theme: "auto", ShowTurnUsage: true, ShowChangedFiles: true},
-		Desktop:          DesktopConfig{ConversationWidth: "standard"},
-		Billing:          BillingConfig{},
+		CredentialsStore: CredentialsStoreAuto, Peers: defaultPeers(), Mods: defaultMods(),
+		UI:      UIConfig{Theme: "auto", ShowTurnUsage: true, ShowChangedFiles: true},
+		Desktop: DesktopConfig{ConversationWidth: "standard"},
+		Billing: BillingConfig{},
 		// Set here, not left to the zero value: an absent [secrets] still protects.
 		Secrets: SecretsConfig{ProtectCredentialFiles: true},
 		Notifications: NotificationsConfig{
@@ -1383,6 +1380,7 @@ func Default() *Config {
 			ApprovalRequest: true,
 			AskRequest:      true,
 			FeedbackReply:   true,
+			DiskLow:         true,
 		},
 		Agent: AgentConfig{
 			SystemPrompt: DefaultSystemPrompt,
@@ -1397,10 +1395,17 @@ func Default() *Config {
 			CompactRatio:           0.85,
 			CompactForceRatio:      0,
 			ContextEditing:         "",
-			MaxSubagentDepth:       2,
-			MaxSubagentConcurrency: 6,
-			MaxParallelWriters:     3,
+			MaxSubagentDepth:       8,
+			MaxProviderRetries:     10,
+			SubagentSteerBytes:     16384,
+			SubagentSteerPerMinute: 30,
+			MaxSubagentConcurrency: 0,
+			MaxParallelWriters:     0,
+			SubagentClaims:         "strict",
 			WriteLease:             "strict",
+			PlanApproval:           "ask",
+			DefaultMode:            "normal",
+			HostVerification:       "on",
 		},
 		// Mode "ask" with no rules keeps `reasonix run` autonomous (no TTY → ask
 		// resolves to allow) while `reasonix` prompts before writers. Users add
@@ -1455,8 +1460,8 @@ func (c *Config) Provider(name string) (*ProviderEntry, bool) {
 // without duplicating base_url/api_key_env. Single-`model` entries still resolve
 // by provider name, keeping older configs working unchanged.
 func (c *Config) ResolveModel(ref string) (*ProviderEntry, bool) {
-	if ref == "" {
-		return nil, false
+	if e, ok := standIn(c, ref); ok || ref == "" {
+		return e, ok
 	}
 	if access := desktopProviderAccessMap(c.Desktop.ProviderAccess); len(access) > 0 {
 		if access["deepseek"] && !canCanonicalizeLegacyDeepSeekProviders(c) {
@@ -1519,8 +1524,8 @@ func (c *Config) ResolveNewSessionChatModel() (NewSessionModel, bool) {
 }
 
 func (c *Config) resolveNewSessionChatModel(providerAllowed func(string) bool, preserveUnknownDefault bool) (resolvedRef string, fallback bool, ok bool) {
-	if c == nil {
-		return "", false, false
+	if c == nil || len(c.Providers) == 0 {
+		return noProviderStart(c)
 	}
 	if providerAllowed == nil {
 		providerAllowed = func(string) bool { return true }
@@ -1591,19 +1596,33 @@ func (c *Config) ResolveDesktopNewSessionModel() (resolvedRef string, fallback b
 	}, false)
 }
 
-// APIKey resolves the entry's API key from its api_key_env.
-func (e *ProviderEntry) APIKey() string {
-	if e == nil {
-		return ""
+// Validate checks that the selected model's provider is usable.
+func (c *Config) Validate(model string) error {
+	e, ok := c.ResolveModel(model)
+	if !ok {
+		return fmt.Errorf("unknown model %q (configured: %s)", model, c.providerNames())
 	}
-	if e.resolvedAPIKey != "" {
-		return e.resolvedAPIKey
+	if err := kindError(e, model); err != nil {
+		return err
 	}
-	if e.APIKeyEnv == "" {
-		return ""
+	if e.BaseURL == "" {
+		return fmt.Errorf("provider %q: base_url is required", model)
 	}
-	value, _, _ := storedCredentialValue(e.roots, e.APIKeyEnv)
-	return value
+	if strings.TrimSpace(e.APIKeyEnv) != "" && !IsValidCredentialKey(e.APIKeyEnv) {
+		return fmt.Errorf("provider %q: api_key_env %q is invalid; use letters, numbers, and underscores, not a model name", model, e.APIKeyEnv)
+	}
+	if e.RequiresAPIKey() && e.APIKey() == "" {
+		return fmt.Errorf("provider %q: no stored key for %s in %s; run 'reasonix setup'", model, e.APIKeyEnv, e.roots.credentialsLocationForError())
+	}
+	return nil
+}
+
+func (c *Config) providerNames() string {
+	names := make([]string, len(c.Providers))
+	for i, p := range c.Providers {
+		names[i] = p.Name
+	}
+	return strings.Join(names, ", ")
 }
 
 // ResolveAPIKeyFromProcessEnvForProbe pins a setup-time, user-entered key onto
@@ -1624,90 +1643,4 @@ func (e *ProviderEntry) ResolveAPIKeyFromProcessEnvForProbe() {
 	}
 	e.resolvedAPIKey = value
 	e.resolvedSource = CredentialSource{Kind: CredentialSourceEnvironment, Label: "setup prompt"}
-}
-
-func (e *ProviderEntry) APIKeySourceLabel() string {
-	if e == nil || strings.TrimSpace(e.APIKeyEnv) == "" {
-		return ""
-	}
-	if e.resolvedAPIKey != "" {
-		return credentialSourceLabel(e.resolvedSource)
-	}
-	return ResolveCredentialForRootGlobalFirst(".", e.APIKeyEnv).Source.Label
-}
-
-// RequiresAPIKey reports whether this provider should be hidden/validated when
-// its configured api_key_env is empty. A blank api_key_env means the provider is
-// intentionally no-auth. Local OpenAI-compatible gateways often keep a legacy
-// api_key_env in config even though they accept unauthenticated requests, so
-// loopback/private endpoints are also allowed to run without a resolved key.
-func (e *ProviderEntry) RequiresAPIKey() bool {
-	if e == nil {
-		return false
-	}
-	if strings.TrimSpace(e.APIKeyEnv) == "" {
-		return providerBaseURLRequiresAPIKey(e.BaseURL)
-	}
-	return !providerBaseURLAllowsMissingAPIKey(e.BaseURL)
-}
-
-func providerBaseURLRequiresAPIKey(raw string) bool {
-	switch officialProviderHost(raw) {
-	case "api.deepseek.com", "api.xiaomimimo.com", "token-plan-cn.xiaomimimo.com", "api.minimaxi.com", "api.openai.com":
-		return true
-	default:
-		return false
-	}
-}
-
-func providerBaseURLAllowsMissingAPIKey(raw string) bool {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil {
-		return false
-	}
-	host := strings.Trim(strings.ToLower(u.Hostname()), "[]")
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
-		return true
-	}
-	addr, err := netip.ParseAddr(host)
-	if err != nil {
-		return false
-	}
-	return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast()
-}
-
-// Configured reports whether the provider is selectable. Providers that do not
-// require an API key are configured by definition; providers that name an env var
-// require that variable to resolve unless their endpoint is local/private.
-func (e *ProviderEntry) Configured() bool {
-	return e != nil && (!e.RequiresAPIKey() || e.APIKey() != "")
-}
-
-// Validate checks that the selected model's provider is usable.
-func (c *Config) Validate(model string) error {
-	e, ok := c.ResolveModel(model)
-	if !ok {
-		return fmt.Errorf("unknown model %q (configured: %s)", model, c.providerNames())
-	}
-	if e.Kind == "" {
-		return fmt.Errorf("provider %q: kind is required", model)
-	}
-	if e.BaseURL == "" {
-		return fmt.Errorf("provider %q: base_url is required", model)
-	}
-	if strings.TrimSpace(e.APIKeyEnv) != "" && !IsValidCredentialKey(e.APIKeyEnv) {
-		return fmt.Errorf("provider %q: api_key_env %q is invalid; use letters, numbers, and underscores, not a model name", model, e.APIKeyEnv)
-	}
-	if e.RequiresAPIKey() && e.APIKey() == "" {
-		return fmt.Errorf("provider %q: no stored key for %s in %s; run 'reasonix setup'", model, e.APIKeyEnv, e.roots.credentialsLocationForError())
-	}
-	return nil
-}
-
-func (c *Config) providerNames() string {
-	names := make([]string, len(c.Providers))
-	for i, p := range c.Providers {
-		names[i] = p.Name
-	}
-	return strings.Join(names, ", ")
 }

@@ -286,3 +286,49 @@ func TestStatusNamesAreDroppedWithAWarningNextToKeptDecoration(t *testing.T) {
 		t.Fatalf("warnings = %v, want one each for net and deleg", pack.Warnings)
 	}
 }
+
+// A shadow is a list of layers written into box-shadow, so its grammar is as
+// strict as a colour's: offsets, blur, spread, an optional inset and a hex
+// colour, and nothing that could leave the declaration or reach the network.
+func TestShadowTokenAcceptsWhatAPackWrites(t *testing.T) {
+	for _, v := range []string{
+		"none",
+		"0 0 0 1px #00000040",
+		"0 8px 24px -8px #00000033",
+		"inset 0 1px 0 #ffffff80, 0 16px 40px -14px #171e3333, 0 4px 12px -8px #171e3324",
+		"0 1px 2px #000",
+		"2px 2px #00000088",
+	} {
+		if !validToken("shadowFloat", v) {
+			t.Errorf("validToken(shadowFloat, %q) refused a shadow a pack would reasonably write", v)
+		}
+	}
+}
+
+func TestShadowTokenRefusesWhatCouldLeaveItsDeclaration(t *testing.T) {
+	for _, v := range []string{
+		"",
+		"0 0 0 red",
+		"0 0 0 rgb(0 0 0 / .5)",
+		"0 0 0 var(--err)",
+		"0 0 0 #000; position: fixed",
+		"0 0 0 #000 }",
+		"0 0 0 url(https://evil.example/x) #000",
+		"0 -2 4px #000",
+		"0 0 -4px #000",
+		"0 0 999px #000",
+		"0 0 0 0 0 #000",
+		"inset #000",
+		"0 0 0 #000, , 0 0 0 #000",
+		"0 0 0 #000, 0 0 0 #000, 0 0 0 #000, 0 0 0 #000, 0 0 0 #000",
+		"1em 1em #000",
+		"0\u00a00 0 #000000",
+		"0 0\u20280 #000000",
+		"0\u30000 4px #000000",
+		"0\t0 4px #000000",
+	} {
+		if validToken("shadowFloat", v) {
+			t.Errorf("validToken(shadowFloat, %q) accepted a value that is not a plain shadow", v)
+		}
+	}
+}

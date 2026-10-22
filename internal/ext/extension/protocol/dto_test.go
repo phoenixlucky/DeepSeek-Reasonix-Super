@@ -165,6 +165,14 @@ var methodFixtures = map[Method]struct {
 			Encoding: ContentUTF8,
 		},
 	},
+	MethodHostSessionRead: {
+		params: SessionReadParams{What: SessionReadMessages, Limit: 20},
+		result: SessionReadResult{Messages: []SessionMessage{{Role: "user", Text: "hi"}}, Omitted: 3},
+	},
+	MethodHostPromptSubmit: {
+		params: PromptSubmitParams{Text: "run the tests"},
+		result: PromptSubmitResult{Queued: false, Refused: PromptSubmitRefusedPerTurn},
+	},
 }
 
 func floatPtr(v float64) *float64 { return new(v) }

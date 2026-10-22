@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
+import { pdfAssets } from "./tools/pdf-assets.ts";
 
 interface ProxyEvents {
   on(event: "proxyReq", cb: (req: { setHeader(k: string, v: string): void }) => void): void;
@@ -11,20 +12,23 @@ interface ProxyEvents {
 const ROUTES = [
   // The hub's own surface, plus /rt — every pane's requests carry that prefix,
   // so without it a second session's traffic answers with the SPA shell.
-  "/runtimes", "/tree", "/rt", "/remotes",
+  "/runtimes", "/tree", "/rt", "/remotes", "/side",
   "/appearance",
+  "/agent-presets", "/agent-composition",
   "/events", "/history", "/status", "/balance", "/submit", "/cancel", "/approve", "/answer",
-  "/adjudications", "/execution-graph", "/jobs",
+  "/adjudications", "/execution-graph", "/jobs", "/tool-calls", "/subagents",
   "/plan", "/plan-decision", "/goal", "/resume", "/models", "/tool-approval-mode", "/workspace-trust", "/preset",
-  "/model", "/default-model", "/effort", "/new", "/sessions", "/delete-session", "/provider-setup",
+  "/model", "/default-model", "/default-mode", "/effort", "/new", "/sessions", "/delete-session", "/provider-setup",
+  "/tools",
   "/inbox", "/trajectory", "/mcp", "/skills", "/complete", "/prompt", "/workspace", "/capability-scope",
   "/providers", "/decision-models", "/roles", "/account", "/backups", "/hooks", "/memory", "/network", "/shell", "/todos",
   "/changes", "/commit", "/attachments", "/drop", "/checkpoints", "/branches", "/compact", "/compaction", "/rewind", "/branch",
   "/extensions", "/themes", "/plugins", "/market", "/surfaces", "/feedback",
   "/fork", "/summarize", "/forget", "/bypass", "/auto-approve-tools",
-  "/permissions", "/sandbox", "/progress-watch", "/ask-timeout", "/changed-files-settings", "/fold-work-settings", "/display-currency", "/auto-archive", "/context", "/storage", "/tray", "/browser", "/browser-host", "/asks", "/update", "/receipt-settings",
+  "/permissions", "/subagent-steer-limits", "/sandbox", "/progress-watch", "/ask-timeout", "/session-ref-settings", "/changed-files-settings", "/schedules", "/feedback-level-notices", "/observability", "/fold-work-settings", "/turn-narration-settings", "/display-currency", "/auto-archive", "/persona", "/context", "/storage", "/tray", "/browser", "/browser-host", "/asks", "/update", "/receipt-settings", "/subagent-claims", "/write-lease", "/peers",
+  "/mods", "/git",
   "/host", "/notifications", "/share", "/pair", "/device",
-  "/slash", "/workspaces", "/welcome", "/usage", "/config", "/studio",
+  "/web-access-settings", "/slash", "/workspaces", "/welcome", "/usage", "/config", "/studio",
 ];
 
 // REASONIX_SERVE points at a running `reasonix serve`; without it the app boots
@@ -33,13 +37,17 @@ export default defineConfig(({ mode }) => {
   const serve = loadEnv(mode, ".", "REASONIX").REASONIX_SERVE;
   return {
     base: "./",
-    plugins: [react()],
+    plugins: [react(), pdfAssets()],
     // Stylesheets are stubbed for tests by default, `?raw` included, so a
     // guard that reads app.css to check a rule gets an empty string and passes
     // on nothing. Processing it is what makes that guard able to fail.
     //
     // Threads rather than forks: a worker per file either way, but a thread is
     // cheaper to start, which is most of what a suite of small files pays.
+    //
+    // At most ten workers: every first lazy import goes through the one vite
+    // transform queue, and past that a cold import waits longer than a test's
+    // own budget, so files that pass alone in 0.4s fail in a full run.
     //
     // Sharing a worker across files was tried and taken back out. It was fast —
     // about 9s against 15 — and it made the suite intermittent: vi.mock cannot
@@ -52,6 +60,7 @@ export default defineConfig(({ mode }) => {
       testTimeout: 60_000,
       hookTimeout: 60_000,
       pool: "threads",
+      maxWorkers: Math.min(navigator.hardwareConcurrency, 10),
     },
     server: {
       port: 5273,

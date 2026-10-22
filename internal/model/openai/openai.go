@@ -96,6 +96,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	// or extension-supplied capability flag may put pixels on a wire that will
 	// reject them, whatever config resolution decided upstream.
 	vision = vision && visionReachesModel(officialDeepSeek, cfg.Model)
+	videoProtocol, _ := cfg.Extra["video_protocol"].(string)
 	visionDetail, _ := cfg.Extra["vision_detail"].(string)
 	visionDetail = strings.ToLower(strings.TrimSpace(visionDetail))
 	if !detailAccepted(visionDetail, officialDeepSeek) {
@@ -252,6 +253,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		draft202012Schemas: IsMiMo(cfg.BaseURL),
 		thinkingType:       thinkingType,
 		vision:             vision,
+		video:              newVideoWire(videoProtocol, cfg.BaseURL),
 		visionDetail:       visionDetail,
 		maxOutputTokens:    maxOutputTokens,
 		autoMaxOutput:      autoMaxOutput,
@@ -293,6 +295,7 @@ type client struct {
 	kimiK3             bool          // true for the explicit K3 protocol or kimi-k3 on Moonshot's direct API hosts
 	draft202012Schemas bool          // the endpoint's dialect, not its vendor: rewrite pre-2020-12 tuple keywords
 	thinkingType       string        // explicit `thinking` config override (enabled|disabled); "" = no override
+	video              *videoWire    // how a video file reaches this model; nil when the endpoint declares none
 	vision             bool          // model accepts image input — embed attached images as image_url parts
 	visionDetail       string        // image_url detail hint (low|high); "" = auto/omit
 	maxOutputTokens    int           // resolved total output budget; <=0 omits the optional field
@@ -654,18 +657,9 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 	// carried by a synthetic user message injected after the turn's full run of
 	// tool results, before the next non-tool message (splitting a tool-result
 	// run would break the API's tool-call pairing validation).
-	var pendingToolImages []string
+	var pending toolMedia
 	openCodeGo := provider.IsOpenCodeGoEndpoint(c.chatURL)
-	flushToolImages := func() {
-		if len(pendingToolImages) == 0 {
-			return
-		}
-		msgs = append(msgs, chatMessage{
-			Role:    "user",
-			Content: imageContentParts("Images returned by the preceding tool call(s):", pendingToolImages, c.visionDetail),
-		})
-		pendingToolImages = nil
-	}
+	flushToolImages := func() { msgs = pending.flush(msgs, c.visionDetail) }
 	for _, m := range src {
 		if m.Role != provider.RoleTool {
 			flushToolImages()
@@ -703,8 +697,8 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 			cm.Content = m.Content
 		}
 		msgs = append(msgs, cm)
-		if c.vision && m.Role == provider.RoleTool {
-			pendingToolImages = append(pendingToolImages, m.Images...)
+		if m.Role == provider.RoleTool {
+			pending.add(m, c.vision)
 		}
 	}
 	flushToolImages()
@@ -805,7 +799,7 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 		// is left untouched for backends that also honour it.
 		out.Thinking = &thinkingMode{Type: c.thinkingType}
 	}
-	return out
+	return out.forSummary(req.Summary)
 }
 
 func (c *client) buildPrefixRequest(req provider.Request, content, reasoning string) chatRequest {
@@ -900,7 +894,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 			return emitted, provider.StreamDecodeError(c.name, data, err)
 		}
 		if sr.Error != nil {
-			return emitted, &provider.StreamPayloadError{Provider: c.name, Message: sr.Error.Message, Code: sr.Error.Code, Type: sr.Error.Type, Param: sr.Error.Param}
+			return emitted, &provider.StreamPayloadError{Provider: c.name, Message: sr.Error.Message, Code: sr.Error.Code.String(), Type: sr.Error.Type, Param: sr.Error.Param}
 		}
 		if len(sr.Choices) > 0 && sr.Choices[0].FinishReason != nil && *sr.Choices[0].FinishReason != "" {
 			lastFinishReason = *sr.Choices[0].FinishReason
@@ -1104,20 +1098,6 @@ func normaliseUsage(u *wireUsage) *provider.Usage {
 
 // OpenAI-compatible wire protocol
 
-type chatRequest struct {
-	Model               string         `json:"model"`
-	Messages            []chatMessage  `json:"messages"`
-	Tools               []chatTool     `json:"tools,omitempty"`
-	Stream              bool           `json:"stream"`
-	StreamOptions       *streamOptions `json:"stream_options,omitempty"`
-	Temperature         *float64       `json:"temperature,omitempty"`
-	MaxTokens           int            `json:"max_tokens,omitempty"`
-	MaxCompletionTokens int            `json:"max_completion_tokens,omitempty"`
-	ReasoningEffort     string         `json:"reasoning_effort,omitempty"`
-	Thinking            *thinkingMode  `json:"thinking,omitempty"`
-	ExtraBody           map[string]any `json:"-"`
-}
-
 func omitExtraBodyFields(in map[string]any, names ...string) map[string]any {
 	if len(in) == 0 {
 		return nil
@@ -1193,6 +1173,7 @@ type chatContentPart struct {
 	Type     string        `json:"type"`
 	Text     string        `json:"text,omitempty"`
 	ImageURL *chatImageURL `json:"image_url,omitempty"`
+	VideoURL *chatVideoURL `json:"video_url,omitempty"`
 }
 
 type chatImageURL struct {

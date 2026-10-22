@@ -60,6 +60,9 @@ type loneSink struct {
 	states   []agentgraph.NodeState
 	durable  []string
 	statuses []string
+	// ran is "phase=model/effort" for each status event that named what the child ran on.
+	ran     []string
+	notices []event.Event
 }
 
 func (s *loneSink) Emit(e event.Event) {
@@ -67,6 +70,13 @@ func (s *loneSink) Emit(e event.Event) {
 	defer s.mu.Unlock()
 	if e.Kind == event.ToolProgress && e.Tool.Name == event.SubagentProgressStatusName {
 		s.statuses = append(s.statuses, e.Tool.Output)
+		if e.Tool.Profile != nil {
+			s.ran = append(s.ran, e.Tool.Output+"="+e.Tool.Profile.Model+"/"+e.Tool.Profile.Effort)
+		}
+		return
+	}
+	if e.Kind == event.Notice {
+		s.notices = append(s.notices, e)
 		return
 	}
 	if e.Kind != event.GraphDelta || e.Graph == nil {
@@ -511,5 +521,79 @@ func assertRefusedBeforeActing(t *testing.T, task *TaskTool, prov *loneProvider,
 			t.Fatalf("slot %d did not come back after the refusal: %v", slot+1, err)
 		}
 		defer release()
+	}
+}
+
+func (s *loneSink) waiting() []event.Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []event.Event
+	for _, n := range s.notices {
+		if n.Code == event.NoticeCodeSubagentWaiting {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// A writer held back by another's claim says so, naming the run whose claim it
+// is: a queued sub-agent that only looks idle sends people to kill the wrong thing.
+func TestQueuedWriterSaysWhoseClaimItIsWaitingOn(t *testing.T) {
+	prov := newLoneProvider()
+	task, ctx, _, sink := loneFixture(t, prov, 4)
+	root := task.workspaceRoot
+	claim, err := writeclaim.NormalizeWritePaths(root, []string{"a.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hold, err := task.scheduler.Acquire(context.Background(), writeclaim.AcquireRequest{Writer: true, WritePaths: claim, Label: "rewrite the docs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := task.Execute(ctx, json.RawMessage(`{"prompt":"work","description":"fix the typo","write_paths":["a.md"]}`))
+		done <- runErr
+	}()
+	waitUntil(t, "the writer to be told it is waiting", func() bool { return len(sink.waiting()) > 0 })
+	n := sink.waiting()[0]
+	var got event.SubagentWaiting
+	if err := json.Unmarshal([]byte(n.Detail), &got); err != nil {
+		t.Fatalf("detail %q: %v", n.Detail, err)
+	}
+	if got.Task != "fix the typo" || got.By != "rewrite the docs" || got.Whole {
+		t.Fatalf("payload = %+v, want the waiting task, the holder, and not a whole-workspace conflict", got)
+	}
+	if !strings.Contains(n.Text, "rewrite the docs") {
+		t.Errorf("fallback text %q does not name the holder", n.Text)
+	}
+	hold()
+	close(prov.release)
+	if err := <-done; err != nil {
+		t.Fatalf("task: %v", err)
+	}
+}
+
+// A run held back only by a ceiling has no claim to name, and says nothing.
+func TestQueuedRunHeldByACeilingNamesNoClaim(t *testing.T) {
+	prov := newLoneProvider()
+	task, ctx, _, sink := loneFixture(t, prov, 1)
+	hold, err := task.scheduler.Acquire(context.Background(), writeclaim.AcquireRequest{Writer: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := task.Execute(ctx, json.RawMessage(`{"prompt":"work","description":"lone","read_only":true}`))
+		done <- runErr
+	}()
+	waitUntil(t, "the delegation to be refused a slot", func() bool { return sink.sawState(agentgraph.StateQueued) })
+	if got := sink.waiting(); len(got) != 0 {
+		t.Fatalf("a ceiling wait produced %d claim notices", len(got))
+	}
+	hold()
+	close(prov.release)
+	if err := <-done; err != nil {
+		t.Fatalf("task: %v", err)
 	}
 }

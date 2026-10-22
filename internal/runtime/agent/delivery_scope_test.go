@@ -110,7 +110,9 @@ func TestDeliveryGoalNewMutationInvalidatesPriorSignoff(t *testing.T) {
 		{toolCallChunk("write-2", "write_file", `{"path":"main.go"}`), {Type: provider.ChunkDone}},
 		{{Type: provider.ChunkText, Text: "All done."}, {Type: provider.ChunkDone}},
 	}}
-	a := New(prov, reg, sessionstore.NewSession(""), Options{DeliveryProfile: true}, event.Discard)
+	a := New(prov, reg, sessionstore.NewSession(""), Options{DeliveryProfile: true,
+		CheckTargetAccess: allowTestFileAccess,
+	}, event.Discard)
 	ctx := deliveryGoalContext("goal-1", "implement main")
 	if err := a.Run(ctx, "implement the first chunk"); err != nil {
 		t.Fatalf("first turn: %v", err)

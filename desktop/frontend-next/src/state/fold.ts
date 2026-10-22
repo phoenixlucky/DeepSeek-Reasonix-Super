@@ -22,6 +22,31 @@ export function notePhase(phases: Record<string, string>, tool: Tool): Record<st
   if (tool.name !== SUBAGENT_PROGRESS_PREFIX + "status" || !tool.id) return phases;
   return { ...phases, [tool.id]: tool.output ?? "" };
 }
+/** The kernel names, on a child's status events, the model and effort its run started
+ *  with. That is what ran, so it replaces the dispatch-time reading on the card the
+ *  child belongs to, at the top level or nested in a batch. */
+export function noteRan(items: Item[], tool: Tool): Item[] {
+  const ran = tool.profile;
+  if (tool.name !== SUBAGENT_PROGRESS_PREFIX + "status" || !tool.id || !ran?.model) return items;
+  const patch = (c: Tool): Tool => (c.profile?.model === ran.model && c.profile?.effort === ran.effort ? c : { ...c, profile: { ...c.profile, model: ran.model, effort: ran.effort } });
+  let changed = false;
+  const next = items.map((i) => {
+    if (i.t !== "tool") return i;
+    if (i.tool.id === tool.id) {
+      const tool2 = patch(i.tool);
+      changed ||= tool2 !== i.tool;
+      return tool2 === i.tool ? i : { ...i, tool: tool2 };
+    }
+    const kids = i.children.map((c) => (c.id === tool.id ? patch(c) : c));
+    if (kids.some((c, k) => c !== i.children[k])) {
+      changed = true;
+      return { ...i, children: kids };
+    }
+    return i;
+  });
+  return changed ? next : items;
+}
+
 /** A child is working until its tracker says otherwise. */
 export const subagentLive = (phase: string | undefined): boolean => !!phase && !TERMINAL.has(phase);
 
@@ -51,10 +76,31 @@ export function foldTool(items: Item[], tool: Tool, running: boolean): Item[] {
       const prev = items[at] as Extract<Item, { t: "tool" }>;
       const next = items.slice();
       next[at] = { ...prev, tool: merge(prev.tool, tool), running };
+      if (!running) delete (next[at] as { omitted?: number }).omitted;
       return next;
     }
   }
   return [...items, { t: "tool", id: nextId(), tool: { ...tool, partial: tool.partial ?? false }, running, children: [] }];
+}
+
+/** How much of a running tool's output the page keeps: the end of it. The result
+ *  that closes the call replaces it with what the kernel bounded for the model. */
+export const PROGRESS_TAIL = 64 * 1024;
+
+// A progress frame is the call's id and its newest chunk of output; nothing else
+// on it describes the call, so it lands on the card as more output, and only the
+// last PROGRESS_TAIL of it stays.
+export function foldProgress(items: Item[], tool: Tool): Item[] {
+  const at = tool.id ? items.findIndex((i) => i.t === "tool" && i.tool.id === tool.id) : -1;
+  if (at < 0) return foldTool(items, tool, true);
+  const prev = items[at] as Extract<Item, { t: "tool" }>;
+  const joined = (prev.tool.output ?? "") + (tool.output ?? "");
+  let cut = Math.max(0, joined.length - PROGRESS_TAIL);
+  // A cut between the halves of a surrogate pair would start the tail on half a character.
+  if (cut > 0 && cut < joined.length && joined.charCodeAt(cut) >= 0xdc00 && joined.charCodeAt(cut) <= 0xdfff) cut++;
+  const next = items.slice();
+  next[at] = { ...prev, tool: { ...prev.tool, output: cut > 0 ? joined.slice(cut) : joined }, running: true, ...(cut > 0 ? { omitted: (prev.omitted ?? 0) + cut } : {}) };
+  return next;
 }
 
 // dropTool removes the dispatch row a specialised card replaces, so the same

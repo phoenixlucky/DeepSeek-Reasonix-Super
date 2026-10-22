@@ -77,7 +77,12 @@ func AssessRememberWrite(store Store, args json.RawMessage) RememberAssessment {
 		assessment.Reason = "memory may contain sensitive information"
 		return assessment
 	}
-	if rememberRequestOverlaps(store, in, assessment.Name) {
+	overlaps, err := rememberRequestOverlaps(store, in, assessment.Name)
+	if err != nil {
+		assessment.Reason = "memory store cannot be read; automatic writes are unavailable"
+		return assessment
+	}
+	if overlaps {
 		assessment.Reason = "an existing memory may already cover this fact"
 		return assessment
 	}
@@ -95,21 +100,25 @@ func rememberRequestSensitive(in rememberRequest) bool {
 	return strings.Contains(upper, "BEGIN PRIVATE KEY") || strings.Contains(upper, "BEGIN OPENSSH PRIVATE KEY")
 }
 
-func rememberRequestOverlaps(store Store, in rememberRequest, name string) bool {
+func rememberRequestOverlaps(store Store, in rememberRequest, name string) (bool, error) {
 	wantTitle := normalizedMemoryPhrase(in.Title)
 	wantDescription := normalizedMemoryPhrase(in.Description)
-	for _, existing := range store.ListAll() {
+	memories, err := store.ListAll()
+	if err != nil {
+		return false, err
+	}
+	for _, existing := range memories {
 		if slug(existing.Name) == name {
-			return true
+			return true, nil
 		}
 		if wantTitle != "" && normalizedMemoryPhrase(existing.Title) == wantTitle {
-			return true
+			return true, nil
 		}
 		if wantDescription != "" && normalizedMemoryPhrase(existing.Description) == wantDescription {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 func normalizedMemoryPhrase(value string) string {

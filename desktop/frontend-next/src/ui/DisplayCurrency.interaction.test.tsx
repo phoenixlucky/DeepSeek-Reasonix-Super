@@ -9,7 +9,7 @@ import type { DisplayCurrencyMode, DisplayCurrencySettings } from "../port/bound
 
 afterEach(cleanup);
 
-const base: DisplayCurrencySettings = { mode: "auto", path: "/u/config.toml" };
+const base: DisplayCurrencySettings = { mode: "auto", path: "/u/config.toml", unconverted: [] };
 
 function portWith(save: (m: DisplayCurrencyMode) => Promise<DisplayCurrencySettings>) {
   return { displayCurrency: vi.fn(async () => base), saveDisplayCurrency: vi.fn(save) } as unknown as AgentPort & { saveDisplayCurrency: ReturnType<typeof vi.fn> };
@@ -49,5 +49,20 @@ describe("the display currency setting", () => {
     const pressed = screen.getAllByRole("button").filter((b) => b.getAttribute("aria-pressed") === "true");
     expect(pressed.map((b) => b.textContent)).toEqual(["自动"]);
     expect(changed).not.toHaveBeenCalled();
+  });
+});
+
+describe("a price the pinned currency cannot be shown for", () => {
+  it("names the model, its currency and what to do, and says nothing when there is none", async () => {
+    const stuck = { ...base, mode: "CNY" as const, unconverted: [{ provider: "deepseek", model: "deepseek-flash", currency: "USD" }] };
+    const port = { displayCurrency: vi.fn(async () => stuck), saveDisplayCurrency: vi.fn() } as unknown as AgentPort;
+    render(<DisplayCurrency port={port} onChanged={() => {}} />);
+    expect(await screen.findByText(/deepseek-flash（USD）/)).toBeTruthy();
+    expect(screen.getByText(/恢复官方价/)).toBeTruthy();
+    cleanup();
+    const fine = { displayCurrency: vi.fn(async () => ({ ...base, mode: "CNY" as const })), saveDisplayCurrency: vi.fn() } as unknown as AgentPort;
+    render(<DisplayCurrency port={fine} onChanged={() => {}} />);
+    await screen.findByRole("button", { name: "自动" });
+    expect(screen.queryByText(/恢复官方价/)).toBeNull();
   });
 });

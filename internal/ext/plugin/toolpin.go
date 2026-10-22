@@ -76,6 +76,9 @@ func (h *Host) HeldTools(server string) ([]HeldTool, bool) {
 type toolPinFile struct {
 	Version int               `json:"version"`
 	Tools   map[string]string `json:"tools"`
+	// Follow is the user's standing choice to take this server's definition
+	// changes without being asked; each change is still announced.
+	Follow bool `json:"follow,omitempty"`
 }
 
 // toolPinsPath is a server's approval record, named by a digest of its name. A
@@ -183,13 +186,15 @@ func (h *Host) AcceptHeldTools(server, digest string) ([]string, error) {
 		pins.Tools[held.RawName] = held.Digest
 		names = append(names, held.RawName)
 	}
-	if err := writeToolPins(path, pins.Tools); err != nil {
+	if err := writeToolPins(path, pins.Tools, pins.Follow); err != nil {
 		return nil, err
 	}
 	return names, nil
 }
 
 func (h *Host) announceHeld(c *Client) {
+	c.owner.Store(h)
+	h.announceFollowed(c)
 	c.toolsMu.Lock()
 	held := append([]HeldTool(nil), c.held...)
 	c.toolsMu.Unlock()
@@ -255,10 +260,10 @@ func canonicalJSON(raw json.RawMessage) json.RawMessage {
 // judgeToolPins compares a live listing with the server's approval record. A
 // server with no record that the user has authorized is recorded as listed; a
 // record that cannot be read holds every tool, since nothing can be compared.
-func judgeToolPins(s Spec, tools []mcpTool) []HeldTool {
+func judgeToolPins(s Spec, tools []mcpTool) (held, followed []HeldTool) {
 	path := toolPinsPath(s)
 	if path == "" {
-		return nil
+		return nil, nil
 	}
 	current := make(map[string]string, len(tools))
 	for _, t := range tools {
@@ -268,28 +273,40 @@ func judgeToolPins(s Spec, tools []mcpTool) []HeldTool {
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		if s.ServerAuthorized() && len(current) > 0 {
-			_ = writeToolPins(path, current)
+			_ = writeToolPins(path, current, false)
 		}
-		return nil
+		return nil, nil
 	case err != nil:
-		return holdAll(s, current, tool.HeldMCPUnverifiable)
+		return holdAll(s, current, tool.HeldMCPUnverifiable), nil
 	}
 	var pins toolPinFile
 	if json.Unmarshal(raw, &pins) != nil || pins.Version != toolPinsVersion || pins.Tools == nil {
-		return holdAll(s, current, tool.HeldMCPUnverifiable)
+		return holdAll(s, current, tool.HeldMCPUnverifiable), nil
 	}
-	var held []HeldTool
+	follow := pins.Follow && s.ServerAuthorized()
 	for name, digest := range current {
 		approved, known := pins.Tools[name]
+		var h HeldTool
 		switch {
 		case !known:
-			held = append(held, newHeld(s, name, tool.HeldMCPAdded, digest, ""))
+			h = newHeld(s, name, tool.HeldMCPAdded, digest, "")
 		case approved != digest:
-			held = append(held, newHeld(s, name, tool.HeldMCPChanged, digest, approved))
+			h = newHeld(s, name, tool.HeldMCPChanged, digest, approved)
+		default:
+			continue
+		}
+		if follow {
+			followed = append(followed, h)
+		} else {
+			held = append(held, h)
 		}
 	}
+	if len(followed) > 0 && !recordFollowed(path, pins, followed) {
+		held, followed = append(held, followed...), nil
+	}
 	sort.Slice(held, func(i, j int) bool { return held[i].RawName < held[j].RawName })
-	return held
+	sort.Slice(followed, func(i, j int) bool { return followed[i].RawName < followed[j].RawName })
+	return held, followed
 }
 
 func holdAll(s Spec, current map[string]string, class tool.HeldMCPClass) []HeldTool {
@@ -309,8 +326,8 @@ func newHeld(s Spec, raw string, class tool.HeldMCPClass, digest, approved strin
 	return HeldTool{RawName: raw, VisibleName: visible, Class: class, Digest: digest, Approved: approved}
 }
 
-func writeToolPins(path string, digests map[string]string) error {
-	b, err := json.MarshalIndent(toolPinFile{Version: toolPinsVersion, Tools: digests}, "", "  ")
+func writeToolPins(path string, digests map[string]string, follow bool) error {
+	b, err := json.MarshalIndent(toolPinFile{Version: toolPinsVersion, Tools: digests, Follow: follow}, "", "  ")
 	if err == nil {
 		err = fileutil.AtomicWriteFile(path, b, 0o600)
 	}

@@ -65,3 +65,51 @@ func TestContextBreakdownReportsNoBoundaryWithoutAWindow(t *testing.T) {
 		t.Fatalf("CompactAt = %d, want 0 when nobody declared a window", got)
 	}
 }
+
+// A class total says tool output is the largest part; it cannot say which
+// result it was. The breakdown names the largest holders of each class, with
+// the producing tool, so the reader can act on the one that matters.
+func TestContextBreakdownNamesTheLargestHoldersOfEachClass(t *testing.T) {
+	a := compositionAgent(t)
+	b := a.ContextBreakdown()
+	if len(b.Largest) == 0 {
+		t.Fatalf("no holders named: %+v", b)
+	}
+	var tools []ContextHolder
+	for _, h := range b.Largest {
+		if h.Class == "output" {
+			tools = append(tools, h)
+		}
+		if h.Class != "user" && h.Class != "reply" && h.Class != "output" {
+			t.Fatalf("holder class %q is not one of the breakdown's own message classes", h.Class)
+		}
+		if h.Tokens <= 0 {
+			t.Fatalf("a holder with no tokens: %+v", h)
+		}
+	}
+	if len(tools) == 0 || tools[0].Tool != "grep" || !tools[0].Active {
+		t.Fatalf("output holders = %+v, want the running turn's grep result first", tools)
+	}
+	for i := 1; i < len(tools); i++ {
+		if tools[i].Tokens > tools[i-1].Tokens {
+			t.Fatalf("holders of a class must run largest first: %+v", tools)
+		}
+	}
+}
+
+func TestContextBreakdownKeepsAClassToItsFiveLargestHolders(t *testing.T) {
+	sess := sessionstore.NewSession("sys")
+	a := New(nil, nil, sess, Options{ContextWindow: 128000}, nil)
+	for i := range 9 {
+		sess.Add(provider.Message{Role: provider.RoleUser, Content: string(make([]byte, 100*(i+1)))})
+	}
+	n := 0
+	for _, h := range a.ContextBreakdown().Largest {
+		if h.Class == "user" {
+			n++
+		}
+	}
+	if n != 5 {
+		t.Fatalf("user holders = %d, want the five largest of nine", n)
+	}
+}

@@ -12,9 +12,10 @@ import (
 	"time"
 )
 
-// FormatVersion is the snapshot schema this build writes. A reader refuses a
-// newer one rather than guessing at fields it does not know.
-const FormatVersion = 1
+// FormatVersion is the latest snapshot schema this build writes. A reader refuses a
+// newer one rather than guessing at fields it does not know. Version 2 adds
+// complete hook identities; version 1 remains readable.
+const FormatVersion = 3
 
 // Category is one box the user ticks at export.
 type Category string
@@ -185,7 +186,7 @@ func (s *Snapshot) validate() error {
 // settings to dodge the consent automation carries.
 func categoryOfKind(kind string) Category {
 	switch kind {
-	case KindGeneral, KindProvider, KindInterface:
+	case KindGeneral, KindProvider, KindInterface, KindAgentPreset:
 		return CategorySettings
 	case KindSkill, KindPlugin, KindMCP:
 		return CategoryExtensions

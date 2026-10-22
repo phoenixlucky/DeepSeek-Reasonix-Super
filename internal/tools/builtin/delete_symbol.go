@@ -18,9 +18,10 @@ import (
 func init() { tool.RegisterBuiltin(deleteSymbol{}) }
 
 type deleteSymbol struct {
-	roots   []string
-	guard   SessionDataGuard
-	managed ManagedConfigPaths
+	readPolicy editReadPolicy
+	roots      []string
+	guard      SessionDataGuard
+	managed    ManagedConfigPaths
 	// sessionTemp, when non-nil, adds the session's own temporary directory
 	// to the writable surface — the same directory bash writes through $TMPDIR.
 	sessionTemp *sessiontemp.Manager
@@ -89,7 +90,7 @@ func (d deleteSymbol) Execute(ctx context.Context, args json.RawMessage) (string
 		return "", fmt.Errorf("delete_symbol only supports Go files — use delete_range for %s files", ext)
 	}
 
-	src, err := readEditSource(ctx, d.overlay, p.Path)
+	src, err := d.readPolicy.source(ctx, d.overlay, p.Path)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", p.Path, err)
 	}
@@ -136,7 +137,7 @@ func (d deleteSymbol) Preview(ctx context.Context, args json.RawMessage) (diff.C
 		return diff.Change{}, fmt.Errorf("delete_symbol only supports Go files")
 	}
 
-	src, err := readEditSource(ctx, d.overlay, p.Path)
+	src, err := d.readPolicy.source(ctx, d.overlay, p.Path)
 	if err != nil {
 		return diff.Change{}, fmt.Errorf("read %s: %w", p.Path, err)
 	}

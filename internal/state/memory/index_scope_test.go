@@ -21,7 +21,7 @@ func TestIndexShowsBothScopesWithOverrideAnnotation(t *testing.T) {
 		Scope: FactScopeGlobal, Body: "us-east-1",
 	})
 
-	index := store.Index()
+	index := mustStore(t, store).Index()
 	for _, want := range []string{
 		"(project/deploy-region.md)",
 		"(global/deploy-region.md)",

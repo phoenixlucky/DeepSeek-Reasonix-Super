@@ -42,7 +42,7 @@ export function ReplyMenu({
     if (!el || !to) return;
     pinToViewport(el, to.left, beside(to, el.offsetHeight * zoom(), innerHeight, "above", GAP));
   }, [anchor]);
-  useFollow(open, place);
+  useFollow(open, place, undefined, { anchor, container: pop });
 
   // The list left the row's DOM, so the row keeps a stop where it was: Tab from
   // the trigger enters at the first item, Shift+Tab from the next control at

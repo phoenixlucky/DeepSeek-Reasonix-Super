@@ -105,12 +105,18 @@ func WebSearchReasonOf(err error) (WebSearchReason, bool) {
 	return "", false
 }
 
+// ProviderAdded reports whether the desktop's access list offers the
+// connection; with no list declared every connection counts as added.
+func (c *Config) ProviderAdded(name string) bool {
+	return c.Desktop.ProviderAccess == nil || slices.Contains(c.Desktop.ProviderAccess, name)
+}
+
 func (c *Config) ResolveWebSearchModel(ref string) (*ProviderEntry, error) {
 	name, model, exact := strings.Cut(strings.TrimSpace(ref), "/")
 	if c == nil || !exact || name == "" || model == "" {
 		return nil, &WebSearchUnavailableError{WebSearchBadRef}
 	}
-	if c.Desktop.ProviderAccess != nil && !slices.Contains(c.Desktop.ProviderAccess, name) {
+	if !c.ProviderAdded(name) {
 		return nil, &WebSearchUnavailableError{WebSearchNotAdded}
 	}
 	e, found := c.Provider(name)

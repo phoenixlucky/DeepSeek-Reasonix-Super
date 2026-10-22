@@ -57,6 +57,9 @@ func (c *Controller) maybeSessionStart(ctx context.Context) {
 // resets the executor to a clean session carrying the same system prompt. It
 // ends the old session and starts the new one for lifecycle hooks.
 func (c *Controller) NewSession() error {
+	if c.CompositionSummary() != nil {
+		return c.newCompositionSession()
+	}
 	if c.executor == nil {
 		return nil
 	}
@@ -96,7 +99,12 @@ func (c *Controller) NewSession() error {
 		c.mu.Unlock()
 	}
 	c.setActiveJobSession(c.SessionPath())
-	c.executor.SetSession(sessionstore.NewSession(c.systemPrompt))
+	fresh := sessionstore.NewSession(c.systemPrompt)
+	if binding := c.CompositionBinding(); binding != nil {
+		binding.Started = false
+		fresh.BindComposition(binding)
+	}
+	c.executor.SetSession(fresh)
 	c.bindExecutorProjection(c.SessionPath(), false)
 	if c.guardianSess != nil {
 		c.guardianSess.Reset()
@@ -184,7 +192,11 @@ func (c *Controller) ClearSession() error {
 		c.mu.Unlock()
 	}
 	c.setActiveJobSession(c.SessionPath())
-	c.executor.SetSession(sessionstore.NewSession(c.systemPrompt))
+	fresh := sessionstore.NewSession(c.systemPrompt)
+	if binding := c.CompositionBinding(); binding != nil {
+		fresh.BindComposition(binding)
+	}
+	c.executor.SetSession(fresh)
 	c.bindExecutorProjection(c.SessionPath(), false)
 	if c.guardianSess != nil {
 		c.guardianSess.Reset()
@@ -232,51 +244,37 @@ func (c *Controller) hasUnfinishedSessionJobs(sessionPath string) bool {
 // Branch copies the current conversation into a child branch and switches to it.
 // It branches at the current tip and does not require a checkpoint.
 func (c *Controller) Branch(name string) (string, error) {
-	if c.executor == nil {
-		return "", c.rewindFail(fmt.Errorf("branch unavailable"))
-	}
-	if c.sessionDir == "" {
-		return "", c.rewindFail(fmt.Errorf("branch needs session persistence, which is disabled"))
-	}
-	// Hold the rotation gate across the Snapshot and the switch below so a turn
-	// cannot start mid-branch and then have its session replaced.
-	if err := c.beginRotation(); err != nil {
-		if errors.Is(err, errTurnRunningRotation) {
-			return "", c.rewindFail(fmt.Errorf("cannot branch while a turn is running"))
+	path, err := c.branchAt(nil, name, func(sess *sessionstore.Session, newPath string) {
+		// See snapshotMu: the swap must not interleave with an in-flight save.
+		c.snapshotMu.Lock()
+		if c.executor.Session().WriteAuthorityRequired() {
+			sess.RequireWriteAuthority()
 		}
-		return "", c.rewindFail(err)
-	}
-	defer c.endRotation()
-	if !c.executor.Session().HasContent() {
-		return "", c.rewindFail(fmt.Errorf("nothing to branch yet"))
-	}
-	if err := c.Snapshot(); err != nil {
-		return "", c.rewindFail(err)
-	}
-	sess, newPath, err := c.seedBranch(c.executor.Session().Snapshot(), name)
+		c.executor.SetSession(sess)
+		c.mu.Lock()
+		c.sessionPath = newPath
+		c.guardianPath = guardian.PathFor(newPath)
+		c.mu.Unlock()
+		c.bindExecutorProjection(newPath, false)
+		c.ResetPlannerSession()
+		c.setActiveJobSession(newPath)
+		c.rebindCheckpoints(newPath)
+		if c.guardianSess != nil {
+			c.guardianSess.Reset()
+		}
+		c.carryRecoveryState(newPath)
+		c.rotateSessionTemp()
+		c.snapshotMu.Unlock()
+		if follow := c.sessionPathChangedHandler(); follow != nil {
+			follow(newPath)
+		}
+	})
 	if err != nil {
 		return "", c.rewindFail(err)
 	}
-	// See snapshotMu: the swap must not interleave with an in-flight save.
-	c.snapshotMu.Lock()
-	c.executor.SetSession(sess)
-	c.mu.Lock()
-	c.sessionPath = newPath
-	c.guardianPath = guardian.PathFor(newPath)
-	c.mu.Unlock()
-	c.bindExecutorProjection(newPath, false)
-	c.ResetPlannerSession()
-	c.setActiveJobSession(newPath)
-	c.rebindCheckpoints(newPath)
-	if c.guardianSess != nil {
-		c.guardianSess.Reset()
-	}
-	c.carryRecoveryState(newPath)
-	c.rotateSessionTemp()
-	c.snapshotMu.Unlock()
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
-		Text: fmt.Sprintf("created branch %s", sessionstore.BranchID(newPath))})
-	return newPath, nil
+		Text: fmt.Sprintf("created branch %s", sessionstore.BranchID(path))})
+	return path, nil
 }
 
 // Branches lists saved conversation branches in this controller's session dir.
@@ -474,6 +472,9 @@ func (c *Controller) beginRotation() error {
 	}()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.gate.closed {
+		return errControllerClosed
+	}
 	if c.gate.active() {
 		return errTurnRunningRotation
 	}
@@ -547,6 +548,8 @@ func (c *Controller) close(fireSessionEnd bool, jobsMode closeJobsMode) {
 	// controller; make teardown idempotent so a duplicate Close cannot re-fire
 	// SessionEnd hooks or re-run cleanup. The first caller's jobsMode wins.
 	c.closeOnce.Do(func() {
+		c.goalRetry.cancel()
+		c.awaitResume.cancel()
 		c.mu.Lock()
 		started := c.startedOnce
 		cancel := c.gate.cancel
@@ -567,6 +570,8 @@ func (c *Controller) close(fireSessionEnd bool, jobsMode closeJobsMode) {
 		}
 		c.mu.Unlock()
 		c.leaveCurrencyGroup()
+		c.closePeers()
+		c.side.closeAll()
 		if cancel != nil {
 			// clearAll deliberately does not signal waiters. Pair it with the
 			// foreground cancellation so approval/ask waits always unblock.

@@ -242,15 +242,6 @@ func normalizeExternalFolderRefToken(token string) string {
 	return token
 }
 
-func (c *Controller) externalFolderRef(token string) (ref, bool) {
-	_, rel, abs, ok := c.externalFolderRefTarget(token)
-	if !ok {
-		return ref{}, false
-	}
-	displayPath := externalFolderDisplayPath(abs, rel)
-	return ref{kind: refFile, path: rel, baseDir: abs, displayPath: displayPath, raw: token}, true
-}
-
 func (c *Controller) externalFolderRefTarget(token string) (rootToken, rel, abs string, ok bool) {
 	key := normalizeExternalFolderRefToken(token)
 	if !strings.HasPrefix(key, externalFolderRefPrefix+"/") {
@@ -480,7 +471,7 @@ func (c *Controller) detectRefsMode(line string, scopedOnly bool) []ref {
 // HasRefs reports whether a line contains any resolvable @references, so a
 // frontend can decide to resolve off its event loop only when needed.
 func (c *Controller) HasRefs(line string) bool {
-	return len(c.detectRefs(line)) > 0
+	return len(c.detectRefs(line)) > 0 || hasSessionRef(line)
 }
 
 // resolveBareNames batch-resolves simple filenames (no path separator) that
@@ -675,13 +666,13 @@ func workspaceRel(path, baseDir string) (rel, absPath, absBase string, ok bool) 
 // strings for any that failed. An empty block means no references resolved.
 // Safe to call off a frontend's event loop; honours ctx for the resource reads.
 func (c *Controller) ResolveRefs(ctx context.Context, line string) (block string, errs []string) {
-	return c.resolveRefs(ctx, line, false)
+	return c.withSessionRefs(ctx, line, false)
 }
 
 // ResolveScopedRefs is the HTTP/frontend variant: file references are honored
 // only when they can be resolved under the controller workspace root.
 func (c *Controller) ResolveScopedRefs(ctx context.Context, line string) (block string, errs []string) {
-	return c.resolveRefs(ctx, line, true)
+	return c.withSessionRefs(ctx, line, true)
 }
 
 func (c *Controller) resolveRefs(ctx context.Context, line string, scopedOnly bool) (block string, errs []string) {

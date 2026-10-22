@@ -7,7 +7,7 @@ import (
 
 type queueContextProbe struct{}
 
-func (queueContextProbe) QueueMemory(string) {}
+func (queueContextProbe) QueueMemory(string, ...Memory) {}
 
 func TestWithoutQueueShadowsAncestorQueue(t *testing.T) {
 	parent := WithQueue(context.Background(), queueContextProbe{})

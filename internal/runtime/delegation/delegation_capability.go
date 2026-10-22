@@ -48,6 +48,8 @@ func (t *TaskTool) ResolveProfile(args json.RawMessage) *event.Profile {
 		Model   string `json:"model"`
 		Effort  string `json:"effort"`
 		Profile string `json:"profile"`
+		Desc    string `json:"description"`
+		Prompt  string `json:"prompt"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return nil
@@ -74,7 +76,7 @@ func (t *TaskTool) ResolveProfile(args json.RawMessage) *event.Profile {
 	if name == "" {
 		name = "task"
 	}
-	return &event.Profile{Name: name, Count: 1, Model: model, Effort: effort}
+	return &event.Profile{Name: name, Count: 1, Model: model, Effort: effort, Label: event.TaskLabel(p.Desc, p.Prompt)}
 }
 
 func (r *ReadOnlyTaskTool) ResolveProfile(args json.RawMessage) *event.Profile {

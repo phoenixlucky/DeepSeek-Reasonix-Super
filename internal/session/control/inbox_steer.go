@@ -176,7 +176,7 @@ func (c *Controller) steerInboxItem(id string, holdIfPaused bool) (sessioninbox.
 		}
 	}
 	c.mu.Lock()
-	accepted := !c.gate.closed && !c.gate.rotating && c.gate.running && c.executor != nil && len(env.FrozenImages) == 0 && c.steerItemAs(meta.Origin, id, loader, env.Via)
+	accepted := !c.gate.closed && !c.gate.rotating && c.gate.running && c.executor != nil && len(env.FrozenImages) == 0 && c.steerItemAs(meta.Origin, id, loader, env.Via, env.DisplayText)
 	if accepted {
 		c.inbox.mu.Lock()
 		c.inbox.trackActive(id)
@@ -214,11 +214,11 @@ func (c *Controller) steerInboxItem(id string, holdIfPaused bool) (sessioninbox.
 
 // steerItemAs queues the item under the attribution the manifest recorded, so a
 // host-authored item is never delivered as something the user said. Holds c.mu.
-func (c *Controller) steerItemAs(origin sessioninbox.PromptOrigin, id string, loader func() (string, error), via *provider.Via) bool {
+func (c *Controller) steerItemAs(origin sessioninbox.PromptOrigin, id string, loader func() (string, error), via *provider.Via, display string) bool {
 	if origin.IsHost() {
 		return c.executor.SteerHostItem(id, loader)
 	}
-	return c.executor.SteerItemFrom(id, loader, via)
+	return c.executor.SteerDisplayedItemFrom(id, loader, display, via)
 }
 
 // TrySteer queues mid-turn guidance only when the active agent turn accepts it.
@@ -303,7 +303,7 @@ func (c *Controller) lockPromptFor(ctx context.Context, kind string) bool {
 
 func askAnswersHaveSelection(answers []event.AskAnswer) bool {
 	for _, answer := range answers {
-		if len(answer.Selected) > 0 {
+		if len(answer.Selected) > 0 || len(answer.Value) > 0 {
 			return true
 		}
 	}
@@ -335,7 +335,7 @@ func (c *Controller) onInboxUnappliedSteer(itemID string) {
 		}
 	}
 	_ = st.SetStateCoded(itemID, sessioninbox.StateUncertain, sessioninbox.BlockSteerUnapplied, "steer accepted but unapplied before turn exit")
-	_ = st.SetPaused(true)
+	_ = st.Pause(sessioninbox.PauseTurnRecord)
 	c.inbox.mu.Lock()
 	c.inbox.untrackActive(itemID)
 	c.inbox.mu.Unlock()

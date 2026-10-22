@@ -2,6 +2,7 @@ package boot
 
 import (
 	"context"
+	"reasonix/internal/contract/tool"
 	"strings"
 
 	"reasonix/internal/contract/ablation"
@@ -29,6 +30,8 @@ type delegationInputs struct {
 	session      sessionRuntime
 	bashEnforced func() bool
 	extraRoots   []string
+	// childTools names what a child gets from its own model beyond the parent's.
+	childTools func(modelRef string) []tool.Tool
 }
 
 // delegation builds the task tool and the skill sub-agent runner. Wired after
@@ -72,6 +75,7 @@ func (w roleWiring) taskTool(in delegationInputs) *delegation.TaskTool {
 		ArchiveDir:        w.roots.ArchiveDir(),
 		SysPrompt:         "",
 		Gate:              w.gate,
+		CheckTargetAccess: w.checkTargetAccess,
 		KeepPolicy:        w.keep,
 		SubagentModel:     in.sub.taskModel,
 		SubagentEffort:    in.sub.taskEffort,
@@ -89,7 +93,9 @@ func (w roleWiring) taskTool(in delegationInputs) *delegation.TaskTool {
 		WithScheduler(in.sub.scheduler).
 		WithProfileLookup(in.sub.profileLookup).
 		WithProfileConfigResolvers(in.sub.profileModel, in.sub.profileEffort).
-		WithBashSandboxEnforced(in.bashEnforced)
+		WithBashSandboxEnforced(in.bashEnforced).
+		WithChildTools(in.childTools).
+		WithOptimisticClaims(w.cfg.SubagentClaimsOptimistic())
 }
 
 // skillRunOptions is the one place skill sub-agent options are built, so the
@@ -102,6 +108,7 @@ func (w roleWiring) skillRunOptions(in delegationInputs) func(context.Context, i
 			Pricing:             price,
 			UsageSource:         event.UsageSourceSubagent,
 			Gate:                w.gate,
+			CheckTargetAccess:   w.checkTargetAccess,
 			ContextWindow:       ctxWin,
 			RecentKeep:          w.cfg.Agent.RecentKeep,
 			CompactionBudgets:   compactionBudgets(w.cfg),
@@ -113,6 +120,7 @@ func (w roleWiring) skillRunOptions(in delegationInputs) func(context.Context, i
 			ReasoningLanguage:   langpref.ReasoningLanguageFromContext(sctx),
 			SubagentDepth:       childDepth,
 			MaxSubagentDepth:    in.sub.maxDepth,
+			ProviderRetries:     agent.ProviderRetriesFromConfig(w.cfg.Agent.MaxProviderRetries),
 			DeliveryProfile:     in.delivery,
 			Ablation:            in.opts.Ablation,
 			WorkspaceLease:      in.session.lease,

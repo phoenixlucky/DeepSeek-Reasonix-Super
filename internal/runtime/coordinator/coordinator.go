@@ -295,6 +295,20 @@ func (c *Coordinator) SetConfigWriteApprover(g tool.ConfigWriteApprover) {
 	}
 }
 
+// SetPaidSearchApprover propagates the paid-search consent path to both
+// tool-using agents in two-model mode.
+func (c *Coordinator) SetPaidSearchApprover(g tool.PaidSearchApprover) {
+	if c == nil {
+		return
+	}
+	if c.plannerAgent != nil {
+		c.plannerAgent.SetPaidSearchApprover(g)
+	}
+	if c.executor != nil {
+		c.executor.SetPaidSearchApprover(g)
+	}
+}
+
 // SetPlannerPlanApprover connects planner-authored "wait for approval" outputs
 // to the host's approval surface. Without one, Coordinator keeps the legacy
 // direct handoff behavior so non-interactive runs cannot block forever.

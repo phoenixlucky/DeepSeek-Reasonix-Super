@@ -211,6 +211,18 @@ func TestProjectPermissionsOnlyNarrow(t *testing.T) {
 	}
 }
 
+// The switch is the user's: a checkout can neither turn it on for them nor off.
+func TestProjectCannotChangeTheOriginQuestion(t *testing.T) {
+	off, _ := loadScoped(t, "", "[permissions]\nask_on_external_origin = true\n")
+	if off.Permissions.AskOnExternalOrigin || !slices.Contains(ignoredKeys(off), "permissions.ask_on_external_origin") {
+		t.Fatalf("a project turned the question on: %v, ignored %v", off.Permissions.AskOnExternalOrigin, ignoredKeys(off))
+	}
+	on, _ := loadScoped(t, "[permissions]\nask_on_external_origin = true\n", "[permissions]\nask_on_external_origin = false\n")
+	if !on.Permissions.AskOnExternalOrigin || !slices.Contains(ignoredKeys(on), "permissions.ask_on_external_origin") {
+		t.Fatalf("a project turned the user's question off: %v, ignored %v", on.Permissions.AskOnExternalOrigin, ignoredKeys(on))
+	}
+}
+
 func TestProjectCannotClearUserDeny(t *testing.T) {
 	cfg, _ := loadScoped(t, "[permissions]\ndeny = [\"Bash(curl*)\"]\n", "[permissions]\ndeny = []\n")
 	if !slices.Contains(cfg.Permissions.Deny, "Bash(curl*)") {

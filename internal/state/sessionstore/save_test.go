@@ -255,7 +255,9 @@ func TestSaveSnapshotSucceedsWhenCrossProcessFileLockReleasesBeforeDeadline(t *t
 	t.Cleanup(func() { <-released })
 
 	prevWait, prevPoll := sessionFileLockWait, sessionFileLockPollInterval
-	sessionFileLockWait = 500 * time.Millisecond
+	// The save returns as soon as the lock is released; the wait only has to
+	// outlast a loaded runner getting to the release, so it is the hang budget.
+	sessionFileLockWait = testenv.Budget(t)
 	sessionFileLockPollInterval = 5 * time.Millisecond
 	defer func() {
 		sessionFileLockWait = prevWait

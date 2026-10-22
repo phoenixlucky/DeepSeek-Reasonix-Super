@@ -25,6 +25,7 @@ interface Props {
 export function Feedback({ port, tab: first = "send", onClose, onError, onUnread }: Props) {
   const [tab, setTab] = useState<FeedbackTab>(first);
   const [wide, setWide] = useState(false);
+  const [concealed, setConcealed] = useState(false);
   const card = useRef<HTMLDivElement>(null);
   const opener = useRef<Element | null>(document.activeElement);
   useEscape(true, onClose);
@@ -71,7 +72,7 @@ export function Feedback({ port, tab: first = "send", onClose, onError, onUnread
   };
 
   return (
-    <div className="fbk-veil">
+    <div className="fbk-veil" hidden={concealed}>
       <div className="fbk" ref={card} role="dialog" aria-modal="true" aria-labelledby="fbk-title" data-wide={wide || undefined}>
         <header className="fbk-hd">
           <h2 id="fbk-title">{t("反馈")}</h2>
@@ -115,7 +116,7 @@ export function Feedback({ port, tab: first = "send", onClose, onError, onUnread
         </div>
         <div className="fbk-body">
           <div id="fbk-panel-send" role="tabpanel" aria-labelledby="fbk-tab-send" hidden={tab !== "send"}>
-            <FeedbackForm port={port} onMine={() => setTab("mine")} onClose={onClose} onFile={openLink} />
+            <FeedbackForm port={port} onMine={() => setTab("mine")} onClose={onClose} onFile={openLink} onConceal={setConcealed} />
           </div>
           {tab === "mine" && (
             <div id="fbk-panel-mine" role="tabpanel" aria-labelledby="fbk-tab-mine">

@@ -11,7 +11,7 @@ import (
 // resolveConfigAccessPath resolves a config file symlink before any content is
 // read or written. User config links are an explicit user choice and may target
 // any valid file. Project links are repository-controlled, so their final target
-// must stay within the project root (the directory containing reasonix.toml).
+// must stay within the project root, including for .reasonix/reasonix.toml.
 func resolveConfigAccessPath(path string, userConfig bool) (string, error) {
 	if resolved, ok := pinnedConfigEditPath(path); ok {
 		return resolved, nil
@@ -44,7 +44,11 @@ func resolveConfigAccessPathUnpinned(path string, userConfig bool) (string, erro
 		return resolved, nil
 	}
 
-	root, err := evalSymlinksAllowMissing(filepath.Dir(logical))
+	projectRoot := filepath.Dir(logical)
+	if filepath.Base(projectRoot) == ".reasonix" && filepath.Base(logical) == projectConfigFile {
+		projectRoot = filepath.Dir(projectRoot)
+	}
+	root, err := evalSymlinksAllowMissing(projectRoot)
 	if err != nil {
 		return "", fmt.Errorf("resolve project root %q: %w", root, err)
 	}

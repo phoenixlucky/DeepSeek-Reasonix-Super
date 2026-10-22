@@ -77,8 +77,8 @@ func (c *Config) SetAskTimeoutSeconds(seconds int) error {
 
 func renderAskTimeout(b *strings.Builder, c *Config) {
 	if c.Agent.AskTimeoutSeconds.Seconds > 0 {
-		fmt.Fprintf(b, "ask_timeout_seconds = %d   # skip an ask question nobody answered in this long; the model is told it timed out (0 = wait)\n", c.Agent.AskTimeoutSeconds.Seconds)
+		fmt.Fprintf(b, "ask_timeout_seconds = %d   # skip an ask question, or continue a task list handed back to you, when nobody answered in this long (0 = wait)\n", c.Agent.AskTimeoutSeconds.Seconds)
 		return
 	}
-	b.WriteString("# ask_timeout_seconds = 300   # skip an ask question nobody answered in this long; the model is told it timed out (default 0: wait)\n")
+	b.WriteString("# ask_timeout_seconds = 300   # skip an ask question, or continue a task list handed back to you, when nobody answered in this long (default 0: wait)\n")
 }

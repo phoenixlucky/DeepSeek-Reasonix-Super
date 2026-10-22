@@ -7,9 +7,20 @@ import (
 	"testing"
 )
 
-func TestWindowsSandboxIsUnavailable(t *testing.T) {
-	if Available() {
-		t.Fatal("Windows must report the retired OS-level Bash sandbox as unavailable")
+// The backend exists, but a launch is confined only when GrantSpec prepared the
+// spec: an enforcing spec nothing prepared stays unwrapped and unavailable.
+func TestWindowsBackendNeedsAPreparedSpec(t *testing.T) {
+	if !Available() {
+		t.Fatal("the restricted-token backend should report itself available")
+	}
+	if AvailableFor(Spec{Mode: "enforce"}) {
+		t.Fatal("an enforcing spec nothing prepared reports itself available")
+	}
+	if got := UnavailableCodeFor(Spec{Mode: "enforce"}); got != "sandbox.win_not_prepared" {
+		t.Fatalf("code = %q", got)
+	}
+	if !AvailableFor(Spec{Mode: "off"}) {
+		t.Fatal("a spec that asks for nothing should not be reported unavailable")
 	}
 }
 

@@ -121,7 +121,7 @@ var doseMetrics = []struct {
 func reportDoseResponse(all []contextMetrics) string {
 	valid := map[string]map[string]contextMetrics{}
 	for _, m := range all {
-		if m.Contaminated || m.FailureStage == "RunError" {
+		if m.Failed || m.Contaminated || m.FailureStage == "RunError" {
 			continue
 		}
 		scale := strings.TrimPrefix(m.Arm, "index-")

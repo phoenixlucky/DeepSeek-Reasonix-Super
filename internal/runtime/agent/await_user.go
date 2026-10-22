@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"reasonix/internal/contract/tool"
 	"reasonix/internal/safety/evidence"
 )
 
@@ -131,3 +132,6 @@ func (a *Agent) UserGate() (evidence.UserGate, bool) {
 	}
 	return a.task.ledger.UserGateThisTurn()
 }
+
+// HostRequiredBy says why the tool cannot be removed by name: the host names it as a way out of an unfinished list.
+func (*AwaitUserTool) HostRequiredBy() string { return tool.FeatureTurnExit }

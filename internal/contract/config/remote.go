@@ -24,7 +24,11 @@ type RemoteConfig struct {
 // values live in Reasonix's global .env, never in TOML. identity_file is a
 // path — private key material itself is never stored by Reasonix.
 type RemoteHostEntry struct {
-	Name          string `toml:"name"`
+	Name string `toml:"name"`
+	// Kind is how this machine is reached: "ssh" (the default) or "wsl", a WSL
+	// distribution on this Windows machine named by Distro.
+	Kind          string `toml:"kind,omitempty"`
+	Distro        string `toml:"distro,omitempty"`
 	Host          string `toml:"host"`
 	Port          int    `toml:"port"` // 0 => 22 (or ssh_config value)
 	User          string `toml:"user"`
@@ -91,6 +95,39 @@ func (r RemoteConfig) Clone() RemoteConfig {
 	return out
 }
 
+// Remote host kinds.
+const (
+	RemoteKindSSH = "ssh"
+	RemoteKindWSL = "wsl"
+)
+
+// HostKind is the normalized kind, defaulting to ssh. An unrecognized value is
+// kept as written so a validator can name it, never read as ssh.
+func (e RemoteHostEntry) HostKind() string {
+	k := strings.ToLower(strings.TrimSpace(e.Kind))
+	if k == "" {
+		return RemoteKindSSH
+	}
+	return k
+}
+
+// Target spells the machine the way a person would type it: user@host[:port]
+// for ssh, with the port shown only when it is not 22, and wsl:<distro> for a
+// WSL distribution.
+func (e RemoteHostEntry) Target() string {
+	if e.HostKind() == RemoteKindWSL {
+		return "wsl:" + e.Distro
+	}
+	target := e.Host
+	if e.User != "" {
+		target = e.User + "@" + target
+	}
+	if e.Port > 0 && e.Port != 22 {
+		target += ":" + strconv.Itoa(e.Port)
+	}
+	return target
+}
+
 // ServeInstallMode returns the normalized install strategy, defaulting to auto.
 func (e RemoteHostEntry) ServeInstallMode() string {
 	m := strings.ToLower(strings.TrimSpace(e.ServeInstall))
@@ -103,8 +140,12 @@ func (e RemoteHostEntry) ServeInstallMode() string {
 // ProviderMode returns where this host's model credentials come from,
 // defaulting to local. An unrecognized value is not silently reinterpreted as
 // the other one: it reads as the default, which is also what an entry written
-// by a newer Reasonix looks like to an older one.
+// by a newer Reasonix looks like to an older one. A WSL distribution always
+// reads its own: it cannot be handed this machine's credentials.
 func (e RemoteHostEntry) ProviderMode() string {
+	if e.HostKind() == RemoteKindWSL {
+		return RemoteProviderRemote
+	}
 	if strings.EqualFold(strings.TrimSpace(e.Provider), RemoteProviderRemote) {
 		return RemoteProviderRemote
 	}
@@ -126,6 +167,17 @@ func (e RemoteHostEntry) WorkspaceList() []string {
 		out = append(out, dir)
 	}
 	return out
+}
+
+// DefaultWorkspace prefers the declared default over the order of other folders.
+func (e RemoteHostEntry) DefaultWorkspace() string {
+	if dir := strings.TrimSpace(e.Workspace); dir != "" {
+		return dir
+	}
+	if dirs := e.WorkspaceList(); len(dirs) > 0 {
+		return dirs[0]
+	}
+	return ""
 }
 
 // withWorkspaceList rewrites both fields from one list, so the pair can never
@@ -160,11 +212,23 @@ func validateRemoteHost(e RemoteHostEntry) error {
 	if strings.ContainsAny(e.Name, " \t/:@") {
 		return fmt.Errorf("remote host %q: name must not contain spaces, '/', ':' or '@'", e.Name)
 	}
-	if strings.TrimSpace(e.Host) == "" {
-		return fmt.Errorf("remote host %q: host is required", e.Name)
-	}
-	if e.Port < 0 || e.Port > 65535 {
-		return fmt.Errorf("remote host %q: port %d out of range", e.Name, e.Port)
+	switch e.HostKind() {
+	case RemoteKindSSH:
+		if strings.TrimSpace(e.Distro) != "" {
+			return fmt.Errorf("remote host %q: distro belongs to kind \"wsl\"", e.Name)
+		}
+		if strings.TrimSpace(e.Host) == "" {
+			return fmt.Errorf("remote host %q: host is required", e.Name)
+		}
+		if e.Port < 0 || e.Port > 65535 {
+			return fmt.Errorf("remote host %q: port %d out of range", e.Name, e.Port)
+		}
+	case RemoteKindWSL:
+		if err := validateWSLHost(e); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("remote host %q: kind must be \"ssh\" or \"wsl\"", e.Name)
 	}
 	switch e.ServeInstallMode() {
 	case "auto", "npm", "upload", "never":
@@ -194,6 +258,43 @@ func validateRemoteHost(e RemoteHostEntry) error {
 			return fmt.Errorf("remote host %q: duplicate %s forward bind %q", e.Name, kind, f.Bind)
 		}
 		seenBinds[key] = true
+	}
+	return nil
+}
+
+// maxWSLDistroName bounds a distribution name. It is this package's own limit,
+// well above any name a store image or `wsl --import` produces in practice.
+const maxWSLDistroName = 64
+
+// ValidWSLDistroName reports whether name is spelled the way a distribution is:
+// ASCII letters, digits, '.', '_' and '-', never starting with '-'. A name
+// handed to wsl.exe after -d must be one argument, never part of a shell string,
+// and one that cannot begin with '-' cannot be read as an option.
+func ValidWSLDistroName(name string) bool {
+	if name == "" || len(name) > maxWSLDistroName || name[0] == '-' {
+		return false
+	}
+	for i := range len(name) {
+		c := name[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// validateWSLHost holds a WSL entry to the fields that mean something for it: a
+// distribution reached without a network hop has no address, login, key or
+// tunnel, and keeping those out means no reader mistakes one for configuration
+// that is in force.
+func validateWSLHost(e RemoteHostEntry) error {
+	if !ValidWSLDistroName(e.Distro) {
+		return fmt.Errorf("remote host %q: distro must be 1 to %d letters, digits, '.', '_' or '-', not starting with '-'", e.Name, maxWSLDistroName)
+	}
+	ssh := e.Host != "" || e.Port != 0 || e.User != "" || e.IdentityFile != "" || e.PassphraseEnv != "" ||
+		e.PasswordEnv != "" || e.ProxyJump != "" || e.UseSSHConfig || len(e.Forwards) > 0
+	if ssh {
+		return fmt.Errorf("remote host %q: host, port, user, identity_file, passphrase_env, password_env, proxy_jump, use_ssh_config and forwards apply to ssh hosts only", e.Name)
 	}
 	return nil
 }
@@ -278,6 +379,32 @@ func (c *Config) RemoveRemoteWorkspace(name, dir string) bool {
 		return false
 	}
 	return c.UpsertRemoteHost(entry.withWorkspaceList(kept)) == nil
+}
+
+// PlaceRemoteHost puts the named host immediately before the host named before,
+// or last when before is empty: the order the sidebar lists machines in. Naming
+// the neighbour rather than a step keeps the move right when the sidebar hides
+// some machines between the two. Reports whether the book changed.
+func (c *Config) PlaceRemoteHost(name, before string) bool {
+	hosts := c.Remote.Hosts
+	from := slices.IndexFunc(hosts, func(h RemoteHostEntry) bool { return h.Name == name })
+	if from < 0 || name == before {
+		return false
+	}
+	moved := hosts[from]
+	rest := slices.Delete(slices.Clone(hosts), from, from+1)
+	at := len(rest)
+	if before != "" {
+		if at = slices.IndexFunc(rest, func(h RemoteHostEntry) bool { return h.Name == before }); at < 0 {
+			return false
+		}
+	}
+	placed := slices.Insert(rest, at, moved)
+	if slices.EqualFunc(placed, hosts, func(a, b RemoteHostEntry) bool { return a.Name == b.Name }) {
+		return false
+	}
+	c.Remote.Hosts = placed
+	return true
 }
 
 // RemoveRemoteHost deletes the named host, reporting whether it was present.

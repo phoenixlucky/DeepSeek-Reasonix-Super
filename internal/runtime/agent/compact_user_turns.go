@@ -15,6 +15,8 @@ type userTurnRetention struct {
 	Kept          int
 	Dropped       int
 	DroppedTokens int
+	// MarkedDropped counts [[keep]] turns the marked-turn budget could not hold.
+	MarkedDropped, MarkedDroppedTokens int
 }
 
 // keepUserTurns protects the user's own words from summarizer judgement: a
@@ -32,8 +34,8 @@ func (a *contextWindow) keepUserTurns(region []provider.Message, keep []bool) us
 			continue
 		}
 		if keep[i] {
-			// Already held by the keep policy — a [[keep]] marker, which is the
-			// documented way past the size budget below.
+			// Already held by the keep policy: a [[keep]] marker, which has a
+			// budget of its own.
 			ret.Kept++
 			continue
 		}
@@ -76,6 +78,13 @@ func (a *contextWindow) keptUserTurnsBudget() int {
 // it the drop is invisible: the projection reads as complete, and the escape
 // hatch is only useful to someone told it exists at the moment it is needed.
 func (a *contextWindow) noticeDroppedUserTurns(ret userTurnRetention) {
+	if ret.MarkedDropped > 0 {
+		a.svc.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+			Text: fmt.Sprintf("%s you marked [[keep]] %s past the room [[keep]] has, so the oldest now survive only through the summary.",
+				pluralTurns(ret.MarkedDropped), wereOrWas(ret.MarkedDropped)),
+			Detail: fmt.Sprintf("compaction folded %d [[keep]] turn(s) (~%d tokens) past the marked-turn budget of %d",
+				ret.MarkedDropped, ret.MarkedDroppedTokens, a.keptMarkedBudget())})
+	}
 	if ret.Dropped == 0 {
 		return
 	}

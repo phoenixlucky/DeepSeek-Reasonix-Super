@@ -41,7 +41,7 @@ func TestRenderEscapesYAMLMetacharacters(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			list := s.List()
+			list := mustStore(t, s).List()
 			if len(list) != 1 {
 				t.Fatalf("want 1 memory, got %d", len(list))
 			}
@@ -127,12 +127,12 @@ func TestStoreSaveAndIndex(t *testing.T) {
 		t.Fatalf("name not slugified into filename: %s", path)
 	}
 
-	idx := s.Index()
+	idx := mustStore(t, s).Index()
 	if !strings.Contains(idx, "prefers-tabs.md") || !strings.Contains(idx, "User prefers tabs") {
 		t.Fatalf("index missing entry:\n%s", idx)
 	}
 
-	list := s.List()
+	list := mustStore(t, s).List()
 	if len(list) != 1 {
 		t.Fatalf("want 1 memory, got %d", len(list))
 	}
@@ -160,7 +160,7 @@ type: user
 		t.Fatal(err)
 	}
 
-	memories := s.List()
+	memories := mustStore(t, s).List()
 	if len(memories) != 1 {
 		t.Fatalf("List() = %+v, want one decoded memory", memories)
 	}
@@ -179,7 +179,7 @@ func TestStoreOverwriteDoesNotDuplicateIndex(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	idx := s.Index()
+	idx := mustStore(t, s).Index()
 	if n := strings.Count(idx, "note.md"); n != 1 {
 		t.Fatalf("want exactly 1 index line for note, got %d:\n%s", n, idx)
 	}
@@ -237,10 +237,10 @@ func TestStoreSaveTitleInIndexAndFrontmatter(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if idx := s.Index(); !strings.Contains(idx, "[Prefers tabs](project/tabs-rule.md)") {
+	if idx := mustStore(t, s).Index(); !strings.Contains(idx, "[Prefers tabs](project/tabs-rule.md)") {
 		t.Fatalf("index link should use the title label:\n%s", idx)
 	}
-	if got := s.List()[0].Title; got != "Prefers tabs" {
+	if got := mustStore(t, s).List()[0].Title; got != "Prefers tabs" {
 		t.Fatalf("title not round-tripped: %q", got)
 	}
 }
@@ -252,7 +252,7 @@ func TestStoreIndexLabelFallsBackToDeKebabbedName(t *testing.T) {
 	if _, err := s.Save(Memory{Name: "likes-go", Description: "d", Type: TypeUser, Body: "b"}); err != nil {
 		t.Fatal(err)
 	}
-	if idx := s.Index(); !strings.Contains(idx, "[likes go](project/likes-go.md)") {
+	if idx := mustStore(t, s).Index(); !strings.Contains(idx, "[likes go](project/likes-go.md)") {
 		t.Fatalf("missing-title label should de-kebab the name:\n%s", idx)
 	}
 }
@@ -276,14 +276,14 @@ func TestStoreDelete(t *testing.T) {
 	if len(archived) != 1 || !strings.HasSuffix(archived[0], "-alpha.md") {
 		t.Fatalf("archive files = %v, want one alpha archive", archived)
 	}
-	idx := s.Index()
+	idx := mustStore(t, s).Index()
 	if strings.Contains(idx, "alpha.md") {
 		t.Fatalf("deleted entry still in index:\n%s", idx)
 	}
 	if !strings.Contains(idx, "beta.md") {
 		t.Fatalf("unrelated entry lost on delete:\n%s", idx)
 	}
-	if names := s.List(); len(names) != 1 || names[0].Name != "beta" {
+	if names := mustStore(t, s).List(); len(names) != 1 || names[0].Name != "beta" {
 		t.Fatalf("List after delete = %+v, want only beta", names)
 	}
 }
@@ -344,8 +344,8 @@ func TestStoreDeleteRepairsReadOnlyMemoryFile(t *testing.T) {
 	if len(archived) != 1 || !strings.HasSuffix(archived[0], "-locked.md") {
 		t.Fatalf("archive files = %v, want one locked archive", archived)
 	}
-	if strings.Contains(s.Index(), "locked.md") {
-		t.Fatalf("deleted read-only entry still in index:\n%s", s.Index())
+	if strings.Contains(mustStore(t, s).Index(), "locked.md") {
+		t.Fatalf("deleted read-only entry still in index:\n%s", mustStore(t, s).Index())
 	}
 }
 
@@ -368,10 +368,10 @@ func TestStoreArchiveReturnsArchivePath(t *testing.T) {
 	if !strings.Contains(string(body), "body") {
 		t.Fatalf("archive missing memory body:\n%s", body)
 	}
-	if strings.Contains(s.Index(), "old-fact.md") {
-		t.Fatalf("archived memory still in index:\n%s", s.Index())
+	if strings.Contains(mustStore(t, s).Index(), "old-fact.md") {
+		t.Fatalf("archived memory still in index:\n%s", mustStore(t, s).Index())
 	}
-	archived := s.ListArchived()
+	archived := mustStore(t, s).ListArchived()
 	if len(archived) != 1 {
 		t.Fatalf("ListArchived = %+v, want one entry", archived)
 	}
@@ -381,8 +381,8 @@ func TestStoreArchiveReturnsArchivePath(t *testing.T) {
 	if archived[0].ArchivedAt.IsZero() {
 		t.Fatalf("archived entry missing timestamp: %+v", archived[0])
 	}
-	if len(s.List()) != 0 {
-		t.Fatalf("active List should exclude archived memories: %+v", s.List())
+	if len(mustStore(t, s).List()) != 0 {
+		t.Fatalf("active List should exclude archived memories: %+v", mustStore(t, s).List())
 	}
 }
 
@@ -405,7 +405,7 @@ func TestStoreArchiveFlushesStaleIndexWithoutFile(t *testing.T) {
 	if archive != "" {
 		t.Fatalf("Archive should return no path for missing file, got %q", archive)
 	}
-	idx := s.Index()
+	idx := mustStore(t, s).Index()
 	if strings.Contains(idx, "alpha.md") {
 		t.Fatalf("stale index line should be removed:\n%s", idx)
 	}
@@ -441,7 +441,7 @@ func TestStoreListArchivedNewestFirst(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	archived := s.ListArchived()
+	archived := mustStore(t, s).ListArchived()
 	if len(archived) != 2 {
 		t.Fatalf("ListArchived len = %d, want 2: %+v", len(archived), archived)
 	}
@@ -497,7 +497,7 @@ func TestStoreForSlug(t *testing.T) {
 // and errors cleanly on Save.
 func TestDisabledStoreIsNoOp(t *testing.T) {
 	var s Store
-	if s.Index() != "" || s.List() != nil {
+	if mustStore(t, s).Index() != "" || mustStore(t, s).List() != nil {
 		t.Fatal("disabled store should read empty")
 	}
 	if _, err := s.Save(Memory{Name: "x", Description: "d", Body: "b"}); err == nil {
@@ -551,13 +551,13 @@ func TestStoreGlobalAndProject(t *testing.T) {
 	}
 
 	// List merges both directories
-	list := s.List()
+	list := mustStore(t, s).List()
 	if len(list) != 4 {
 		t.Fatalf("want 4 memories, got %d", len(list))
 	}
 
 	// Index merges both directories
-	idx := s.Index()
+	idx := mustStore(t, s).Index()
 	if !strings.Contains(idx, "prefers-tabs") || !strings.Contains(idx, "build-target") {
 		t.Fatalf("index should contain both global and project memories:\n%s", idx)
 	}
@@ -571,13 +571,13 @@ func TestStoreGlobalAndProject(t *testing.T) {
 	}
 
 	// List after delete
-	list2 := s.List()
+	list2 := mustStore(t, s).List()
 	if len(list2) != 3 {
 		t.Fatalf("want 3 memories after delete, got %d", len(list2))
 	}
 
 	// Index should not duplicate # Memory headers (Block() adds its own).
-	idx2 := s.Index()
+	idx2 := mustStore(t, s).Index()
 	if strings.Count(idx2, "# Memory") != 0 {
 		t.Fatalf("Index should have 0 # Memory headers (Block() adds one), got %d:\n%s", strings.Count(idx2, "# Memory"), idx2)
 	}
@@ -612,14 +612,14 @@ func TestStoreSaveRemovesStaleCopyWhenScopeChanges(t *testing.T) {
 		t.Fatalf("old global index line should be removed:\n%s", globalIndex)
 	}
 
-	list := s.List()
+	list := mustStore(t, s).List()
 	if len(list) != 1 {
 		t.Fatalf("List() = %+v, want one active copy", list)
 	}
 	if list[0].Type != TypeFeedback || list[0].Scope != FactScopeProject || !strings.Contains(list[0].Body, "new body") {
 		t.Fatalf("active copy = %+v, want new project body", list[0])
 	}
-	idx := s.Index()
+	idx := mustStore(t, s).Index()
 	if strings.Contains(idx, "old global") || !strings.Contains(idx, "new project") {
 		t.Fatalf("merged index should reflect new scope only:\n%s", idx)
 	}
@@ -677,7 +677,7 @@ func TestStoreDefaultsNewMemoriesToProjectScope(t *testing.T) {
 	if !strings.HasPrefix(path, s.Dir) {
 		t.Fatalf("default save path = %q, want project dir %q", path, s.Dir)
 	}
-	list := s.List()
+	list := mustStore(t, s).List()
 	if len(list) != 1 || list[0].Scope != FactScopeProject {
 		t.Fatalf("default memory = %+v, want project scope", list)
 	}
@@ -725,7 +725,7 @@ func TestStoreInfersLegacyScopeFromContainingDirectory(t *testing.T) {
 		}
 	}
 	got := map[string]FactScope{}
-	for _, m := range s.List() {
+	for _, m := range mustStore(t, s).List() {
 		got[m.Name] = m.Scope
 	}
 	if got["legacy-project"] != FactScopeProject || got["legacy-global"] != FactScopeGlobal {
@@ -759,7 +759,7 @@ func TestStoreDeleteRemovesFromAllDirs(t *testing.T) {
 	}
 
 	// Both copies should appear, but deduplicated.
-	list := s.List()
+	list := mustStore(t, s).List()
 	if len(list) != 1 {
 		t.Fatalf("want 1 deduplicated memory, got %d", len(list))
 	}
@@ -775,11 +775,11 @@ func TestStoreDeleteRemovesFromAllDirs(t *testing.T) {
 		t.Fatal("project copy should be gone after delete")
 	}
 
-	list2 := s.List()
+	list2 := mustStore(t, s).List()
 	if len(list2) != 0 {
 		t.Fatalf("want 0 memories after delete, got %d", len(list2))
 	}
-	if idx := s.Index(); idx != "" {
+	if idx := mustStore(t, s).Index(); idx != "" {
 		t.Fatalf("Index() should be empty after deleting all entries, got:\n%s", idx)
 	}
 }
@@ -808,7 +808,7 @@ func TestStoreIndexDeduplicatesAcrossDirs(t *testing.T) {
 		}
 	}
 
-	idx := s.Index()
+	idx := mustStore(t, s).Index()
 	count := strings.Count(idx, name+".md")
 	if count != 1 {
 		t.Fatalf("want exactly 1 index line for %s, got %d:\n%s", name, count, idx)
@@ -893,7 +893,7 @@ func TestStoreDeleteFlushesIndexPerDir(t *testing.T) {
 	}
 
 	// Index() should return "" (no entries, no orphaned header).
-	idx := s.Index()
+	idx := mustStore(t, s).Index()
 	if idx != "" {
 		t.Fatalf("Index() should return empty after deleting all entries, got:\n%s", idx)
 	}
@@ -909,7 +909,7 @@ func TestStorePathWithGlobalDir(t *testing.T) {
 	}
 
 	// No files yet → defaults to Dir.
-	p := s.Path("new-fact")
+	p := mustStore(t, s).Path("new-fact")
 	if !strings.HasPrefix(p, s.Dir) {
 		t.Fatalf("Path for new file should default to Dir, got %s", p)
 	}
@@ -921,7 +921,7 @@ func TestStorePathWithGlobalDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(s.GlobalDir, "existing.md"), []byte("body"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	p2 := s.Path("existing")
+	p2 := mustStore(t, s).Path("existing")
 	if !strings.HasPrefix(p2, s.GlobalDir) {
 		t.Fatalf("Path for file in GlobalDir should return GlobalDir path, got %s", p2)
 	}
@@ -933,7 +933,7 @@ func TestStorePathWithGlobalDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(s.Dir, "proj-fact.md"), []byte("body"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	p3 := s.Path("proj-fact")
+	p3 := mustStore(t, s).Path("proj-fact")
 	if !strings.HasPrefix(p3, s.Dir) {
 		t.Fatalf("Path for file only in Dir should return Dir path, got %s", p3)
 	}

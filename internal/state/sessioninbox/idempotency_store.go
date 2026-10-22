@@ -67,3 +67,20 @@ func bindIdempotency(m *manifest, key, itemID, requestHash string) {
 	m.Idempotency[key] = itemID
 	m.IdempotencyHashes[key] = requestHash
 }
+func (s *Store) ReceiptDisposition(key string) (Disposition, bool, error) {
+	if s == nil {
+		return "", false, ErrClosed
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return "", false, ErrClosed
+	}
+	release, err := s.beginDiskTransactionLocked()
+	if err != nil {
+		return "", false, err
+	}
+	defer release()
+	receipt, ok := s.man.Receipts[key]
+	return receipt.Disposition, ok, nil
+}

@@ -14,6 +14,7 @@ const (
 	FailCatalog    = "update.catalog_unreachable"
 	FailNoPackage  = "update.no_package"
 	FailDownload   = "update.download_failed"
+	FailStalled    = "update.download_stalled"
 	FailVerify     = "update.signature_invalid"
 	FailDisk       = "update.disk"
 	FailInstaller  = "update.installer_failed"
@@ -59,6 +60,8 @@ func failureCode(err error) string {
 		return FailVerify
 	case errors.Is(err, update.ErrStore):
 		return FailDisk
+	case errors.Is(err, update.ErrStalled):
+		return FailStalled
 	case errors.Is(err, update.ErrFetch):
 		return FailDownload
 	}

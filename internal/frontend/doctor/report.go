@@ -162,11 +162,11 @@ func Collect(opts Options) Report {
 	}
 	// A config that says enforce while the platform force-resolves it to off is
 	// the one case where bash behavior silently disagrees with the file the user
-	// edited (Windows has no OS-level Bash backend) — say it
+	// edited (Windows takes windows_integrity, not bash) — say it
 	// out loud instead of leaving it to be discovered from unconfined commands.
 	bashConfigIgnored := strings.TrimSpace(cfg.Sandbox.Bash) == "enforce" && cfg.BashMode() == "off"
 	if bashConfigIgnored {
-		warnings = append(warnings, `config requests [sandbox] bash = "enforce", but Windows does not provide an OS-level Bash sandbox; the setting is fixed to "off" and bash runs unconfined`)
+		warnings = append(warnings, `config requests [sandbox] bash = "enforce", but on Windows that key is ignored: the bash sandbox is turned on with [sandbox] windows_integrity = true, and until then bash runs unconfined`)
 	}
 	// Supervised deployments sometimes override HOME onto a service config dir
 	// while Reasonix isolation should use REASONIX_HOME. Do not rewrite
@@ -193,7 +193,7 @@ func Collect(opts Options) Report {
 			Bash:              cfg.BashMode(),
 			Network:           cfg.Sandbox.Network,
 			WriteRoots:        redactHomeAll(cfg.WriteRoots()),
-			Available:         sandbox.Available(),
+			Available:         sandbox.AvailableFor(sandbox.Spec{Network: cfg.Sandbox.Network}),
 			Shell:             resolvedShellSummary(cfg),
 			BashConfigIgnored: bashConfigIgnored,
 		},
@@ -290,10 +290,10 @@ func RenderText(r Report) string {
 	fmt.Fprintf(&b, "\nsandbox\n")
 	bashLine := r.Sandbox.Bash
 	if r.Sandbox.Bash == "enforce" && !r.Sandbox.Available {
-		bashLine += " (unavailable: no OS sandbox on this host; bash execution is refused. " + sandbox.UnavailableRemediation() + ")"
+		bashLine += " (unavailable: no OS sandbox on this host; bash execution is refused. " + sandbox.UnavailableRemediationFor(sandbox.Spec{Network: r.Sandbox.Network}) + ")"
 	}
 	if r.Sandbox.BashConfigIgnored {
-		bashLine += ` (config requests "enforce", ignored: Windows has no OS-level Bash sandbox and fixes this setting to "off")`
+		bashLine += ` (config requests "enforce", ignored on Windows: turn the sandbox on with windows_integrity = true)`
 	}
 	fmt.Fprintf(&b, "  bash         %s\n", bashLine)
 	if r.Sandbox.Shell != "" {
@@ -508,9 +508,12 @@ func redactHomeAll(paths []string) []string {
 // resolvedShellSummary reports which interpreter the bash tool would run
 // commands under, e.g. "bash (~/bin/bash)" or "powershell (C:\...\pwsh.exe)".
 func resolvedShellSummary(cfg *config.Config) string {
-	sh := sandbox.ResolveShell(cfg.Tools.Shell.Prefer, cfg.Tools.Shell.Path, io.Discard)
+	sh := sandbox.ShellDiscovery{Prefer: cfg.Tools.Shell.Prefer, Path: cfg.Tools.Shell.Path, Args: cfg.Tools.Shell.Args, Warn: io.Discard}.Resolve()
 	if sh.Path == "" {
 		return sh.Kind.String() + " (not found)"
+	}
+	if args := sh.Args(); len(args) > 0 {
+		return sh.Kind.String() + " (" + redactHome(sh.Path) + " " + strings.Join(args, " ") + ")"
 	}
 	return sh.Kind.String() + " (" + redactHome(sh.Path) + ")"
 }

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "./testkit";
 import { Workspaces } from "./Workspaces";
@@ -25,10 +25,13 @@ function tree(over: Partial<TreeWorkspace> = {}): TreeWorkspace[] {
 function draw(over: { runtimes?: RuntimeView[]; workspaces?: TreeWorkspace[] } = {}) {
   const hub = new MockHub() as unknown as HubPort;
   const removeSession = vi.spyOn(hub, "removeSession").mockResolvedValue(undefined);
+  const renameSession = vi.spyOn(hub, "renameSession").mockResolvedValue(undefined);
+  const autoNameSession = vi.spyOn(hub, "autoNameSession").mockResolvedValue({ title: "a generated title" });
   const onClose = vi.fn().mockResolvedValue(undefined);
   const onOpen = vi.fn().mockResolvedValue(undefined);
   const reload = vi.fn().mockResolvedValue(undefined);
   const onError = vi.fn();
+  const onRename = vi.fn();
   const view = (workspaces: TreeWorkspace[]) => (
     <Workspaces
       hub={hub}
@@ -44,7 +47,7 @@ function draw(over: { runtimes?: RuntimeView[]; workspaces?: TreeWorkspace[] } =
       onClose={onClose}
       liveIds={() => []}
       runs={{}}
-      onRename={() => {}}
+      onRename={onRename}
       onError={onError}
       adder={{ add: () => {}, close: () => {}, at: null } as never}
     />
@@ -52,7 +55,7 @@ function draw(over: { runtimes?: RuntimeView[]; workspaces?: TreeWorkspace[] } =
   const { rerender } = render(view(over.workspaces ?? tree()));
   // What the kernel lists after a write: the tree the next reload brings back.
   const relist = (workspaces: TreeWorkspace[]) => rerender(view(workspaces));
-  return { removeSession, onClose, onOpen, reload, onError, relist };
+  return { removeSession, renameSession, autoNameSession, onClose, reload, onError, onRename, onOpen, relist };
 }
 
 it("projects each open session's run state onto its own row", () => {
@@ -233,14 +236,113 @@ describe("the Delete key on a focused conversation", () => {
     expect(document.activeElement).toBe(screen.getByRole("treeitem", { name: /the next one/ }));
   });
 
-  it("leaves a rename field's Delete to the field", async () => {
-    draw();
+  it("double-clicks a sidebar title into inline editing without opening twice", async () => {
+    const { onRename, removeSession, onOpen } = draw();
+    await userEvent.dblClick(screen.getByText("the one to delete"));
+    const input = screen.getByRole("textbox", { name: "重命名该会话" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "  renamed inline  {Enter}");
+    expect(onRename).toHaveBeenCalledExactlyOnceWith(SESSION, "renamed inline", "inline");
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(removeSession).not.toHaveBeenCalled();
+    expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  it("cancels sidebar title double-click renaming with Escape", async () => {
+    const { onRename } = draw();
+    await userEvent.dblClick(screen.getByText("the one to delete"));
+    const input = screen.getByRole("textbox", { name: "重命名该会话" });
+    await userEvent.clear(input);
+    await userEvent.keyboard("{Escape}");
+    expect(onRename).not.toHaveBeenCalled();
+    expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  it("does not save a cleared sidebar title on Enter", async () => {
+    const { onRename } = draw();
+    await userEvent.dblClick(screen.getByText("the one to delete"));
+    await userEvent.clear(screen.getByRole("textbox", { name: "重命名该会话" }));
+    await userEvent.keyboard("{Enter}");
+    expect(onRename).not.toHaveBeenCalled();
+  });
+
+  it("opens the rename dialog from the sidebar rename menu", async () => {
+    const { onRename } = draw();
     await userEvent.pointer({ keys: "[MouseRight]", target: screen.getByRole("treeitem", { name: /the one to delete/ }) });
-    await userEvent.click(screen.getByRole("menuitem", { name: /重命名/ }));
-    const field = screen.getByRole("textbox", { name: "重命名该会话" });
-    expect(fireEvent.contextMenu(field)).toBe(true);
-    field.focus();
-    await userEvent.keyboard("{Delete}");
-    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await userEvent.click(screen.getByRole("menuitem", { name: "重命名" }));
+    expect(onRename).toHaveBeenCalledExactlyOnceWith(SESSION, "the one to delete");
+    expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  it("names the conversation from its menu in one step, without opening a dialog", async () => {
+    const { autoNameSession, renameSession, reload } = draw();
+    await userEvent.pointer({ keys: "[MouseRight]", target: screen.getByRole("treeitem", { name: /the one to delete/ }) });
+    await userEvent.click(screen.getByRole("menuitem", { name: "自动命名" }));
+    expect(autoNameSession).toHaveBeenCalledExactlyOnceWith(SESSION);
+    await vi.waitFor(() => expect(renameSession).toHaveBeenCalledExactlyOnceWith(SESSION, "a generated title"));
+    await vi.waitFor(() => expect(reload).toHaveBeenCalled());
+    expect(screen.queryByRole("menu", { name: "会话操作" })).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("keeps the title and says why when naming is refused", async () => {
+    const { autoNameSession, renameSession, onError } = draw();
+    autoNameSession.mockRejectedValueOnce(new Error("no model"));
+    await userEvent.pointer({ keys: "[MouseRight]", target: screen.getByRole("treeitem", { name: /the one to delete/ }) });
+    await userEvent.click(screen.getByRole("menuitem", { name: "自动命名" }));
+    await vi.waitFor(() => expect(onError).toHaveBeenCalled());
+    expect(renameSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("deleting a conversation that has recovery copies", () => {
+  const COPY_A = "/w/.reasonix/sessions/20260901-120000.recovered-1.jsonl";
+  const COPY_B = "/w/.reasonix/sessions/20260901-120000.recovered-2.jsonl";
+  const withCopies = () => tree({
+    sessions: [{
+      path: SESSION, name: "20260901-120000", title: "the one to delete",
+      copies: [
+        { path: COPY_A, name: "a", title: "", turns: 3 },
+        { path: COPY_B, name: "b", title: "", turns: 4 },
+      ],
+    }] as never,
+  });
+
+  const askToDelete = async () => {
+    await userEvent.pointer({ keys: "[MouseRight]", target: screen.getByRole("treeitem", { name: /the one to delete/ }) });
+    await userEvent.click(screen.getByRole("menuitem", { name: "删除会话" }));
+    return screen.getByRole("alertdialog");
+  };
+
+  it("offers to take the copies along, and says what plain Delete leaves behind", async () => {
+    draw({ workspaces: withCopies() });
+    const ask = await askToDelete();
+    expect(ask.textContent).toContain("2");
+    expect(within(ask).getByRole("button", { name: /连同 2 份副本/ })).toBeTruthy();
+  });
+
+  it("removes the copies and then the conversation when asked to take them along", async () => {
+    const { removeSession } = draw({ workspaces: withCopies() });
+    const ask = await askToDelete();
+    await userEvent.click(within(ask).getByRole("button", { name: /连同 2 份副本/ }));
+    await vi.waitFor(() => expect(removeSession).toHaveBeenCalledTimes(3));
+    expect(removeSession.mock.calls.map((c) => c[0])).toEqual([COPY_A, COPY_B, SESSION]);
+  });
+
+  it("plain Delete removes only the conversation", async () => {
+    const { removeSession } = draw({ workspaces: withCopies() });
+    const ask = await askToDelete();
+    await userEvent.click(within(ask).getByRole("button", { name: "删除" }));
+    await vi.waitFor(() => expect(removeSession).toHaveBeenCalledTimes(1));
+    expect(removeSession).toHaveBeenCalledWith(SESSION);
+  });
+
+  it("stops at a copy the kernel refuses and leaves the conversation in place", async () => {
+    const { removeSession, onError } = draw({ workspaces: withCopies() });
+    removeSession.mockRejectedValueOnce(new Error("copy is open"));
+    const ask = await askToDelete();
+    await userEvent.click(within(ask).getByRole("button", { name: /连同 2 份副本/ }));
+    await vi.waitFor(() => expect(onError).toHaveBeenCalled());
+    expect(removeSession).toHaveBeenCalledTimes(1);
   });
 });

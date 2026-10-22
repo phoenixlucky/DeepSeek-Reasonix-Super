@@ -3,6 +3,7 @@ package configbackup
 import (
 	"encoding/json"
 	"slices"
+	"strconv"
 	"strings"
 
 	"reasonix/internal/base/secrets"
@@ -16,6 +17,10 @@ const maxShownContent = 16 << 10
 // endpoint a key goes to, the file that will be written.
 func describe(it Item) (string, []PathRef) {
 	switch it.Kind {
+	case KindAgentPreset:
+		if data, err := decodeCompositionItem(it); err == nil {
+			return data.Definition.Name + " · " + data.Definition.Description, nil
+		}
 	case KindProvider:
 		var p config.ProviderEntry
 		if decodeTOML(it.Data, &p) == nil {
@@ -66,6 +71,8 @@ func describe(it Item) (string, []PathRef) {
 // where data goes, so consent is given to the whole of it, not its first line.
 func details(it Item) ([]string, string) {
 	switch it.Kind {
+	case KindAgentPreset:
+		return nil, string(it.Data)
 	case KindProvider:
 		var p config.ProviderEntry
 		if decodeTOML(it.Data, &p) != nil {
@@ -86,7 +93,10 @@ func details(it Item) ([]string, string) {
 		if json.Unmarshal(it.Data, &h) != nil {
 			return nil, ""
 		}
-		out := labelled("event", h.Event, "match", h.Hook.Match, "cwd", h.Hook.Cwd, "contextFile", h.Hook.ContextFile)
+		out := labelled("event", h.Event, "match", h.Hook.Match, "cwd", h.Hook.Cwd, "contextFile", h.Hook.ContextFile, "description", h.Hook.Description)
+		if h.Hook.Timeout != 0 {
+			out = append(out, "timeout: "+strconv.Itoa(h.Hook.Timeout)+" ms")
+		}
 		return append(out, pairs("env", h.Hook.Env)...), ""
 	case KindMemory:
 		var m memoryData

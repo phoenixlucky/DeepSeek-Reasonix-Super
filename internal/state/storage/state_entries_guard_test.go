@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"reasonix/internal/base/testenv"
 	"reasonix/internal/contract/config"
 	"reasonix/internal/state/instruction"
 )
@@ -192,6 +193,9 @@ func stringConsts(t *testing.T, root string) map[string]string {
 func walkGo(t *testing.T, root string, visit func(path string)) {
 	t.Helper()
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil && testenv.VanishedMidWalk(path, err) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}

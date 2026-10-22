@@ -28,7 +28,7 @@ export function RailSearch({ children }: { children: ReactNode }) {
 
   return (
     <>
-      <div className="wsfind">
+      <div className="wsfind" data-query={q ? "" : undefined}>
         <svg viewBox="0 0 16 16" aria-hidden="true">
           <path d="M7.2 3.1a4.1 4.1 0 1 0 0 8.2 4.1 4.1 0 0 0 0-8.2M10.3 10.3 13 13" />
         </svg>

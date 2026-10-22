@@ -6,7 +6,8 @@ import { useState } from "react";
 import "./testkit";
 import { DeckChips, type Deck } from "./DeckChips";
 import { AgentTranscript } from "./panels/AgentTranscript";
-import { NestedCall } from "./cards/ToolCard";
+import { NestedCall, ToolCard } from "./cards/ToolCard";
+import { openCards } from "./cards/openCards";
 import type { Task } from "./panels/Agents";
 import type { Tool } from "../port/wire";
 
@@ -105,4 +106,21 @@ it("heads a refused delegation as not run and a cut-short one as interrupted", (
   const cut = { ...refused, tool: { ...refused.tool, refusalCode: undefined, err: "sub-agent: context canceled" } } as unknown as Task;
   rerender(<AgentTranscript task={cut} onClose={() => {}} />);
   expect(head()).toContain("已中断");
+});
+
+it("names the model the sub-agent ran on in the header of its full record", () => {
+  const t = task("b", false, "Review", [child("c1", "x")]);
+  t.tool.profile = { name: "Review", model: "aigateway/model-x", effort: "high" };
+  render(<AgentTranscript task={t} onClose={vi.fn()} />);
+  const ran = screen.getByRole("dialog").querySelector(".agent-tx-hd .ran");
+  expect(ran?.textContent).toBe("aigateway/model-x · high");
+  expect(ran?.getAttribute("title")).toBe("aigateway/model-x · high");
+});
+
+it("names it on the nested card of the call that spawned it", () => {
+  const spawned = { id: "t1", name: "task", profile: { name: "Review", model: "aigateway/model-x", effort: "high" }, durationMs: 10 } as Tool;
+  render(<ToolCard tool={spawned} running={false} children={[child("c1", "x")]} />);
+  openCards();
+  const ran = document.querySelector(".nest-hd .ran");
+  expect(ran?.textContent).toBe("aigateway/model-x · high");
 });

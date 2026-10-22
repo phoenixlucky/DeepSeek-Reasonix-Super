@@ -174,9 +174,8 @@ func MCPServerEntries(opts CatalogOptions) []Entry {
 		// live proxy-observed tools once the server is connected (proxied
 		// servers never register), cached schema before any connection exists.
 		registryHasTools := false
-		prefix := plugin.ToolPrefix(name)
 		for _, te := range opts.Tools {
-			if strings.HasPrefix(te.Name, prefix) {
+			if te.MCP != nil && te.MCP.Server == name {
 				registryHasTools = true
 				break
 			}

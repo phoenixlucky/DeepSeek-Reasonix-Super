@@ -93,6 +93,16 @@ Prefer a terminal? Download the `reasonix` command-line tool, run `reasonix setu
 
 All four are the same program underneath. What follows is for advanced users and contributors.
 
+## Use it from DeepSeek Harness
+
+DeepSeek Harness (`dsh`) can hand a task to Reasonix as a subagent over ACP. This repository publishes a plugin index for it:
+
+1. Run `reasonix setup` on the machine that runs `dsh`. In the DSH Web UI turn on Custom plugin markets (Plugins, More) and add this index in the Discover tab: `https://raw.githubusercontent.com/esengine/DeepSeek-Reasonix/studio/integrations/dsh-plugin/market-index.json`
+2. Install "Reasonix subagent" from it.
+3. Open the plugin's page and turn its switch on. While it is off the model has no `reasonix` tool and may run `reasonix -p` in its own shell, which looks like a delegation and is not one.
+
+Setup details, the permission policy and limits are in [Using Reasonix from DeepSeek Harness](./docs/DSH.md).
+
 ## Versions
 
 Reasonix ships on two lines. See the [version roadmap announcement](https://github.com/esengine/DeepSeek-Reasonix/discussions/10748) for the reasoning behind the split.
@@ -151,7 +161,7 @@ pre-releases):
 | --- | --- | --- |
 | macOS | `.dmg` or `.zip` | Apple Silicon (`arm64`) / Intel (`amd64`) |
 | Windows | Installer `-installer.exe` or portable `.zip` | x64 |
-| Linux | `.deb` | x64 |
+| Linux | `.deb`, `.rpm`, or `.AppImage` (download only) | x64 (`amd64`) / ARM64 (`arm64`, aarch64) |
 
 Every package ships with a `.minisig` signature, and the release carries
 `SHA256SUMS`. Once installed, Studio updates itself in place.
@@ -240,12 +250,14 @@ For advanced CLI usage and configuration, see the **[CLI reference](./docs/CLI.m
 ## Documentation
 
 - **Getting started:** [Guide](./docs/GUIDE.md) · [CLI reference](./docs/CLI.md) ·
-  [Configuration paths](./docs/CONFIG_PATHS.md) · [ACP editor integration](./docs/ACP.md)
+  [Configuration paths](./docs/CONFIG_PATHS.md) · [ACP editor integration](./docs/ACP.md) ·
+  [Use from DeepSeek Harness](./docs/DSH.md)
 - **Features & troubleshooting:** [Subagent profiles](./docs/SUBAGENT_PROFILES.md) ·
   [Context Engine v2](./docs/SESSION_MEMORY_RETRIEVAL.md) ·
   [Capability diagnostics](./docs/CAPABILITY_DIAGNOSTICS.md) ·
   [Recovery and updates](./docs/RECOVERY.md) ·
   [Checkpoints & rewind](./docs/CHECKPOINTS.md)
+- **Agent presets:** [Session Agent compositions](./docs/AGENT_COMPOSITIONS.md)
 - **Engineering & migration:** [Spec](./docs/SPEC.md) ·
   [Task contracts & pause policy](./docs/TASK_CONTRACT.md) ·
   [Tool contract](./docs/TOOL_CONTRACT.md) · [Moving from 1.x to 2.x](./docs/MIGRATING.md) ·
@@ -277,10 +289,10 @@ A small list of folks whose work has shaped Reasonix the most — the current to
 | Contributor | Contributor | Contributor | Contributor |
 | --- | --- | --- | --- |
 | [**SivanCola**](https://github.com/SivanCola) | [**KHG420**](https://github.com/KHG420) | [**ttmouse**](https://github.com/ttmouse) | [**lifu963**](https://github.com/lifu963) |
-| [**HUQIANTAO**](https://github.com/HUQIANTAO) | [**Harbor404**](https://github.com/Harbor404) | [**GTC2080**](https://github.com/GTC2080) | [**mchenziyi**](https://github.com/mchenziyi) |
-| [**Li-Charles-One**](https://github.com/Li-Charles-One) | [**light-front-theory**](https://github.com/light-front-theory) | [**XTLine**](https://github.com/XTLine) | [**eghrhegpe**](https://github.com/eghrhegpe) |
-| [**noreply**](https://github.com/noreply) | [**chuiwenwei**](https://github.com/chuiwenwei) | [**xxoingr**](https://github.com/xxoingr) | [**Bernardxu123**](https://github.com/Bernardxu123) |
-| [**HaoyueQin**](https://github.com/HaoyueQin) | [**BuGlessRB**](https://github.com/BuGlessRB) | [**CVEngineer66**](https://github.com/CVEngineer66) | [**JesonChou**](https://github.com/JesonChou) |
+| [**XTLine**](https://github.com/XTLine) | [**HUQIANTAO**](https://github.com/HUQIANTAO) | [**chuiwenwei**](https://github.com/chuiwenwei) | [**Harbor404**](https://github.com/Harbor404) |
+| [**GTC2080**](https://github.com/GTC2080) | [**mchenziyi**](https://github.com/mchenziyi) | [**Li-Charles-One**](https://github.com/Li-Charles-One) | [**light-front-theory**](https://github.com/light-front-theory) |
+| [**xxoingr**](https://github.com/xxoingr) | [**eghrhegpe**](https://github.com/eghrhegpe) | [**noreply**](https://github.com/noreply) | [**par73e**](https://github.com/par73e) |
+| [**Bernardxu123**](https://github.com/Bernardxu123) | [**Guan0923**](https://github.com/Guan0923) | [**HaoyueQin**](https://github.com/HaoyueQin) | [**BuGlessRB**](https://github.com/BuGlessRB) |
 <!-- reasonix-top-contributors:end -->
 
 Special thanks to [**Bernardxu123**](https://github.com/Bernardxu123) for designing the project logo and intro video.

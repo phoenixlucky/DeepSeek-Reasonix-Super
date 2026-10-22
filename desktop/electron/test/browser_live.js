@@ -95,15 +95,41 @@ async function main() {
     const width = () => guest.getBounds().width;
     // Watching the agent browse and reading what it says are one activity: the
     // page is beside the conversation from the moment it opens.
-    const aside = await until("the page beside the conversation", async () => (!beneath() ? guest.getBounds() : null));
+    await until("the page beside the conversation", async () => (!beneath() ? guest.getBounds() : null));
+    // The conversation's column settles after the page first appears, so the place
+    // "beside" is read once the page has stopped moving.
+    const still = (a, b) => ["x", "y", "width", "height"].every((k) => Math.abs(a[k] - b[k]) <= 1);
+    let seen = guest.getBounds();
+    const aside = await until("the page to settle beside the conversation", async () => {
+      await wait(300);
+      const now = guest.getBounds();
+      const steady = still(now, seen);
+      seen = now;
+      return steady ? now : null;
+    });
     check("the page is drawn beside the conversation as soon as the agent opens one",
       aside.width < win.getContentBounds().width, { aside, content: win.getContentBounds() });
 
     const js = (src) => win.webContents.executeJavaScript(src);
     const reserved = () => js(`(() => { const e = document.querySelector('.bview'); if (!e) return null; const b = e.getBoundingClientRect(); return { x: b.left, y: b.top, width: b.width, height: b.height }; })()`);
-    await until("the browser tab in the pane bar", () => js(`!!document.querySelector('[data-action="pane.view"][data-value="browser"]')`));
-    await js(`document.querySelector('[data-action="pane.view"][data-value="browser"]').click()`);
-    const placed = await until("the page drawn full width", async () => (width() > aside.width ? guest.getBounds() : null));
+    // The browser tab beside the conversation is a switch for that view itself, so
+    // the page is widened with the browser's own wide control, which is how the
+    // person makes it the whole pane.
+    await until("the wide control on the browser panel", () => js(`!!document.querySelector('[data-action="browser.wide"]')`));
+    await js(`document.querySelector('[data-action="browser.wide"]').click()`);
+    // A page that is put away is as wide as an agent's viewport, so wide means drawn
+    // and wider than it was beside the conversation.
+    await until("the page drawn full width", async () => (!beneath() && width() > aside.width ? guest.getBounds() : null));
+    // The panel widens over a moment; the rectangle is read once it has stopped.
+    const same = still;
+    let last = guest.getBounds();
+    const placed = await until("the page to stop moving", async () => {
+      await wait(300);
+      const now = guest.getBounds();
+      const still = same(now, last);
+      last = now;
+      return still ? now : null;
+    });
     const slot = await reserved();
     const close = (a, b) => Math.abs(a - b) <= 1;
     // The rectangle itself has to be the pane: with the conversation's column
@@ -123,11 +149,14 @@ async function main() {
       process.stdout.write(`  (no screenshot: ${err.message})\n`);
     }
 
-    await js(`document.querySelector('[data-action="pane.view"][data-value="flow"]').click()`);
-    const back = await until("the page beside the conversation again", async () => (width() < placed.width ? guest.getBounds() : null));
-    check("leaving the full-width view puts the page back beside the conversation", back.width === aside.width && !beneath(), { back, aside });
+    await js(`document.querySelector('[data-action="browser.wide"]').click()`);
+    const back = await until("the page beside the conversation again", async () => (!beneath() && width() < placed.width ? guest.getBounds() : null));
+    // The column settles a pixel or two after the first measurement, so beside means
+    // the same place and size to within a few pixels.
+    check("leaving the full-width view puts the page back beside the conversation", Math.abs(back.width - aside.width) <= 3 && Math.abs(back.x - aside.x) <= 3 && !beneath(), { back, aside });
 
-    await js(`document.querySelector('[data-action="pane.dock"]').click()`);
+    // The browser tab is the switch for the side-by-side view.
+    await js(`document.querySelector('[data-action="pane.view"][data-value="browser"]').click()`);
     await until("the page put away", async () => beneath());
     check("turning the side-by-side view off stops drawing the page", beneath());
 
@@ -144,6 +173,8 @@ async function main() {
       // One request per call plus the one that reads the last result.
       const calls = act === "network" ? 3 : 2;
       await until(`the turn that would ${act}`, async () => requests.length > before + calls, 90000);
+      // The next turn is submitted only once this one has ended, or it is queued behind it.
+      await until(`the ${act} turn to end`, async () => ((await js(`!document.querySelector('[data-action="session.stop"]')`)) ? true : null), 30000);
       return (requests.at(-1).messages || []).filter((m) => m.role === "tool").map((m) => String(m.content || "")).join("\n");
     };
     const askFor = async (name) => {
@@ -159,6 +190,7 @@ async function main() {
     check("the agent's input reaches the page while the window is minimized", await askFor("韩梅梅"), await greeting());
 
     win.restore();
+    win.focus();
     const cover = new BrowserWindow({ width: 1600, height: 1000, x: 0, y: 0, alwaysOnTop: true });
     await cover.loadURL("data:text/html,<h1>cover</h1>");
     cover.focus();

@@ -418,7 +418,7 @@ func TestRunServesUntilTheParentLetsGo(t *testing.T) {
 	go func() { _, _ = io.Copy(io.Discard, logs) }()
 
 	done := make(chan int, 1)
-	go func() { done <- run(lease, announced, logged, page, shellIdentity{version: "2.10.0"}) }()
+	go func() { done <- run(lease, announced, logged, page, shellIdentity{version: "2.10.0"}, nil) }()
 
 	line, err := bufio.NewReader(stdout).ReadString('\n')
 	if err != nil {
@@ -480,7 +480,7 @@ func TestHostNotificationsCarryTheSharedSettingLive(t *testing.T) {
 		{Notifications: config.NotificationsConfig{Enabled: true}},
 		nil,
 	} {
-		wrap, set := hostNotifications(cfg)
+		wrap, set, _ := hostNotifications(cfg)
 		if got := wrap(plain); got == event.Sink(plain) {
 			t.Fatalf("runtime was left unwrapped, so the switch could never reach it (cfg %+v)", cfg)
 		}
@@ -542,12 +542,54 @@ func TestAssembleAppliesTheStartupUpgrades(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Chdir(testenv.TempDir(t))
-	hub, err := assemble(t.Context(), io.Discard, io.Discard, shellIdentity{}, nil, newStartupPhases(io.Discard, time.Now))
+	hub, err := assemble(t.Context(), io.Discard, io.Discard, shellIdentity{}, nil, newStartupPhases(io.Discard, time.Now), nil)
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
 	defer hub.Shutdown()
 	if got := config.LoadForEdit(path).DesktopDefaultToolApprovalMode(); got != "" {
 		t.Fatalf("after the window started, the desktop posture is %q, want the shipped auto released", got)
+	}
+}
+
+type phoneReports chan [2]any
+
+func (p phoneReports) NotifyPhones(_ context.Context, kind string, count int) error {
+	p <- [2]any{kind, count}
+	return nil
+}
+
+// A runtime's own events, through the wrapper every pane gets, reach the account
+// connection as a kind and a count and nothing else, and only once the switches
+// ask for it.
+func TestAnApprovalOnAPaneReachesThePhoneLinkAsATypeAndACount(t *testing.T) {
+	cfg := &config.Config{Notifications: config.NotificationsConfig{Phone: config.PhoneNotificationsConfig{Enabled: true, Approval: true}}}
+	wrap, set, link := hostNotifications(cfg)
+	reports := make(phoneReports, 4)
+	link.Set(reports)
+	sink := wrap(serve.NewBroadcaster())
+
+	sink.Emit(event.Event{Kind: event.ApprovalRequest, Approval: event.Approval{ID: "1", Tool: "bash", Subject: "git push --force"}})
+	select {
+	case got := <-reports:
+		if got != [2]any{"approval", 1} {
+			t.Fatalf("reported %v, want a type and a count and no text", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("an approval on a pane did not reach the phone link")
+	}
+
+	sink.Emit(event.Event{Kind: event.AskRequest})
+	select {
+	case got := <-reports:
+		t.Fatalf("reported %v for a kind whose switch is off", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+	set.Store(config.NotificationsConfig{})
+	sink.Emit(event.Event{Kind: event.ApprovalRequest})
+	select {
+	case got := <-reports:
+		t.Fatalf("reported %v after the master switch was turned off", got)
+	case <-time.After(100 * time.Millisecond):
 	}
 }

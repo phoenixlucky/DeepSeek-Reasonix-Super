@@ -15,6 +15,7 @@
 package sandbox
 
 import (
+	"errors"
 	"os"
 	"runtime"
 )
@@ -55,6 +56,9 @@ type Spec struct {
 	Network bool
 	// HostAuthorities are the host services this command may call.
 	HostAuthorities []HostAuthority
+	// AllowDevices are globs under /dev for host device nodes bound into the
+	// Linux sandbox's private /dev (the GPU, for one). Other platforms ignore it.
+	AllowDevices []string
 	// Egress, set with Network where EgressSupported, confines external egress
 	// to the host egress proxy. Loopback itself stays open so a command can
 	// serve and reach its own listeners.
@@ -80,6 +84,13 @@ type Spec struct {
 	// keeps the platform default (ephemeral tmpfs on Linux bwrap, host temp
 	// elsewhere). MCP and other independent sandboxes leave this empty.
 	SessionTemp string
+	// GrantSID is the synthetic SID the Windows launcher restricts a command's
+	// token to: the one the GrantBook granted on WriteRoots. Empty leaves a
+	// Windows command unwrapped, which a caller in enforce mode treats as refused.
+	GrantSID string
+	// GrantFault is why GrantSpec could not prepare the Windows sandbox, as one of
+	// the ErrWin* identities; nil when it did, or when nothing was asked for.
+	GrantFault error
 }
 
 // EgressRoute is the host proxy a confined command's external traffic goes
@@ -116,36 +127,95 @@ func EffectiveGetenv(shellEnv map[string]string) func(string) string {
 
 // UnavailableMessage explains why an enforced bash sandbox cannot run and gives
 // the platform-specific remediation.
-func UnavailableMessage() string {
-	return "bash sandbox requested but unavailable on this host; refusing to run unconfined. " + UnavailableRemediation()
+func UnavailableMessage() string { return unavailableMessage(bwrapFault()) }
+
+// UnavailableMessageFor is UnavailableMessage for the launch spec will make.
+func UnavailableMessageFor(spec Spec) string { return unavailableMessage(bwrapFaultFor(spec)) }
+
+func unavailableMessage(fault error) string {
+	return "bash sandbox requested but unavailable on this host; refusing to run unconfined. " + remediation(fault)
 }
 
 // UnavailableRemediation is split out so status surfaces can append the same
 // actionable hint without repeating the leading error.
-func UnavailableRemediation() string {
+func UnavailableRemediation() string { return remediation(bwrapFault()) }
+
+// UnavailableRemediationFor is UnavailableRemediation for the launch spec will make.
+func UnavailableRemediationFor(spec Spec) string { return remediation(bwrapFaultFor(spec)) }
+
+func remediation(fault error) string {
 	switch runtime.GOOS {
 	case "linux":
+		if errors.Is(fault, ErrBwrapNetworkDenied) {
+			return "Bubblewrap can start here but cannot give a command its own network namespace, which needs CAP_NET_ADMIN (a default container lacks it). " +
+				"Grant the container CAP_NET_ADMIN, or set [sandbox] network = true so commands share the host network, " +
+				"or set [sandbox] bash = \"off\" in config.toml / Settings -> Sandbox; shell commands then run unconfined and the container or host is the only boundary."
+		}
+		if errors.Is(fault, ErrBwrapNamespaceDenied) {
+			return "Bubblewrap is installed but cannot create a namespace here, which is typical inside a default container or on a kernel that restricts unprivileged user namespaces. " +
+				"Run the container with the privileges bubblewrap needs (typically CAP_SYS_ADMIN together with an unconfined seccomp profile; either widens the container itself), " +
+				"or set [sandbox] bash = \"off\" in config.toml / Settings -> Sandbox; shell commands then run unconfined and the container or host is the only boundary."
+		}
+		if errors.Is(fault, ErrBwrapUnrunnable) {
+			return "Bubblewrap is on PATH but could not be started (it may not be executable here, or did not finish its check in time). Check that `bwrap --version` runs, " +
+				"or set [sandbox] bash = \"off\" in config.toml / Settings -> Sandbox; shell commands then run unconfined and the container or host is the only boundary."
+		}
 		return "Install bubblewrap (`bwrap`) or set [sandbox] bash = \"off\" in config.toml / Settings -> Sandbox to restore pre-1.16 unconfined shell execution."
 	case "darwin":
 		return "Ensure `sandbox-exec` is installed and usable (the host must allow `sandbox_apply`), or set [sandbox] bash = \"off\" in config.toml / Settings -> Sandbox to restore pre-1.16 unconfined shell execution."
 	case "windows":
-		return "Windows does not currently provide a Reasonix OS-level Bash sandbox; the effective setting is fixed to \"off\" and shell commands run unconfined."
+		return windowsRemediation(fault)
 	default:
 		return "Set [sandbox] bash = \"off\" in config.toml / Settings -> Sandbox to run shell commands unconfined on this platform."
 	}
 }
 
-// UnavailableCode is that explanation's identity. A frontend says it in the
+// ErrBwrapMissing, ErrBwrapNamespaceDenied, ErrBwrapNetworkDenied and
+// ErrBwrapUnrunnable are why a Linux host has no usable bash sandbox: no
+// bubblewrap on PATH, one that cannot enter a namespace, one that enters it but
+// not a network namespace, or one that could not be started at all.
+var (
+	ErrBwrapMissing         = errors.New("bubblewrap is not installed")
+	ErrBwrapNamespaceDenied = errors.New("bubblewrap cannot create a namespace here")
+	ErrBwrapNetworkDenied   = errors.New("bubblewrap cannot create a network namespace here")
+	ErrBwrapUnrunnable      = errors.New("bubblewrap could not be started")
+)
+
+// UnavailableReason is the identity behind the unavailable state, for a caller
+// that branches on it with errors.Is. Nil when the sandbox is usable or the
+// platform names no finer reason than its UnavailableCode.
+func UnavailableReason() error { return bwrapFault() }
+
+// AvailableFor reports whether a command launched for spec can be confined: a
+// spec that denies network needs a network namespace that Available alone does
+// not prove.
+func AvailableFor(spec Spec) bool { return Available() && bwrapFaultFor(spec) == nil }
+
+// bwrapFault is the base fault, with the network left open.
+func bwrapFault() error { return bwrapFaultFor(Spec{Network: true}) }
+
+// UnavailableCodeFor is that explanation's identity. A frontend says it in the
 // reader's language from this; matching the English sentence above would be a
 // second copy of this switch, in a place that cannot see when it changes.
-func UnavailableCode() string {
+func UnavailableCodeFor(spec Spec) string { return unavailableCode(bwrapFaultFor(spec)) }
+
+func unavailableCode(fault error) string {
 	switch runtime.GOOS {
 	case "linux":
+		if errors.Is(fault, ErrBwrapNetworkDenied) {
+			return "sandbox.bwrap_network_denied"
+		}
+		if errors.Is(fault, ErrBwrapNamespaceDenied) {
+			return "sandbox.bwrap_namespace_denied"
+		}
+		if errors.Is(fault, ErrBwrapUnrunnable) {
+			return "sandbox.bwrap_unrunnable"
+		}
 		return "sandbox.no_bubblewrap"
 	case "darwin":
 		return "sandbox.no_sandbox_exec"
 	case "windows":
-		return "sandbox.unsupported_on_windows"
+		return windowsUnavailableCode(fault)
 	default:
 		return "sandbox.unsupported_platform"
 	}

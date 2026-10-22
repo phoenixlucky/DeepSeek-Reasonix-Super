@@ -5,6 +5,7 @@ package pricing
 import (
 	"slices"
 	"strings"
+	"time"
 )
 
 // rateGeneration is one published pair. Peak is nil for a generation the vendor
@@ -12,6 +13,24 @@ import (
 type rateGeneration struct {
 	Base RateCard
 	Peak *RateCard
+	// From is the first day (YYYY-MM-DD, UTC) this generation is billed; empty
+	// means from when it shipped. An announced change is appended with its date.
+	From string
+}
+
+// today is the day a dated generation is read against; a test replaces it.
+var today = func() string { return time.Now().UTC().Format("2006-01-02") }
+
+// currentIndex is the generation in force today: the last one whose date has
+// come. Rows with no dated generation answer with their last, as before.
+func (r officialRateRow) currentIndex() int {
+	day := today()
+	for i := len(r.Rates) - 1; i > 0; i-- {
+		if r.Rates[i].From == "" || r.Rates[i].From <= day {
+			return i
+		}
+	}
+	return 0
 }
 
 // officialRateRow is one vendor's model, in one currency, under one billing
@@ -87,6 +106,35 @@ var officialRates = []officialRateRow{
 		Provider: "longcat", Model: "LongCat-2.0", Currency: "USD",
 		BillingMode: BillingModePAYG, DocURL: DocLongCatPricingUSD, Notes: "launch_discount_no_end_date", CheckedOn: checkedOn,
 		Rates: []rateGeneration{{Base: RateCard{CacheHit: 0.006, Input: 0.30, Output: 1.20, Currency: "USD"}}},
+	},
+
+	// Google: the two flash models double on 2027-01-01, hence the dated generation.
+	// gemini-3.1-pro-preview is the rate up to 200k prompt tokens; gemini-4-argon has no price.
+	{
+		Provider: "google", Model: "gemini-3.8-flash", Currency: "USD",
+		BillingMode: BillingModePAYG, DocURL: DocGeminiPricing, CheckedOn: googleCheckedOn,
+		Rates: []rateGeneration{
+			{Base: RateCard{CacheHit: 0.075, Input: 0.75, Output: 3.75, Currency: "USD"}},
+			{From: "2027-01-01", Base: RateCard{CacheHit: 0.15, Input: 1.50, Output: 7.50, Currency: "USD"}},
+		},
+	},
+	{
+		Provider: "google", Model: "gemini-3.6-flash", Currency: "USD",
+		BillingMode: BillingModePAYG, DocURL: DocGeminiPricing, CheckedOn: googleCheckedOn,
+		Rates: []rateGeneration{
+			{Base: RateCard{CacheHit: 0.075, Input: 0.75, Output: 3.75, Currency: "USD"}},
+			{From: "2027-01-01", Base: RateCard{CacheHit: 0.15, Input: 1.50, Output: 7.50, Currency: "USD"}},
+		},
+	},
+	{
+		Provider: "google", Model: "gemini-3.5-flash-lite", Currency: "USD",
+		BillingMode: BillingModePAYG, DocURL: DocGeminiPricing, CheckedOn: googleCheckedOn,
+		Rates: []rateGeneration{{Base: RateCard{CacheHit: 0.03, Input: 0.30, Output: 2.50, Currency: "USD"}}},
+	},
+	{
+		Provider: "google", Model: "gemini-3.1-pro-preview", Currency: "USD",
+		BillingMode: BillingModePAYG, DocURL: DocGeminiPricing, Notes: "up_to_200k_prompt_tokens", CheckedOn: googleCheckedOn,
+		Rates: []rateGeneration{{Base: RateCard{CacheHit: 0.20, Input: 2.00, Output: 12.00, Currency: "USD"}}},
 	},
 
 	// MiMo domestic PAYG; Token Plan bills the same rates as subscription_equivalent.
@@ -221,11 +269,33 @@ func CurrentRate(provider, model, currency string) *RateCard {
 			continue
 		}
 		if len(row.Rates) > 0 {
-			rate := row.Rates[len(row.Rates)-1].Base
+			rate := row.Rates[row.currentIndex()].Base
 			return &rate
 		}
 	}
 	return nil
+}
+
+// IsOfficialCard reports whether card is a rate this project has shipped for the
+// model in the card's own currency: any generation, its off-peak or its peak
+// card. A card that is none of them is the user's, or damaged, and cannot be
+// valued against the vendor's other-currency table.
+func IsOfficialCard(provider, model string, card RateCard) bool {
+	for _, row := range officialRateRowsFor(provider, model, card.Currency) {
+		if row.BillingMode == BillingModeSubscriptionEquivalent {
+			continue
+		}
+		for _, generation := range row.Rates {
+			if sameCard(generation.Base, card) || generation.Peak != nil && sameCard(*generation.Peak, card) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func sameCard(a, b RateCard) bool {
+	return a.CacheHit == b.CacheHit && a.Input == b.Input && a.Output == b.Output
 }
 
 // SupersededRates are the rates shipped for a model before the current one. A
@@ -237,7 +307,7 @@ func SupersededRates(provider, model, currency string) []RateCard {
 		if row.BillingMode == BillingModeSubscriptionEquivalent || len(row.Rates) < 2 {
 			continue
 		}
-		for _, generation := range row.Rates[:len(row.Rates)-1] {
+		for _, generation := range row.Rates[:row.currentIndex()] {
 			out = append(out, generation.Base)
 		}
 	}
@@ -252,7 +322,7 @@ func officialCatalogRows() []CatalogEntry {
 		if len(row.Rates) == 0 {
 			continue
 		}
-		current := row.Rates[len(row.Rates)-1]
+		current := row.Rates[row.currentIndex()]
 		rows = append(rows, row.entry(row.Model, current))
 		if row.Provider != "deepseek" || row.Model != "deepseek-flash" {
 			continue

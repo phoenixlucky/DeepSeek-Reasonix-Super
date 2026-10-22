@@ -25,7 +25,7 @@ import (
 
 // SchemaVersion names the projection file, so a bump retires the old one
 // rather than migrating it: every column here is replayable from the JSONL.
-const SchemaVersion = 5
+const SchemaVersion = 7
 
 type AppendReceipt struct {
 	Path     string
@@ -53,14 +53,23 @@ type Entry struct {
 	Cost          int64
 	CostCurrency  string
 	CostEstimated bool
-	Valuations    map[string]int64 // vendor-table amounts by currency, fixed-point
+	// CostIncomplete marks a row that counted usage but whose money is
+	// unknown, so a total folding it in is a floor, not a bill.
+	CostIncomplete bool
+	// BillingMode is the mode the quote was made in; a plan's estimate is kept
+	// apart from billed cost.
+	BillingMode string
+	Valuations  map[string]int64 // vendor-table amounts by currency, fixed-point
 }
 
 // CostAmount is one currency's total. Currencies never add, so they never share
 // a column with each other or with the token counts.
 type CostAmount struct {
 	Currency string
-	Amount   int64
+	// Mode is "" for billed cost and ModeEstimate for a subscription-equivalent
+	// estimate; the two are never added.
+	Mode   string
+	Amount int64
 	// Estimated is set when any row folded in here was priced from a fallback
 	// rate card rather than a provider-reported amount.
 	Estimated bool
@@ -79,7 +88,10 @@ type Rollup struct {
 	Total      int64
 	Requests   int64
 	Turns      int64
-	Costs      []CostAmount
+	// CostIncomplete counts the rows behind this rollup whose money is
+	// unknown; the sum of their costs is a floor.
+	CostIncomplete int64
+	Costs          []CostAmount
 }
 
 type Status struct {
@@ -165,19 +177,21 @@ CREATE TABLE usage_records(
  prompt INTEGER NOT NULL,completion INTEGER NOT NULL,reasoning INTEGER NOT NULL,cache_hit INTEGER NOT NULL,
  cache_miss INTEGER NOT NULL,total INTEGER NOT NULL,requests INTEGER NOT NULL,turns INTEGER NOT NULL,
  cost INTEGER NOT NULL DEFAULT 0,cost_currency TEXT NOT NULL DEFAULT '',cost_estimated INTEGER NOT NULL DEFAULT 0,
- valuation_cny INTEGER,valuation_usd INTEGER,
+ cost_incomplete INTEGER NOT NULL DEFAULT 0,
+ valuation_cny INTEGER,valuation_usd INTEGER,billing_mode TEXT NOT NULL DEFAULT '',
  PRIMARY KEY(file_path,byte_offset)
 );
 CREATE TABLE usage_rollups(
  day TEXT NOT NULL,source TEXT NOT NULL,model_ref TEXT NOT NULL,provider TEXT NOT NULL,
  prompt INTEGER NOT NULL,completion INTEGER NOT NULL,reasoning INTEGER NOT NULL,cache_hit INTEGER NOT NULL,
  cache_miss INTEGER NOT NULL,total INTEGER NOT NULL,requests INTEGER NOT NULL,turns INTEGER NOT NULL,
+ cost_incomplete INTEGER NOT NULL DEFAULT 0,
  PRIMARY KEY(day,source,model_ref)
 );
 CREATE TABLE usage_cost(
  day TEXT NOT NULL,source TEXT NOT NULL,model_ref TEXT NOT NULL,view TEXT NOT NULL,
- currency TEXT NOT NULL,cost INTEGER NOT NULL,estimated INTEGER NOT NULL DEFAULT 0,
- PRIMARY KEY(day,source,model_ref,view,currency)
+ currency TEXT NOT NULL,mode TEXT NOT NULL DEFAULT '',cost INTEGER NOT NULL,estimated INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(day,source,model_ref,view,currency,mode)
 );
 CREATE INDEX idx_usage_rollups_range ON usage_rollups(day,source,model_ref);
 `
@@ -370,16 +384,19 @@ func insertRecord(ctx context.Context, tx *sql.Tx, receipt AppendReceipt, entry 
 	if entry.Total > 0 && entry.Requests <= 0 {
 		entry.Requests = 1
 	}
-	estimated := 0
+	estimated, incomplete := 0, 0
 	if entry.CostEstimated {
 		estimated = 1
 	}
+	if entry.CostIncomplete {
+		incomplete = 1
+	}
 	_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO usage_records(file_path,byte_offset,byte_length,line_hash,day,source,
         model_ref,provider,prompt,completion,reasoning,cache_hit,cache_miss,total,requests,turns,cost,cost_currency,cost_estimated,
-        valuation_cny,valuation_usd) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        cost_incomplete,valuation_cny,valuation_usd,billing_mode) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		receipt.Path, receipt.Offset, receipt.Length, receipt.LineHash, entry.Day, entry.Source, entry.ModelRef, entry.Provider,
 		entry.Prompt, entry.Completion, entry.Reasoning, entry.CacheHit, entry.CacheMiss, entry.Total, entry.Requests, entry.Turns,
-		entry.Cost, entry.CostCurrency, estimated, valuationArg(entry, "CNY"), valuationArg(entry, "USD"))
+		entry.Cost, entry.CostCurrency, estimated, incomplete, valuationArg(entry, "CNY"), valuationArg(entry, "USD"), entry.BillingMode)
 	return err
 }
 
@@ -389,13 +406,17 @@ func projectRecord(ctx context.Context, tx *sql.Tx, entry Entry) error {
 	if entry.Total > 0 && entry.Requests <= 0 {
 		entry.Requests = 1
 	}
+	incomplete := 0
+	if entry.CostIncomplete {
+		incomplete = 1
+	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO usage_rollups(day,source,model_ref,provider,prompt,completion,reasoning,cache_hit,
-        cache_miss,total,requests,turns) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(day,source,model_ref) DO UPDATE SET
+        cache_miss,total,requests,turns,cost_incomplete) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(day,source,model_ref) DO UPDATE SET
         prompt=prompt+excluded.prompt,completion=completion+excluded.completion,reasoning=reasoning+excluded.reasoning,
         cache_hit=cache_hit+excluded.cache_hit,cache_miss=cache_miss+excluded.cache_miss,total=total+excluded.total,
-        requests=requests+excluded.requests,turns=turns+excluded.turns`,
+        requests=requests+excluded.requests,turns=turns+excluded.turns,cost_incomplete=cost_incomplete+excluded.cost_incomplete`,
 		entry.Day, entry.Source, entry.ModelRef, entry.Provider,
-		entry.Prompt, entry.Completion, entry.Reasoning, entry.CacheHit, entry.CacheMiss, entry.Total, entry.Requests, entry.Turns)
+		entry.Prompt, entry.Completion, entry.Reasoning, entry.CacheHit, entry.CacheMiss, entry.Total, entry.Requests, entry.Turns, incomplete)
 	if err != nil || entry.CostCurrency == "" || entry.Cost == 0 {
 		return err
 	}
@@ -405,10 +426,10 @@ func projectRecord(ctx context.Context, tx *sql.Tx, entry Entry) error {
 	}
 	for _, view := range costViews {
 		currency, amount := entry.CostIn(view)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO usage_cost(day,source,model_ref,view,currency,cost,estimated)
-        VALUES(?,?,?,?,?,?,?) ON CONFLICT(day,source,model_ref,view,currency) DO UPDATE SET cost=cost+excluded.cost,
+		if _, err := tx.ExecContext(ctx, `INSERT INTO usage_cost(day,source,model_ref,view,currency,mode,cost,estimated)
+        VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(day,source,model_ref,view,currency,mode) DO UPDATE SET cost=cost+excluded.cost,
         estimated=MAX(estimated,excluded.estimated)`,
-			entry.Day, entry.Source, entry.ModelRef, view, currency, amount, estimated); err != nil {
+			entry.Day, entry.Source, entry.ModelRef, view, currency, CostMode(entry.BillingMode), amount, estimated); err != nil {
 			return err
 		}
 	}
@@ -423,9 +444,9 @@ func rederiveDays(ctx context.Context, tx *sql.Tx, days []string) error {
 		stmts := []string{
 			`DELETE FROM usage_rollups WHERE day=?`,
 			`DELETE FROM usage_cost WHERE day=?`,
-			`INSERT INTO usage_rollups(day,source,model_ref,provider,prompt,completion,reasoning,cache_hit,cache_miss,total,requests,turns)
+			`INSERT INTO usage_rollups(day,source,model_ref,provider,prompt,completion,reasoning,cache_hit,cache_miss,total,requests,turns,cost_incomplete)
         SELECT day,source,model_ref,MAX(provider),SUM(prompt),SUM(completion),SUM(reasoning),SUM(cache_hit),SUM(cache_miss),
-        SUM(total),SUM(requests),SUM(turns) FROM usage_records WHERE day=? GROUP BY day,source,model_ref`,
+        SUM(total),SUM(requests),SUM(turns),SUM(cost_incomplete) FROM usage_records WHERE day=? GROUP BY day,source,model_ref`,
 		}
 		for _, view := range costViews {
 			stmts = append(stmts, viewCostSelect(view))
@@ -455,8 +476,10 @@ type rawRecord struct {
 	CostAmount    string `json:"cost_amount"`
 	CostCurrency  string `json:"cost_currency"`
 	CostEstimated bool   `json:"cost_estimated"`
+	CostComplete  *bool  `json:"cost_complete"`
 	ValuationCNY  string `json:"valuation_cny"`
 	ValuationUSD  string `json:"valuation_usd"`
+	BillingMode   string `json:"billing_mode"`
 }
 
 func providerOf(model string) string {
@@ -474,7 +497,8 @@ func entryFromRaw(day string, raw rawRecord) Entry {
 	return Entry{Day: day, Source: raw.Source, ModelRef: raw.ModelRef, Provider: providerOf(raw.ModelRef), Prompt: raw.Prompt,
 		Completion: raw.Completion, Reasoning: raw.Reasoning, CacheHit: raw.CacheHit, CacheMiss: raw.CacheMiss,
 		Total: raw.Total, Requests: raw.Requests, Turns: turns}.WithCost(Priced{Amount: raw.CostAmount,
-		Currency: raw.CostCurrency, CNY: raw.ValuationCNY, USD: raw.ValuationUSD, Estimated: raw.CostEstimated})
+		Currency: raw.CostCurrency, CNY: raw.ValuationCNY, USD: raw.ValuationUSD, Estimated: raw.CostEstimated,
+		Incomplete: raw.CostComplete != nil && !*raw.CostComplete, BillingMode: raw.BillingMode})
 }
 
 // recordDays is every day the file's records were filed under, plus the day it
@@ -632,7 +656,7 @@ func (c *Catalog) Query(ctx context.Context, fromDay, toDay, source, view string
 		where += ` AND source=?`
 		args = append(args, source)
 	}
-	rows, err := c.db.QueryContext(ctx, `SELECT day,source,model_ref,provider,prompt,completion,reasoning,cache_hit,cache_miss,total,requests,turns
+	rows, err := c.db.QueryContext(ctx, `SELECT day,source,model_ref,provider,prompt,completion,reasoning,cache_hit,cache_miss,total,requests,turns,cost_incomplete
         FROM usage_rollups WHERE `+where+` ORDER BY day,source,model_ref`, args...)
 	if err != nil {
 		return nil, err
@@ -642,7 +666,7 @@ func (c *Catalog) Query(ctx context.Context, fromDay, toDay, source, view string
 	for rows.Next() {
 		var row Rollup
 		if err := rows.Scan(&row.Day, &row.Source, &row.ModelRef, &row.Provider, &row.Prompt, &row.Completion, &row.Reasoning,
-			&row.CacheHit, &row.CacheMiss, &row.Total, &row.Requests, &row.Turns); err != nil {
+			&row.CacheHit, &row.CacheMiss, &row.Total, &row.Requests, &row.Turns, &row.CostIncomplete); err != nil {
 			return nil, err
 		}
 		out = append(out, row)
@@ -660,7 +684,7 @@ func (c *Catalog) attachCosts(ctx context.Context, rows []Rollup, where string, 
 	if len(rows) == 0 {
 		return rows, nil
 	}
-	found, err := c.db.QueryContext(ctx, `SELECT day,source,model_ref,currency,cost,estimated
+	found, err := c.db.QueryContext(ctx, `SELECT day,source,model_ref,currency,mode,cost,estimated
         FROM usage_cost WHERE `+where, args...)
 	if err != nil {
 		return nil, err
@@ -671,15 +695,15 @@ func (c *Catalog) attachCosts(ctx context.Context, rows []Rollup, where string, 
 		at[costKey(row.Day, row.Source, row.ModelRef)] = i
 	}
 	for found.Next() {
-		var day, source, model, currency string
+		var day, source, model, currency, mode string
 		var amount int64
 		var estimated int
-		if err := found.Scan(&day, &source, &model, &currency, &amount, &estimated); err != nil {
+		if err := found.Scan(&day, &source, &model, &currency, &mode, &amount, &estimated); err != nil {
 			return nil, err
 		}
 		if i, ok := at[costKey(day, source, model)]; ok {
 			rows[i].Costs = append(rows[i].Costs,
-				CostAmount{Currency: currency, Amount: amount, Estimated: estimated != 0})
+				CostAmount{Currency: currency, Mode: mode, Amount: amount, Estimated: estimated != 0})
 		}
 	}
 	return rows, found.Err()

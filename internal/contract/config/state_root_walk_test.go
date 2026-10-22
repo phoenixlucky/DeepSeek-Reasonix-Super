@@ -25,7 +25,10 @@ func TestStateRootJoinsSurvivesDirectoriesVanishingMidWalk(t *testing.T) {
 				return
 			default:
 			}
-			dir := filepath.Join(root, fmt.Sprintf("churn-%d", i%64))
+			// A name is never reused: once the walker has met a path being removed,
+			// that path stays gone, so the re-stat that confirms it cannot be defeated
+			// by the churn rebuilding it a moment later on a slow machine.
+			dir := filepath.Join(root, fmt.Sprintf("churn-%d", i))
 			_ = os.MkdirAll(filepath.Join(dir, "sub"), 0o755)
 			_ = os.RemoveAll(dir)
 		}

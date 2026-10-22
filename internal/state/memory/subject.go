@@ -6,7 +6,6 @@ package memory
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -36,14 +35,14 @@ func NormalizeSubjectKey(s string) string {
 
 // findActiveSubject returns the active fact holding a subject key within one
 // scope's directory, if any.
-func (s Store) findActiveSubject(scope FactScope, key string) (Memory, bool) {
+func (s Store) findActiveSubject(scope FactScope, key string) (Memory, bool, error) {
 	dir := s.DirFor(scope)
 	if dir == "" || key == "" {
-		return Memory{}, false
+		return Memory{}, false, nil
 	}
-	entries, err := os.ReadDir(dir)
+	entries, err := readMemoryDirectory(dir)
 	if err != nil {
-		return Memory{}, false
+		return Memory{}, false, err
 	}
 	for _, e := range entries {
 		if e.IsDir() || e.Name() == indexFile || !strings.HasSuffix(e.Name(), ".md") {
@@ -56,9 +55,9 @@ func (s Store) findActiveSubject(scope FactScope, key string) (Memory, bool) {
 		if m.Scope == "" {
 			m.Scope = s.scopeForDir(dir)
 		}
-		return m, true
+		return m, true, nil
 	}
-	return Memory{}, false
+	return Memory{}, false, nil
 }
 
 // validateSubjectKey enforces one active value per (scope, subject): a save
@@ -70,7 +69,10 @@ func (s Store) validateSubjectKey(m Memory) error {
 	if key == "" {
 		return nil
 	}
-	holder, ok := s.findActiveSubject(NormalizeFactScope(string(m.Scope)), key)
+	holder, ok, err := s.findActiveSubject(NormalizeFactScope(string(m.Scope)), key)
+	if err != nil {
+		return err
+	}
 	if !ok || holder.ID == m.ID {
 		return nil
 	}

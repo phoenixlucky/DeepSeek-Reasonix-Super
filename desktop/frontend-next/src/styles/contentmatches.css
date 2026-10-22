@@ -1,0 +1,12 @@
+.content-matches { margin: 4px 0 8px; padding: 0 4px; font: var(--w-reg) var(--fs-meta) var(--ui); color: var(--faint) }
+.content-matches h3 { margin: 6px 8px 4px; font: var(--w-med) var(--fs-meta) var(--ui); color: var(--muted) }
+.content-matches ul { margin: 0; padding: 0; list-style: none }
+.content-matches button { display: grid; gap: 2px; width: 100%; padding: 6px 8px; border: 0; border-radius: var(--r-sm); background: none; color: var(--text); text-align: left; cursor: pointer }
+.content-matches button:hover { background: var(--hover, color-mix(in srgb, var(--text) 6%, transparent)) }
+.content-matches b { overflow: hidden; font-weight: var(--w-med); text-overflow: ellipsis; white-space: nowrap }
+.content-matches span { display: -webkit-box; overflow: hidden; color: var(--faint); -webkit-line-clamp: 2; -webkit-box-orient: vertical }
+.content-matches[data-state] { padding: 6px 12px }
+.content-matches li { display: flex; align-items: stretch; gap: 2px }
+.content-matches li > button:first-child { flex: 1; width: auto; min-width: 0 }
+.content-matches .content-match-ref { flex: none; width: 28px; padding: 0; place-items: center; color: var(--faint); font: var(--w-med) var(--fs-ui) var(--mono) }
+.content-matches .content-match-ref:hover { color: var(--text) }

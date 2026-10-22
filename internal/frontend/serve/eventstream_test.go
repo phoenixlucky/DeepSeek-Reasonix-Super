@@ -223,3 +223,44 @@ func TestResetSessionRetiresReplayButKeepsNumbering(t *testing.T) {
 		t.Error("frames from the retired session must not be replayable")
 	}
 }
+
+// A window that attaches with nothing must still be told where it attached.
+// Without that number a connection lost before the first numbered frame resumes
+// as "holds nothing", and every frame that fell in the gap is skipped for good.
+func TestSubscribeAttachedStatesWhereItAttachedBeforeAnyLaterFrame(t *testing.T) {
+	b := NewBroadcaster()
+	for range 3 {
+		b.Emit(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "t", Name: "bash"}})
+	}
+	ch, cancel := b.SubscribeAttached()
+	defer cancel()
+	b.Emit(event.Event{Kind: event.TurnDone})
+
+	first := <-ch
+	var mark struct {
+		Kind string `json:"kind"`
+		Seq  int64  `json:"seq"`
+	}
+	if err := json.Unmarshal(first.Data, &mark); err != nil || mark.Kind != "stream_watermark" || mark.Seq != 3 || first.Seq != 0 {
+		t.Fatalf("first frame = %+v %s, want an unnumbered watermark at 3", first, first.Data)
+	}
+	if next := <-ch; kindOf(t, next.Data) != "turn_done" || next.Seq != 4 {
+		t.Fatalf("next frame = %+v, want the live turn_done numbered 4 after the watermark", next)
+	}
+}
+
+// A window that stated its own position, zero included, is owed the log after it.
+// SubscribeFrom keeps zero as "no cursor" for the per-pane stream.
+func TestSubscribeResumeFromZeroReplaysTheWholeLog(t *testing.T) {
+	b := NewBroadcaster()
+	for range 3 {
+		b.Emit(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "t", Name: "bash"}})
+	}
+	ch, cancel := b.SubscribeResume(0)
+	defer cancel()
+	for want := int64(1); want <= 3; want++ {
+		if got := <-ch; got.Seq != want {
+			t.Fatalf("replayed frame %d, want %d", got.Seq, want)
+		}
+	}
+}

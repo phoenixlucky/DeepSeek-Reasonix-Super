@@ -29,7 +29,7 @@ const recorderQueueSize = 2048
 
 type dispatchItem struct {
 	record record
-	flush  chan struct{}
+	flush  chan error
 }
 
 // recordDispatcher keeps filesystem latency off provider/UI event goroutines.
@@ -38,6 +38,9 @@ type dispatchItem struct {
 type recordDispatcher struct {
 	writer *Writer
 	queue  chan dispatchItem
+	// writeErr is the first Append failure since the last flush sentinel. Only
+	// run touches it; the sentinel hands the value to the waiter.
+	writeErr error
 }
 
 var recorderDispatchers = struct {
@@ -72,10 +75,16 @@ func existingDispatcher(dir string) *recordDispatcher {
 func (d *recordDispatcher) run() {
 	for item := range d.queue {
 		if item.flush != nil {
-			close(item.flush)
+			// Drain before reporting so a later successful flush starts clean
+			// instead of re-reporting a write the caller was already told about.
+			err := d.writeErr
+			d.writeErr = nil
+			item.flush <- err
 			continue
 		}
-		_ = d.writer.Append(item.record)
+		if err := d.writer.Append(item.record); err != nil && d.writeErr == nil {
+			d.writeErr = err
+		}
 	}
 }
 
@@ -98,15 +107,15 @@ func (d *recordDispatcher) flush(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	select {
 	case d.queue <- dispatchItem{flush: done}:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 	select {
-	case <-done:
-		return nil
+	case err := <-done:
+		return err
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -135,10 +144,25 @@ func (r *Recorder) Emit(e event.Event) {
 	if r != nil && r.writer != nil && e.Kind == event.Usage {
 		r.recordUsage(e)
 	} else if r != nil && r.writer != nil && e.Kind == event.GuardianAssessment && e.Guardian.Usage != nil {
-		r.recordProviderUsage(e.ModelRef, e.Guardian.Usage, nil, "")
+		r.recordGuardianUsage(e)
 	} else if r != nil && r.writer != nil && e.Kind == event.TurnDone {
 		r.recordTurn()
 	}
+}
+
+// recordGuardianUsage prices a review once, on the same terms as a turn call.
+// The CostQuoteSink quotes it in production; an emitter that bypasses the sink
+// still gets an explicit quote here (nil Pricing yields an incomplete quote, so
+// the row says "no price", never "free").
+func (r *Recorder) recordGuardianUsage(e event.Event) {
+	quote := e.Guardian.CostQuote
+	if quote == nil {
+		quote = event.EnsureCostQuote(event.Event{
+			Kind: event.Usage, ModelRef: e.ModelRef, Source: e.Source,
+			UsageSource: e.UsageSource, Usage: e.Guardian.Usage, Pricing: e.Guardian.Pricing,
+		}, nil)
+	}
+	r.recordProviderUsage(e.ModelRef, e.Guardian.Usage, quote, e.UsageSource)
 }
 
 // RecordTurnCompletion records synchronous controller runs that deliberately do
@@ -159,8 +183,10 @@ func (r *Recorder) recordTurn() {
 }
 
 // Flush waits until records already accepted by this recorder's shared queue
-// have been written. Production event paths never call Flush; it exists for
-// shutdown/verification boundaries that can explicitly tolerate waiting.
+// have been written, and reports the first append that failed, so a caller
+// gating a read on Flush cannot mistake a failed write for a durable one.
+// Production event paths never call Flush; it exists for shutdown/verification
+// boundaries that can explicitly tolerate waiting.
 func (r *Recorder) Flush(ctx context.Context) error {
 	if r == nil {
 		return nil

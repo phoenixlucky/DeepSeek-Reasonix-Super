@@ -295,7 +295,7 @@ func (c probeConn) Exec(context.Context, string) (remote.ExecResult, error) {
 	return remote.ExecResult{Stdout: []byte(c.out)}, nil
 }
 
-func (probeConn) SFTP() (*sftpfs.FS, error) { return nil, errors.New("no file layer here") }
+func (probeConn) Files() (sftpfs.Files, error) { return nil, errors.New("no file layer here") }
 
 // A machine can hold both, and it usually does after this bootstrap has
 // uploaded one: the old install stays on PATH and answers `command -v` first.

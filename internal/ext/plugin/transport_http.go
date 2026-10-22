@@ -39,6 +39,7 @@ type httpTransport struct {
 	client   *http.Client
 	roots    []mcpRoot
 	progress progressRouter
+	notices  notificationRouter
 	oauth    *mcpOAuthClient
 
 	mu      sync.Mutex
@@ -143,7 +144,7 @@ func (t *httpTransport) call(ctx context.Context, method string, params any) (re
 				bodyBytes: len(b),
 			})
 		}
-		return nil, fmt.Errorf("plugin %q: %s: %w", t.name, method, t.statusFailure(resp, len(b), bodyRPCError(b)))
+		return nil, fmt.Errorf("plugin %q: %s: %w", t.name, method, t.statusFailure(resp, len(b), bodyRPCError(b), operationOf(body)))
 	}
 
 	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
@@ -165,7 +166,7 @@ func (t *httpTransport) notify(ctx context.Context, method string, params any) e
 	t.captureSession(resp)
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxHTTPBody))
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("plugin %q: %s: %w", t.name, method, t.statusFailure(resp, 0, nil))
+		return fmt.Errorf("plugin %q: %s: %w", t.name, method, t.statusFailure(resp, 0, nil, method))
 	}
 	return nil
 }
@@ -198,6 +199,10 @@ func (t *httpTransport) setProtocolVersion(version string) {
 
 func (t *httpTransport) registerProgress(token string, sink tool.ProgressFunc) func() {
 	return t.progress.registerProgress(token, sink)
+}
+
+func (t *httpTransport) registerNotification(method string, handler notificationFunc) func() {
+	return t.notices.registerNotification(method, handler)
 }
 
 // mu covers the shared fields below and never a round trip: a request in flight
@@ -348,7 +353,9 @@ func (t *httpTransport) readSSEResponse(ctx context.Context, body io.Reader, id 
 			if isNotificationID(message.ID) {
 				if message.Method == "notifications/progress" {
 					t.progress.dispatchProgress(message.Params)
+					return nil, false, nil
 				}
+				t.notices.dispatchNotification(message.Method, message.Params)
 				return nil, false, nil
 			}
 			if err := t.replyServerRequest(ctx, message); err != nil {
@@ -414,7 +421,7 @@ func (t *httpTransport) replyServerRequest(ctx context.Context, message inboundM
 	t.captureSession(resp)
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxHTTPBody))
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("plugin %q: reply to %s: %w", t.name, message.Method, t.statusFailure(resp, 0, nil))
+		return fmt.Errorf("plugin %q: reply to %s: %w", t.name, message.Method, t.statusFailure(resp, 0, nil, message.Method))
 	}
 	return nil
 }
@@ -442,4 +449,22 @@ func bodyRPCError(body []byte) *rpcError {
 		return nil
 	}
 	return resp.Error
+}
+
+// operationOf names the request a body carries for the per-operation upgrade
+// count: its method, and for a tool call the tool it names.
+func operationOf(body []byte) string {
+	var req struct {
+		Method string `json:"method"`
+		Params struct {
+			Name string `json:"name"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(body, &req) != nil {
+		return ""
+	}
+	if req.Method == "tools/call" && req.Params.Name != "" {
+		return req.Method + ":" + req.Params.Name
+	}
+	return req.Method
 }

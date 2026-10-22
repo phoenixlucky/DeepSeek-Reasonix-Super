@@ -208,10 +208,14 @@ func TestEffectEnabledProjectMCPDoesNotLaunchARewrittenDeclaration(t *testing.T)
 // the call is refused before any process starts, and the server reads as
 // waiting for the user.
 func TestEffectEnabledProjectMCPRefusesAWorkspaceFileChangedMidSession(t *testing.T) {
-	t.Parallel()
+	// Serial: the schema cache is a process-wide file named after the server, and
+	// these tests share the name "docs-helper", so running side by side they
+	// overwrite each other's cache entry.
 	if runtime.GOOS == "windows" {
 		t.Skip("the launcher script is POSIX shell")
 	}
+	// Parallel fixtures share the schema cache, which is keyed by server name.
+	const serverName = "docs-helper-midsession"
 	home := statedBootHome(t)
 	dir := testenv.TempDir(t)
 	logPath := filepath.Join(testenv.TempDir(t), "argv.log")
@@ -219,7 +223,7 @@ func TestEffectEnabledProjectMCPRefusesAWorkspaceFileChangedMidSession(t *testin
 		writeFile(t, dir, "run.sh", "#!/bin/sh\nexec \""+os.Args[0]+"\" -test.run='^TestArgvRecordingMCPHelper$' -- "+phase+"\n")
 	}
 	launcher("approved")
-	body, err := json.Marshal(map[string]any{"mcpServers": map[string]any{"docs-helper": map[string]any{
+	body, err := json.Marshal(map[string]any{"mcpServers": map[string]any{serverName: map[string]any{
 		"command": "sh", "args": []string{"./run.sh"},
 		"env": map[string]string{"GO_WANT_HELPER_PROCESS": "1", argvLogEnv: logPath},
 	}}})
@@ -244,24 +248,19 @@ model = "x"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := first.SetMCPServerEnabled("docs-helper", config.ActivationProject, true); err != nil {
+	if err := first.SetMCPServerEnabled(serverName, config.ActivationProject, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := first.ConnectConfiguredMCPServer("docs-helper"); err != nil {
+	if _, err := first.ConnectConfiguredMCPServer(serverName); err != nil {
 		t.Fatalf("connect the enabled server: %v", err)
 	}
 	if !waitForPhase(logPath, "approved", 5*time.Second) {
 		t.Fatalf("enabled server never launched; log=%v", launchedPhases(logPath))
 	}
+	// Connecting by hand left the schema in the cache before Close returned, so
+	// the next session registers the server from cache and starts nothing until
+	// a call.
 	first.Close()
-	// The next session discovers and caches the schema, so the one after it
-	// registers the server from cache and starts nothing until a call.
-	discovery, err := Build(t.Context(), Options{Home: home, WorkspaceRoot: dir, Sink: event.Discard})
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitForCond(t, "schema discovery", 10*time.Second, func() bool { return discovery.MCPCatalogTools()["docs-helper"] > 0 })
-	discovery.Close()
 	launches := len(launchedPhases(logPath))
 
 	ctrl, err := Build(t.Context(), Options{Home: home, WorkspaceRoot: dir, Sink: event.Discard})
@@ -275,7 +274,7 @@ model = "x"
 	}
 	launcher("swapped")
 	rec.mu.Lock()
-	rec.calls = []scriptedCall{{"use_capability", `{"action":"call","capability_id":"mcp-tool:docs-helper/echo","arguments":{"msg":"hi"}}`}}
+	rec.calls = []scriptedCall{{"use_capability", `{"action":"call","capability_id":"mcp-tool:` + serverName + `/echo","arguments":{"msg":"hi"}}`}}
 	rec.mu.Unlock()
 	if err := ctrl.Run(t.Context(), "use the docs helper"); err != nil {
 		t.Fatal(err)
@@ -287,8 +286,8 @@ model = "x"
 		t.Fatalf("the call reached a server: %q; log=%v", got, launchedPhases(logPath))
 	}
 	for _, h := range ctrl.MCPServerHealth() {
-		if h.Name == "docs-helper" && h.Status != control.MCPHealthPending {
-			t.Fatalf("docs-helper status = %s (%s), want pending", h.Status, h.Error)
+		if h.Name == serverName && h.Status != control.MCPHealthPending {
+			t.Fatalf("%s status = %s (%s), want pending", serverName, h.Status, h.Error)
 		}
 	}
 }
@@ -297,7 +296,9 @@ model = "x"
 // that PATH points into the workspace, the file it finds is repository code
 // the user approved, and swapping it must not start on that approval.
 func TestEffectEnabledProjectMCPDoesNotLaunchASwappedDeclaredPathExecutable(t *testing.T) {
-	t.Parallel()
+	// Serial: the schema cache is a process-wide file named after the server, and
+	// these tests share the name "docs-helper", so running side by side they
+	// overwrite each other's cache entry.
 	if runtime.GOOS == "windows" {
 		t.Skip("the launcher script is POSIX shell")
 	}

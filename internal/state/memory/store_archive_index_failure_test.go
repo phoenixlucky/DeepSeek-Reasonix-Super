@@ -75,7 +75,7 @@ func TestArchiveByIDRepairsAnIndexLineLeftStale(t *testing.T) {
 	if _, err := s.Save(Memory{Name: "alpha", Description: "goes away", Type: TypeProject, Body: "body"}); err != nil {
 		t.Fatal(err)
 	}
-	active, ok := s.Read("alpha")
+	active, ok := mustStore(t, s).Read("alpha")
 	if !ok {
 		t.Fatal("alpha is not active after save")
 	}
@@ -140,7 +140,7 @@ func TestArchiveLeavesNoHalfCommitWhenAnIndexReadFails(t *testing.T) {
 	})
 	_, err := s.Archive("alpha")
 	memoryFault = nil
-	_, stillActive := s.Read("alpha")
+	_, stillActive := mustStore(t, s).Read("alpha")
 	assertIndexesDescribeTheirFiles(t, dir)
 	if err == nil && stillActive {
 		t.Fatal("archive reported success but the fact is still active")
@@ -166,7 +166,7 @@ func TestRepairArchivedRefSurfacesAFlushFailure(t *testing.T) {
 	if _, err := s.Save(Memory{Name: "alpha", Description: "gone", Type: TypeProject, Body: "body"}); err != nil {
 		t.Fatal(err)
 	}
-	active, ok := s.Read("alpha")
+	active, ok := mustStore(t, s).Read("alpha")
 	if !ok {
 		t.Fatal("alpha is not active after save")
 	}

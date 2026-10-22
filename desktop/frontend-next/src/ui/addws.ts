@@ -6,15 +6,21 @@ export interface Adder {
   busy: boolean;
   /** True while the headless fallback is asking for a server-side path. */
   pathOpen: boolean;
-  addPath: (path: string, onAdded?: (workspace: TreeWorkspace) => Promise<void>) => void;
+  addPath: (path: string) => void;
   closePath: () => void;
 }
 
 const LEGACY_CAPABILITIES: HostCapabilities = { pickFolder: true, addWorkspace: true };
 
 /** useAddWorkspace is the one implementation of "open a project", so the
- *  sidebar's entry and the first-run banner cannot drift into two behaviours. */
-export function useAddWorkspace(hub: HubPort, reload: () => Promise<void>, onError: (e: unknown) => void): Adder {
+ *  sidebar's entry and the first-run banner cannot drift into two behaviours.
+ *  onAdded is what the owner does with the folder once the tree has re-read it. */
+export function useAddWorkspace(
+  hub: HubPort,
+  reload: () => Promise<void>,
+  onError: (e: unknown) => void,
+  onAdded?: (workspace: TreeWorkspace) => Promise<void>,
+): Adder {
   const [busy, setBusy] = useState(false);
   const [pathOpen, setPathOpen] = useState(false);
 
@@ -40,17 +46,18 @@ export function useAddWorkspace(hub: HubPort, reload: () => Promise<void>, onErr
           }
           // "" is the user closing the panel — an answer, not a reason to ask again.
           if (!dir) return;
-          await hub.addWorkspace(dir);
+          const workspace = await hub.addWorkspace(dir);
           await reload();
+          await onAdded?.(workspace);
         })
         .catch(onError)
         .finally(() => setBusy(false));
     },
-    [busy, hub, reload, onError],
+    [busy, hub, reload, onError, onAdded],
   );
 
   const addPath = useCallback(
-    (raw: string, onAdded?: (workspace: TreeWorkspace) => Promise<void>) => {
+    (raw: string) => {
       const path = raw.trim();
       if (busy || !path) return;
       setBusy(true);
@@ -68,7 +75,7 @@ export function useAddWorkspace(hub: HubPort, reload: () => Promise<void>, onErr
         })
         .finally(() => setBusy(false));
     },
-    [busy, hub, reload, onError],
+    [busy, hub, reload, onError, onAdded],
   );
 
   const closePath = useCallback(() => {

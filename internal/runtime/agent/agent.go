@@ -217,6 +217,31 @@ func NormalizeMaxSubagentDepth(depth int) int {
 	return depth
 }
 
+// UnlimitedSubagentDepth is the depth a user who set max_subagent_depth to 0
+// asked for: no layer count stops delegation, only cost does.
+const UnlimitedSubagentDepth = 1 << 20
+
+// SubagentDepthFromConfig reads the user's max_subagent_depth: 0 removes the
+// limit, a negative value reads as the single-layer boundary.
+func SubagentDepthFromConfig(depth int) int {
+	if depth == 0 {
+		return UnlimitedSubagentDepth
+	}
+	return NormalizeMaxSubagentDepth(depth)
+}
+
+// ProviderRetriesFromConfig reads the user's max_provider_retries: 0 removes
+// the limit, a negative value keeps the provider default.
+func ProviderRetriesFromConfig(retries int) int {
+	switch {
+	case retries == 0:
+		return provider.RetriesUntilCancelled
+	case retries < 0:
+		return 0
+	}
+	return retries
+}
+
 // ToolHooks fires user-configured shell hooks around each tool call. PreToolUse
 // runs before the call and may block it (block=true; message is the reason fed
 // back to the model); PostToolUse runs after and only surfaces output to the
@@ -246,6 +271,8 @@ type Agent struct {
 	agentConfig
 	// svc are the collaborators this agent talks to; see services.go.
 	svc agentServices
+	// stops lets one running call be ended without ending the turn.
+	stops callStops
 	// role is what this agent is; see agent_role.go.
 	role agentRole
 	// eventSource names this agent as the producer of its own frames.
@@ -468,6 +495,15 @@ func (a *Agent) SetConfigWriteApprover(g tool.ConfigWriteApprover) {
 	a.svc.configWrite = g
 }
 
+// SetPaidSearchApprover installs the path that asks the user before web_search
+// uses a backend the vendor charges for. Without it no paid backend is called.
+func (a *Agent) SetPaidSearchApprover(g tool.PaidSearchApprover) {
+	if nilutil.IsNil(g) {
+		g = nil
+	}
+	a.svc.paidSearch = g
+}
+
 func (a *Agent) withTurnPreferences(input string) string {
 	if a == nil {
 		return input
@@ -671,8 +707,10 @@ func New(prov provider.Provider, tools *tool.Registry, session *sessionstore.Ses
 			workspaceScanLimit:      opts.WorkspaceScanLimit,
 			renderRoot:              strings.TrimSpace(opts.RenderRoot),
 			workspaceVCS:            strings.TrimSpace(opts.WorkspaceVCS),
+			workspaceUnversioned:    opts.WorkspaceUnversioned,
 			subagentDepth:           subagentDepth,
 			maxSubagentDepth:        maxSubagentDepth,
+			providerRetries:         opts.ProviderRetries,
 			contextWindow:           opts.ContextWindow,
 			compactRatio:            opts.CompactRatio,
 			recentKeep:              opts.RecentKeep,
@@ -684,12 +722,8 @@ func New(prov provider.Provider, tools *tool.Registry, session *sessionstore.Ses
 			path:         strings.TrimSpace(opts.SessionPath),
 			win:          windowState{cacheState: CacheStateUnknown},
 		},
-		task: newTaskRuntime(opts.TaskBudget),
-		role: agentRole{
-			requireVisibleFinal: opts.RequireVisibleFinal,
-			readOnlyExecution:   opts.ReadOnlyExecution,
-			plannerMCPExecution: opts.PlannerMCPExecution,
-		},
+		task:        newTaskRuntime(opts.TaskBudget),
+		role:        newAgentRole(opts),
 		eventSource: opts.EventSource,
 		recovery: recoveryIdentity{
 			agentID: strings.TrimSpace(opts.RecoveryAgentID),
@@ -716,6 +750,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *sessionstore.Ses
 	a.SetResponseLanguage(opts.ResponseLanguage)
 	a.SetReasoningLanguage(opts.ReasoningLanguage)
 	a.SetProgressWatch(opts.ProgressWatch)
+	a.SetRequestEffort(opts.RequestEffort)
 	return a
 }
 
@@ -808,6 +843,7 @@ func (a *Agent) reserveParentWrite(runTool tool.Tool, args json.RawMessage, read
 // in hours or tokens rather than a round count, and every such budget ships off.
 // Turn policy lives in beginRunTurn / runToolLoop / handleFinalResponse.
 func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
+	ctx = a.compositionContext(ctx)
 	ctx, report := takeRunTimeSink(ctx)
 	runMaxSteps := a.maxSteps
 	runMaxStepsKey := a.maxStepsKey
@@ -862,6 +898,9 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	}
 
 	_, state := a.beginRunTurn(ctx, input)
+	if state.snapshot != nil {
+		defer state.snapshot.cancel()
+	}
 	state.runMaxSteps = runMaxSteps
 	state.runMaxStepsKey = runMaxStepsKey
 	state.runLimitHostOwned = runLimitHostOwned
@@ -998,7 +1037,7 @@ func (a *Agent) rebuildTodoState(msgs []provider.Message) {
 			if tc.Name != "todo_write" || !successful[tc.ID] {
 				continue
 			}
-			rec := evidence.ReceiptFromToolCall(tc.Name, json.RawMessage(tc.Arguments), true, evidence.ToolFacts{ReadOnly: true})
+			rec := evidence.ReceiptFromToolCall(tc.Name, json.RawMessage(tc.ExecutionArguments()), true, evidence.ToolFacts{ReadOnly: true})
 			// A successful empty todo_write is an explicit clear. Preserve it as the
 			// latest base so history reloads do not resurrect an older non-empty list.
 			todos = evidence.NormalizeSerialTodos(rec.Todos)
@@ -1014,7 +1053,7 @@ func (a *Agent) rebuildTodoState(msgs []provider.Message) {
 			if tc.Name != "complete_step" || !successful[tc.ID] {
 				continue
 			}
-			rec := evidence.ReceiptFromToolCall(tc.Name, json.RawMessage(tc.Arguments), true, evidence.ToolFacts{ReadOnly: true})
+			rec := evidence.ReceiptFromToolCall(tc.Name, json.RawMessage(tc.ExecutionArguments()), true, evidence.ToolFacts{ReadOnly: true})
 			if m, ok := evidence.MatchStep(rec.Step, todos); ok {
 				evidence.AdvanceSerialTodo(todos, m.Index-1)
 			}
@@ -1138,7 +1177,7 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) streamedT
 }
 
 func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink, frozen *samplingRequest, attemptID string) streamedTurn {
-	ctx = provider.WithRetryNotify(ctx, headerRetryNotice(sink))
+	ctx = withHeaderRetries(ctx, sink, a.providerRetries)
 	// Reuse a parent attempt counter when present so stream retries accumulate
 	// into one RequestCount; otherwise install a fresh counter for this call.
 	ctx = provider.WithRequestAttemptCounter(ctx)
@@ -1162,6 +1201,7 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 	}
 	// Host stream cancels on generation drain (OpenAI/Anthropic HTTP reads).
 	defer TrackPublishedHostStream(ctx, cancel)()
+	thought := thoughtClock{begin: time.Now()}
 	ch, err := a.streamProviderRequest(ctx, req)
 	if err != nil {
 		return streamedTurn{usage: provider.UsageWithRequestAttemptCount(ctx, nil), err: err}
@@ -1184,12 +1224,11 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 	var partialToolStarted bool
 	var maxArgChars int
 	var lastArgProgress time.Time
-	var thought thoughtClock
 	perseveration, perseverationDetected := newPerseverationGuards(), false
 	// collect packages the accumulated stream state; stored is the round-tripped reasoning.
 	collect := func(stored string, err error) streamedTurn {
 		return streamedTurn{
-			text: text.String(), reasoning: stored, signature: signature, thoughtMs: thought.ms(),
+			text: text.String(), reasoning: stored, signature: signature, thoughtMs: thought.ms(), firstTokenMs: thought.firstMs(),
 			reasoningID: reasoningID, reasoningStatus: reasoningStatus,
 			calls: calls, responsesItems: responsesItems, usage: usage,
 			partialToolStarted: partialToolStarted, partialCalls: partialCalls,
@@ -1255,7 +1294,7 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 				// A clean terminal never reports partialToolStarted: the calls
 				// slice is now authoritative and the partial cards were merged.
 				return streamedTurn{
-					text: finalText, reasoning: finalReasoning, signature: signature, thoughtMs: thought.ms(),
+					text: finalText, reasoning: finalReasoning, signature: signature, thoughtMs: thought.ms(), firstTokenMs: thought.firstMs(),
 					reasoningID: reasoningID, reasoningStatus: reasoningStatus,
 					calls: calls, responsesItems: responsesItems, usage: usage,
 					partialCalls: partialCalls, maxArgChars: maxArgChars, perseverationDetected: perseverationDetected,
@@ -1348,7 +1387,7 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 			return collect(stored, chunk.Err)
 		}
 		if cut := a.perseverationStep(perseveration, chunk, sink, &perseverationDetected, perseverationAbort{ctx: ctx, sink: sink,
-			finishReasoning: finishReasoning, collect: collect, reasoningBytes: reasoningBytes, thoughtMs: thought.ms()}); cut != nil {
+			finishReasoning: finishReasoning, collect: collect, reasoningBytes: reasoningBytes, thoughtMs: thought.ms(), firstTokenMs: thought.firstMs()}); cut != nil {
 			return *cut
 		}
 	}
@@ -1514,15 +1553,10 @@ func toProviderToolExecution(in *tool.ShellExecution) *provider.ToolExecution {
 func (a *Agent) emitFullToolDispatch(ctx context.Context, c provider.ToolCall, refreshed bool) {
 	t, _, ambiguous := a.svc.tools.ResolveCall(c.Name)
 	ok := t != nil && len(ambiguous) == 0
-	ev := event.Tool{ID: c.ID, Name: c.Name, Args: c.Arguments, ReadOnly: ok && t.ReadOnly(), Refreshed: refreshed, Issuer: event.IssuedByModel}
+	ev := event.Tool{ID: c.ID, Name: c.Name, Args: c.ExecutionArguments(), ArgumentNormalization: c.ArgumentNormalization, ReadOnly: ok && t.ReadOnly(), Refreshed: refreshed, Issuer: event.IssuedByModel}
 	ev.FileDiff = event.FileDiff{Diff: c.Diff, Added: c.Added, Removed: c.Removed}
-	if ok && ev.Diff == "" && ev.Added == 0 && ev.Removed == 0 {
-		if ch, ok := tool.PreviewChange(ctx, t, json.RawMessage(c.Arguments)); ok {
-			ev.FileDiff = event.FileDiff{Diff: ch.Diff, Added: ch.Added, Removed: ch.Removed}
-		}
-	}
 	if ok {
-		ev.Profile = delegationProfile(t, json.RawMessage(c.Arguments))
+		ev.Profile = delegationProfile(t, json.RawMessage(c.ExecutionArguments()))
 	}
 	a.svc.sink.Emit(event.Event{Kind: event.ToolDispatch, Tool: ev})
 }
@@ -1542,52 +1576,6 @@ func (a *Agent) emitResolvedToolDispatch(c provider.ToolCall, profile *event.Pro
 		})
 	}
 	a.emitRefreshedDispatch(c, profile)
-}
-
-// refreshCurrentFileDiff recomputes a writer preview against the state left by
-// earlier successful writers in the same provider batch. Preview failures clear
-// any stale initial diff; a later Execute will then fail or ask for recovery
-// without presenting the user with a preview that no longer describes disk.
-func refreshCurrentFileDiff(ctx context.Context, t tool.Tool, call provider.ToolCall) (provider.ToolCall, bool) {
-	pv, ok := t.(tool.Previewer)
-	if !ok {
-		return call, false
-	}
-	refreshed := call
-	refreshed.Diff = ""
-	refreshed.Added = 0
-	refreshed.Removed = 0
-	if change, err := pv.Preview(ctx, json.RawMessage(call.Arguments)); err == nil {
-		refreshed.Diff = change.Diff
-		refreshed.Added = change.Added
-		refreshed.Removed = change.Removed
-	}
-	changed := refreshed.Diff != call.Diff || refreshed.Added != call.Added || refreshed.Removed != call.Removed
-	return refreshed, changed
-}
-
-func (a *Agent) withPreviewFileDiffs(ctx context.Context, calls []provider.ToolCall) []provider.ToolCall {
-	if len(calls) == 0 {
-		return calls
-	}
-	out := make([]provider.ToolCall, len(calls))
-	copy(out, calls)
-	for i := range out {
-		if out[i].Diff != "" || out[i].Added != 0 || out[i].Removed != 0 {
-			continue
-		}
-		t, _, ambiguous := a.svc.tools.ResolveCall(out[i].Name)
-		ok := t != nil && len(ambiguous) == 0
-		if !ok {
-			continue
-		}
-		if ch, ok := tool.PreviewChange(ctx, t, json.RawMessage(out[i].Arguments)); ok {
-			out[i].Diff = ch.Diff
-			out[i].Added = ch.Added
-			out[i].Removed = ch.Removed
-		}
-	}
-	return out
 }
 
 // completedMCPConnect recognizes a synthetic cache-miss connect call whose
@@ -1853,7 +1841,7 @@ func (a *Agent) staleAnchorEditBlock(call provider.ToolCall) (string, bool) {
 	if a.task.ledger == nil || !anchorBasedEditTool(call.Name) {
 		return "", false
 	}
-	rec := evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.Arguments), true, a.toolFactsFor(call.Name))
+	rec := evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.ExecutionArguments()), true, a.toolFactsFor(call.Name))
 	if len(rec.Paths) == 0 {
 		return "", false
 	}

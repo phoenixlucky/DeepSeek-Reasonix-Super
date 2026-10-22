@@ -88,7 +88,7 @@ func (a *Agent) replayCall(c provider.ToolCall) {
 	if !ok {
 		return
 	}
-	args := json.RawMessage(c.Arguments)
+	args := json.RawMessage(c.ExecutionArguments())
 	if reader, proxy := t.(tool.TargetArgsReader); proxy {
 		target, found := a.svc.tools.Get(c.ResolvedName)
 		if c.ResolvedName == "" || !found {

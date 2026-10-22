@@ -34,3 +34,18 @@ func TestHistoryCarriesRunTimeOnlyOnTheClosingAnswer(t *testing.T) {
 		}
 	}
 }
+
+// The start of a turn is when its user message landed, and only the session
+// knows that: a reopened window has no live frame to read it from.
+func TestHistoryCarriesWhenAUserMessageLanded(t *testing.T) {
+	got := historyMessages([]provider.Message{
+		{Role: provider.RoleUser, Content: "q", CreatedAt: 1_700_000_000_000},
+		{Role: provider.RoleAssistant, Content: "a", WorkDurationMs: 9000, CreatedAt: 1_700_000_009_000},
+	})
+	if got[0].CreatedAt != 1_700_000_000_000 {
+		t.Errorf("user row CreatedAt = %d, want the moment it landed", got[0].CreatedAt)
+	}
+	if got[1].CreatedAt != 0 {
+		t.Errorf("assistant row CreatedAt = %d, want none: only a user row opens a turn", got[1].CreatedAt)
+	}
+}

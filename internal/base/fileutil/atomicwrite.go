@@ -118,6 +118,9 @@ func isDirSyncUnsupported(err error) bool {
 		errors.Is(err, syscall.ENOSYS)
 }
 
+var createRenameNoReplace = RenameNoReplace
+var createLink = os.Link
+
 // AtomicCreateFile publishes a complete file only when path is still absent.
 // It is the non-overwriting counterpart to AtomicWriteFile: a concurrent writer
 // that creates path wins, and its file is never replaced.
@@ -127,8 +130,10 @@ func AtomicCreateFile(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	defer os.Remove(tmpPath)
-	if err := os.Link(tmpPath, path); err != nil {
-		return fmt.Errorf("publish new file %s: %w", path, err)
+	if renameErr := createRenameNoReplace(tmpPath, path); renameErr != nil {
+		if linkErr := createLink(tmpPath, path); linkErr != nil {
+			return fmt.Errorf("publish new file %s: %w", path, errors.Join(renameErr, linkErr))
+		}
 	}
 	return nil
 }

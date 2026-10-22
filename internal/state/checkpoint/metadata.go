@@ -27,6 +27,7 @@ func (s *Store) List() []Meta {
 			ExpiredFilePayload: c.ExpiredFilePayload,
 			ActiveWriters:      append([]ActiveWriter(nil), c.ActiveWriters...),
 			Legacy:             c.Legacy || c.Coverage == CoverageLegacy,
+			ForkCopied:         c.ForkCopied,
 		}
 		switch {
 		case meta.Legacy:

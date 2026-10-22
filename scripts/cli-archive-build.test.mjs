@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -38,9 +38,12 @@ test("the archives the updaters install report the commit and release they were 
     script = rewrite(script, /for target in [^;]+; do/, `for target in ${goos}/${goarch}; do`);
     script = rewrite(script, /^\(cd .* sha256sum .*$/m, "");
     script = script.replaceAll("dist", `"${out}"`);
+    const page = path.join(out, "page-src");
+    mkdirSync(page);
+    writeFileSync(path.join(page, "index.html"), "<title>studio</title>");
     execFileSync("bash", ["-c", script], {
       cwd: root,
-      env: { ...process.env, VERSION: "v9.8.7", SHA: sha },
+      env: { ...process.env, VERSION: "v9.8.7", SHA: sha, PAGE_DIR: page },
       stdio: "pipe",
     });
     const archive = path.join(out, `reasonix-${goos}-${goarch}.${goos === "windows" ? "zip" : "tar.gz"}`);
@@ -52,6 +55,7 @@ test("the archives the updaters install report the commit and release they were 
     assert.match(report, /^build_time_utc: \d{4}-\d\d-\d\dT/m);
     const binary = readFileSync(exe);
     assert.ok(binary.includes(sha), "the docs corpus revision is not linked");
+    assert.equal(readFileSync(path.join(out, "frontend-next", "dist", "index.html"), "utf8"), "<title>studio</title>", "the archive does not carry the page");
   } finally {
     rmSync(out, { recursive: true, force: true });
   }

@@ -150,6 +150,10 @@ func (c *Client) Answer(ctx context.Context, id string, answers []AskAnswer) err
 	return c.do(ctx, http.MethodPost, "/answer", map[string]any{"id": id, "answers": answers}, nil)
 }
 
+func (c *Client) EngageQuestion(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodPost, "/answer", map[string]any{"id": id, "engage": true}, nil)
+}
+
 func (c *Client) SetApprovalMode(ctx context.Context, mode string) error {
 	return c.do(ctx, http.MethodPost, "/tool-approval-mode", map[string]string{"mode": mode}, nil)
 }
@@ -202,6 +206,15 @@ type Status struct {
 	SessionPath      string `json:"sessionPath"`
 	WorkspaceRoot    string `json:"workspaceRoot"`
 	Plan             bool   `json:"plan"`
+	Goal             string `json:"goal"`
+	GoalStatus       string `json:"goalStatus"`
+	GoalRuntime      *struct {
+		TurnsUsed      int    `json:"turnsUsed"`
+		TokensUsed     int    `json:"tokensUsed"`
+		RequestsUsed   int    `json:"requestsUsed"`
+		WorkDurationMs int64  `json:"workDurationMs"`
+		StopCause      string `json:"stopCause"`
+	} `json:"goalRuntime"`
 	// Jobs is how many background jobs the session runs; only the count shows.
 	Jobs      []json.RawMessage `json:"jobs"`
 	LastUsage *struct {

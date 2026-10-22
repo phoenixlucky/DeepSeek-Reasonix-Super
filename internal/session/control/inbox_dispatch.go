@@ -28,6 +28,7 @@ func (c *Controller) endRotation() {
 		releaseWorkspace.release()
 	}
 	c.maybeDispatchInbox()
+	c.notifyIdle()
 }
 
 // maybeDispatchInbox is a level-triggered kick, not a one-shot edge. Every
@@ -88,13 +89,19 @@ func (c *Controller) dispatchInboxOnce() inboxDispatchResult {
 		slog.Warn("controller: open inbox for dispatch", "err", err)
 		return inboxDispatchRetry
 	}
-	meta, ok := st.NextQueued()
+	meta, ok, err := st.NextQueued()
 	c.inbox.mu.Lock()
 	afterScan := c.inbox.afterDispatchScan
 	beforeSubmit := c.inbox.beforeDispatchSubmit
 	c.inbox.mu.Unlock()
 	if afterScan != nil {
 		afterScan(ok)
+	}
+	if err != nil {
+		// A queue that could not be read is not an empty queue: keep the durable
+		// item alive and retry rather than reporting the inbox idle.
+		slog.Warn("controller: read inbox queue for dispatch", "err", err)
+		return inboxDispatchRetry
 	}
 	if !ok {
 		return inboxDispatchIdle

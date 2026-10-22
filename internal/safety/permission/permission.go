@@ -120,6 +120,8 @@ type Policy struct {
 	// broad Bash allow rules alone must not re-open nested-command bypasses.
 	AllowDynamicBash bool
 	ReadOnly         bool // denies every call that is not a read, whatever the rules allow
+	// AskOnOrigin puts a call that repeats external text to a person when only Mode allows it.
+	AskOnOrigin bool
 }
 
 // WithSessionAllow returns a copy of p with additional ephemeral allow rules.

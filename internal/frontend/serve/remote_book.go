@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"reasonix/internal/contract/config"
+	"reasonix/internal/platform/wsl"
 )
 
 // The host book is user-global: a machine is reachable from every project on
@@ -21,6 +22,8 @@ import (
 // same shape a provider's key takes.
 type RemoteHostEdit struct {
 	Name          string   `json:"name"`
+	Kind          string   `json:"kind"`
+	Distro        string   `json:"distro"`
 	Host          string   `json:"host"`
 	Port          int      `json:"port"`
 	User          string   `json:"user"`
@@ -42,13 +45,16 @@ func (h *Hub) saveRemoteHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body RemoteHostEdit
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		badBody(w)
+	if !decodeRemoteBody(w, r, &body) {
 		return
 	}
 	name := strings.TrimSpace(body.Name)
 	if name == "" {
 		refuse(w, http.StatusBadRequest, "remote.name_required", "give this machine a name", nil)
+		return
+	}
+	if (config.RemoteHostEntry{Kind: body.Kind}).HostKind() == config.RemoteKindWSL {
+		h.saveWSLHost(w, name, body)
 		return
 	}
 	host := strings.TrimSpace(body.Host)
@@ -85,16 +91,27 @@ func (h *Hub) saveRemoteHost(w http.ResponseWriter, r *http.Request) {
 		// Editing an entry must not drop the forwards it carries: they are set
 		// from the CLI and have no control on this page to put them back.
 		if existing, ok := c.RemoteHost(name); ok {
+			if existing.HostKind() != config.RemoteKindSSH || strings.TrimSpace(body.Distro) != "" {
+				return nil, errRemoteKind
+			}
 			entry.Forwards = append([]config.RemoteForwardEntry(nil), existing.Forwards...)
 		}
 		return nil, c.UpsertRemoteHost(entry)
 	})
+	if errors.Is(err, errRemoteKind) {
+		refuse(w, http.StatusConflict, "remote.kind_unsupported", "this machine is not an SSH host, so this form cannot change it", nil)
+		return
+	}
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// errRemoteKind stops the SSH form from rewriting a machine of another kind,
+// which would drop the fields it has no control for.
+var errRemoteKind = errors.New("remote host is not an ssh host")
 
 func (h *Hub) removeRemoteHost(w http.ResponseWriter, r *http.Request) {
 	if h.opts.Remote == nil {
@@ -104,8 +121,7 @@ func (h *Hub) removeRemoteHost(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name string `json:"name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		badBody(w)
+	if !decodeRemoteBody(w, r, &body) {
 		return
 	}
 	name := strings.TrimSpace(body.Name)
@@ -119,6 +135,38 @@ func (h *Hub) removeRemoteHost(w http.ResponseWriter, r *http.Request) {
 		// Removing what is not there is the state the caller asked for, so it
 		// is not an error to report.
 		c.RemoveRemoteHost(name)
+		return nil, nil
+	})
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// placeRemoteHost puts a machine before another in the book, or last. The
+// sidebar lists machines in the book's order, so this is the one place that
+// order is set; naming the neighbour keeps it right when the sidebar hides some.
+func (h *Hub) placeRemoteHost(w http.ResponseWriter, r *http.Request) {
+	if h.opts.Remote == nil {
+		refuseNoRemote(w)
+		return
+	}
+	var body struct {
+		Before string `json:"before"`
+	}
+	if !decodeRemoteBody(w, r, &body) {
+		return
+	}
+	host, before := r.PathValue("host"), strings.TrimSpace(body.Before)
+	err := config.EditUserConfigWithCredentials(func(c *config.Config) ([]config.CredentialChange, error) {
+		if _, ok := c.RemoteHost(host); !ok {
+			return nil, unknownRemoteHost(host)
+		}
+		if _, ok := c.RemoteHost(before); before != "" && !ok {
+			return nil, unknownRemoteHost(before)
+		}
+		c.PlaceRemoteHost(host, before)
 		return nil, nil
 	})
 	if err != nil {
@@ -169,8 +217,7 @@ func (h *Hub) remoteWorkspaceTarget(w http.ResponseWriter, r *http.Request) (hos
 	var body struct {
 		Path string `json:"path"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		badBody(w)
+	if !decodeRemoteBody(w, r, &body) {
 		return "", "", false
 	}
 	if dir = strings.TrimSpace(body.Path); dir == "" {
@@ -183,7 +230,7 @@ func (h *Hub) remoteWorkspaceTarget(w http.ResponseWriter, r *http.Request) (hos
 func (h *Hub) commitRemoteWorkspace(w http.ResponseWriter, host string, apply func(*config.Config)) {
 	err := config.EditUserConfigWithCredentials(func(c *config.Config) ([]config.CredentialChange, error) {
 		if _, ok := c.RemoteHost(host); !ok {
-			return nil, fmt.Errorf("no machine named %q in the book", host)
+			return nil, unknownRemoteHost(host)
 		}
 		apply(c)
 		return nil, nil
@@ -251,10 +298,6 @@ func (h *Hub) remoteTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ep, release, err := h.remoteLink(r, r.PathValue("host"))
-	if errors.Is(err, errRemoteDisabled) {
-		refuse(w, http.StatusConflict, "remote.disabled", "this machine is turned off in the host book", nil)
-		return
-	}
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -280,8 +323,7 @@ func (h *Hub) removeRemoteSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Path string `json:"path"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		badBody(w)
+	if !decodeRemoteBody(w, r, &body) {
 		return
 	}
 	path := strings.TrimSpace(body.Path)
@@ -290,10 +332,6 @@ func (h *Hub) removeRemoteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ep, release, err := h.remoteLink(r, r.PathValue("host"))
-	if errors.Is(err, errRemoteDisabled) {
-		refuse(w, http.StatusConflict, "remote.disabled", "this machine is turned off in the host book", nil)
-		return
-	}
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -309,46 +347,36 @@ func (h *Hub) removeRemoteSession(w http.ResponseWriter, r *http.Request) {
 // remoteLink is an endpoint on host: a pane's link when one is open, or one
 // taken for this request and handed back by release.
 func (h *Hub) remoteLink(r *http.Request, host string) (RemoteEndpoint, func(), error) {
-	if ep, ok := h.anyRemotePane(host); ok {
-		return ep, func() {}, nil
-	}
-	// The far kernel outlives the link, and its book is on its own disk. A
-	// machine the book has turned off is not reached for at all, so a question
-	// about it fails the same way opening it would.
-	if err := h.remoteHostDialable(host); err != nil {
+	// Disabling a host must also refuse reads that could reuse an existing pane.
+	workspace, err := h.remoteHostWorkspace(host)
+	if err != nil {
 		return RemoteEndpoint{}, nil, err
 	}
-	return h.opts.Remote.Attach(operationContext(r), host, "")
+	if ep, ok := h.remotePane(host, workspace); ok {
+		return ep, func() {}, nil
+	}
+	return h.opts.Remote.Attach(operationContext(r), host, workspace)
 }
 
-// errRemoteDisabled is the typed refusal a machine the book has turned off gets,
-// so a read answers the same code an open does.
-var errRemoteDisabled = errors.New("this machine is turned off in the host book")
-
-// remoteHostDialable reports why the book will not dial name: nil when it will,
-// errRemoteDisabled when the machine is off, and the read error when the book
-// cannot be read at all — a switch that stops a machine has to keep stopping it
-// then too.
-func (h *Hub) remoteHostDialable(name string) error {
+// remoteHostWorkspace resolves the user-held default before a link can be taken.
+func (h *Hub) remoteHostWorkspace(name string) (string, error) {
 	cfg, err := config.Load()
 	if err != nil {
-		return err
+		return "", err
 	}
 	entry, ok := cfg.RemoteHost(name)
 	if !ok {
-		return nil
+		return "", unknownRemoteHost(name)
 	}
 	if !entry.IsEnabled() {
-		return errRemoteDisabled
+		return "", refusal(http.StatusConflict, "remote.disabled", fmt.Errorf("this machine is turned off in the host book"), map[string]any{"host": name})
 	}
-	return nil
+	return entry.DefaultWorkspace(), nil
 }
 
-// anyRemotePane returns an endpoint on host, for a question about the machine
-// rather than about one pane.
-func (h *Hub) anyRemotePane(host string) (RemoteEndpoint, bool) {
+func (h *Hub) remotePane(host, workspace string) (RemoteEndpoint, bool) {
 	for _, rt := range h.Runtimes() {
-		if ep, ok := rt.Remote(); ok && ep.Host == host {
+		if ep, ok := rt.Remote(); ok && ep.Host == host && ep.Workspace == workspace {
 			return ep, true
 		}
 	}
@@ -358,4 +386,74 @@ func (h *Hub) anyRemotePane(host string) (RemoteEndpoint, bool) {
 func refuseNoRemote(w http.ResponseWriter) {
 	refuse(w, http.StatusNotImplemented, "remote.not_available",
 		"this kernel does not open panes on other machines", nil)
+}
+
+// saveWSLHost writes a WSL machine. Only its folder and install fields are
+// read from the body: the SSH fields mean nothing for it, and the config layer
+// refuses a row that carries them.
+func (h *Hub) saveWSLHost(w http.ResponseWriter, name string, body RemoteHostEdit) {
+	distro := strings.TrimSpace(body.Distro)
+	if !config.ValidWSLDistroName(distro) {
+		refuse(w, http.StatusBadRequest, "remote.distro_invalid", "that is not the name of a WSL distribution", nil)
+		return
+	}
+	entry := config.RemoteHostEntry{
+		Name:         name,
+		Kind:         config.RemoteKindWSL,
+		Distro:       distro,
+		Workspace:    strings.TrimSpace(body.Workspace),
+		Workspaces:   body.Workspaces,
+		ServeInstall: strings.TrimSpace(body.ServeInstall),
+		Disabled:     body.Disabled,
+	}
+	err := config.EditUserConfigWithCredentials(func(c *config.Config) ([]config.CredentialChange, error) {
+		if existing, ok := c.RemoteHost(name); ok && existing.HostKind() != config.RemoteKindWSL {
+			return nil, errRemoteKind
+		}
+		return nil, c.UpsertRemoteHost(entry)
+	})
+	if errors.Is(err, errRemoteKind) {
+		refuse(w, http.StatusConflict, "remote.kind_unsupported", "this machine is not a WSL distribution, so it cannot be saved as one", nil)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// WSLDistro is one installed distribution as the page shows it.
+type WSLDistro struct {
+	Name    string `json:"name"`
+	Version int    `json:"version"`
+	Default bool   `json:"default,omitempty"`
+}
+
+// WSLDistros is what this machine has. Available is false where there is no
+// WSL to ask, which is not a failure and draws no WSL choice.
+type WSLDistros struct {
+	Available bool        `json:"available"`
+	Distros   []WSLDistro `json:"distros"`
+}
+
+func (h *Hub) remoteWSLDistros(w http.ResponseWriter, r *http.Request) {
+	run := h.opts.WSL
+	if run == nil {
+		run = wsl.System()
+	}
+	list, err := wsl.List(r.Context(), run)
+	switch {
+	case errors.Is(err, wsl.ErrUnavailable):
+		writeJSON(w, WSLDistros{Distros: []WSLDistro{}})
+		return
+	case err != nil:
+		refuse(w, http.StatusBadGateway, "remote.wsl_unreadable", "WSL did not say which distributions are installed", nil)
+		return
+	}
+	out := WSLDistros{Available: true, Distros: make([]WSLDistro, 0, len(list))}
+	for _, d := range list {
+		out.Distros = append(out.Distros, WSLDistro{Name: d.Name, Version: d.Version, Default: d.Default})
+	}
+	writeJSON(w, out)
 }

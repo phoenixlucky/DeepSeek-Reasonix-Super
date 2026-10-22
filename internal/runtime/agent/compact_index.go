@@ -81,7 +81,7 @@ func buildFoldIndex(region []provider.Message, kept []bool, facts func(string) e
 				continue
 			}
 			failed := isErrorMessage(m)
-			rec := evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.Arguments), !failed, facts(call.Name))
+			rec := evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.ExecutionArguments()), !failed, facts(call.Name))
 			// Skip exactly what the digest is already on the hook for (see
 			// compact_coverage.go): a change with a path, or a failed command.
 			// Anything else falls to the index, so nothing lands between them.

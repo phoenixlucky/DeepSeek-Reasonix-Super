@@ -569,7 +569,9 @@ func TestAuthorizeHTTPMCPDoesNotHoldStateLockDuringBrowser(t *testing.T) {
 			if clearErr != nil {
 				return fmt.Errorf("removal during browser flow: %w", clearErr)
 			}
-		case <-time.After(time.Second):
+		// A held lock is a deadlock, not a slow removal, and the removal's own
+		// lock wait reports it, so this only bounds a hang.
+		case <-time.After(testenv.Budget(t)):
 			return fmt.Errorf("removal during browser flow blocked on OAuth state lock")
 		}
 		callback, err := url.Parse(authURL.Query().Get("redirect_uri"))

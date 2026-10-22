@@ -132,7 +132,9 @@ func (o *turnOrchestrator) runSubagentSkillTurns(ctx context.Context, skills []s
 	// prefilled into the composer after a conversation rewind), so it must be
 	// the user's own text — never the composed provider input with its
 	// transient <response-language>/<reasoning-language>/memory/hook blocks.
-	c.beginCheckpoint(ctx, firstNonEmpty(raw, task))
+	if err := c.beginCheckpoint(ctx, firstNonEmpty(raw, task)); err != nil {
+		return err
+	}
 	if c.hooks.Enabled() {
 		c.mu.Lock()
 		c.turn++
@@ -228,16 +230,8 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	if turn.editedOriginal != "" {
 		defer c.markEditedForNewUser(startMessages, turn.editedOriginal)
 	}
-	// Open a checkpoint only for visible user turns before the user message is
-	// appended, so the recorded message boundary precedes it and pre-edit
-	// snapshots land here. Synthetic continuations stay attached to the visible
-	// turn that spawned them; otherwise hidden user-role messages would advance
-	// backend checkpoint turns without a matching frontend turn. The label is
-	// the user's own text (raw, falling back to the expanded input) — the
-	// composed provider input carries transient prefab blocks that must never
-	// surface in the rewind picker or be prefilled into the composer.
-	if !turn.synthetic {
-		c.beginCheckpoint(ctx, firstNonEmpty(turn.raw, turn.input))
+	if err := c.beginOrchestratedCheckpoint(ctx, turn); err != nil {
+		return err
 	}
 	// UserPromptSubmit / Stop hooks bracket the whole turn (incl. the plan
 	// research + approved-execution sub-turns below): a gating UserPromptSubmit
@@ -275,7 +269,7 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	if !turn.synthetic {
 		c.beginRecoveryEpisode()
 	}
-	err = c.runSettled(ctx, modelInput)
+	err = c.runWithRunner(ctx, modelInput)
 	c.captureGoalRunWorkDuration(startMessages)
 	c.persistGoalDeliveryCheckpoint()
 	if err != nil {
@@ -387,7 +381,7 @@ func (o *turnOrchestrator) gatePlanApproval(ctx context.Context) error {
 	c.sharePlanRuntime()
 	// The plan is already visible as the assistant's answer, so the request
 	// carries no subject — it's purely the gate.
-	allow, _, err := c.requestApproval(ctx, approvalRequest{tool: planApprovalTool})
+	allow, err := c.planApproved(ctx)
 	if err != nil {
 		// A stop or timeout leaves the plan unapproved, which is the same state
 		// as a revise: awaiting approval has no card left to answer it.
@@ -479,11 +473,16 @@ func (o *turnOrchestrator) runTurnLoop(ctx context.Context, turn orchestratedTur
 // FSM. Without an active goal advanceGoalAfterTurn returns immediately and this
 // is one turn; with one it is the loop that keeps pursuing it.
 func (o *turnOrchestrator) runTurnLoopWithPreparedTurn(ctx context.Context, turn orchestratedTurn) error {
+	o.c.goalRetry.userSpoke(turn.synthetic)
+	o.c.awaitResume.cancel()
+	o.c.awaitResume.userSpoke(turn.synthetic)
+	o.c.extPrompts.userSpoke(turn.synthetic)
 	o.c.liftUserGatedGoal(turn.synthetic)
 	expectedContinuationEpoch := o.c.goals.continuationToken()
 	ctx = o.c.withVisionRouting(agent.WithSubagentImageCandidates(ctx, turn.images.candidates))
 	err := o.runOrchestratedTurn(ctx, turn)
 	o.c.noticeUserGate()
+	o.c.armAwaitResume(userGateSkipDelay())
 	if err != nil {
 		if ctx.Err() != nil {
 			o.c.goalUsageTee.setActiveRecorder(nil)
@@ -661,6 +660,7 @@ func (o *turnOrchestrator) advanceGoalAfterTurn(ctx context.Context, expectedCon
 	if res.notice == goalCompleteNotice && c.executor != nil {
 		c.completeRemainingGoalTodos()
 	}
+	c.afterGoalTurn()
 	return res
 }
 

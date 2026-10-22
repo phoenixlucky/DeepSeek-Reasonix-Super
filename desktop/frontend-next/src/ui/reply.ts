@@ -103,6 +103,7 @@ export function useReplyActions({ port, items, checkpoints, running, model, subm
   const reply = useMemo<ReplyActions>(
     () => ({
       onQuote: (text: string, id: string) => setQuote((q) => ({ text, turn: turnOf(id), n: q.n + 1 })),
+      onQuoteFile: (text: string, source: string) => setQuote((q) => ({ text, source, n: q.n + 1 })),
       canRegenerate: (id: string) => !running && replyTurns.has(id),
       hasLaterTurns: (id: string) => replyTurns.get(id)?.hasLaterTurns ?? false,
       onRegenerate: (id: string) => {
@@ -110,10 +111,12 @@ export function useReplyActions({ port, items, checkpoints, running, model, subm
         const ask = replyTurns.get(id);
         if (ask) void regenerate(ask.turn, ask.text).catch(onError);
       },
-      canBranch: (id: string) => !running && !!onBranched && replyTurns.has(id),
-      onBranch: (id: string) => {
+      canBranch: (id: string) => !!onBranched && replyTurns.has(id) && (!running || !!replyTurns.get(id)?.hasLaterTurns),
+      onBranch: async (id: string) => {
         const ask = replyTurns.get(id);
-        if (!running && ask && onBranched) void port.branchAt(ask.turn, branchName ?? "").then(onBranched, onError);
+        if (ask && onBranched && (!running || ask.hasLaterTurns)) {
+          try { await onBranched(await port.branchAt(ask.turn, branchName ?? "")); } catch (e) { onError(e); }
+        }
       },
       model,
       onConfigureModel: () => onSettings("model"),

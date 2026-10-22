@@ -75,6 +75,11 @@ node perf/dock.mjs      # 停靠的浏览器列从 pane 顶部起、与导航行
 node perf/signals.mjs   # 运行分析的信号轨说明：它是什么、为什么标记不能拖（浅/深 × 宽/手机）
 node perf/narrow.mjs    # 窄窗口 + 1.8 倍缩放：标题栏与输入区的行互不重叠、不越出窗口（浅/深 × 390/320 × 1.8/1.3，另加宽窗口对照）
 node perf/sidebar.mjs   # 侧栏开关只有一个且位置不变（图标栏 开/仅收起时/关 × 浅/深）；同一模型连续回复只在首条带头
+node perf/stickyfold.mjs # 展开的长执行过程：滚动时头部吸在顶部、有自己的底（浅/深）
+node perf/crumb.mjs # 标题栏里会话标题紧跟项目名，长名字也不溢出（宽/窄）
+node perf/hoverradius.mjs # 输入框底行的按钮悬停时圆角和底色一致（浅/深）
+node perf/jump-ends.mjs # 回到顶部/跳到最新按钮一次点击直达两端（中间有展开块也一样）
+node perf/sessionrows.mjs # 会话行样式：34px、1px 紧凑间距、单行省略；本机/远程、悬浮/焦点、浅/深、窄/宽
 node perf/start.mjs     # 经工作台标签/边缘把手打开工作台先出入口页（文件/改动/浏览器），不替人开浏览器；标题栏 Browser 按钮仍直达浏览器（浅/深 × 宽/窄）
 ```
 

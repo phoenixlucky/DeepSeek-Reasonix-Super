@@ -20,6 +20,7 @@ type perseverationAbort struct {
 	collect         func(string, error) streamedTurn
 	reasoningBytes  int
 	thoughtMs       int64
+	firstTokenMs    int64
 }
 
 // perseverationStep watches one streamed chunk and does what the guard's
@@ -65,7 +66,7 @@ func (a *Agent) abortStreamOnPerseveration(s perseverationAbort) streamedTurn {
 	emitAssistantMessage(s.sink, text, reasoning, s.thoughtMs)
 	// Calls from an aborted stream never execute.
 	return streamedTurn{
-		text: text, reasoning: reasoning, signature: signature, thoughtMs: s.thoughtMs,
+		text: text, reasoning: reasoning, signature: signature, thoughtMs: s.thoughtMs, firstTokenMs: s.firstTokenMs,
 		reasoningID: reasoningID, reasoningStatus: reasoningStatus, usage: usage,
 		partialCalls: base.partialCalls, maxArgChars: base.maxArgChars, perseverationAborted: true,
 	}
@@ -187,13 +188,13 @@ func (a *Agent) perseverationCut() bool {
 // calls never reach the tool round; a detection-only run was already reported
 // through the progress-watch channel, and the user's pause setting can end it
 // here. A clean round resets the strike count; cont=false ends the run with err.
-func (a *Agent) settlePerseveration(state *turnRuntime, streamed streamedTurn) (cont bool, err error) {
+func (a *Agent) settlePerseveration(ctx context.Context, state *turnRuntime, streamed streamedTurn) (cont bool, err error) {
 	if streamed.perseverationAborted {
 		return a.handlePerseverationAbort(state)
 	}
 	if streamed.perseverationDetected {
 		if a.progressWatchConfig().Pause {
-			a.emitTurnShadows(a.turn.turnInput, true)
+			a.emitTurnShadows(ctx, a.turn.turnInput, true)
 			return false, newPerseverationPause("progress_watch.pause",
 				"the model got stuck repeating the same text", "turn off progress_watch.pause")
 		}
@@ -319,7 +320,7 @@ func (g *perseverationGuard) observe(delta string) bool {
 	}
 	g.sinceScan = 0
 	unit, _ := g.trailingLoop()
-	tripped := unit > 0
+	tripped := unit > 0 || g.collapsedToFewLines()
 	rising := tripped && !g.lastTripped
 	g.lastTripped = tripped
 	return rising
@@ -339,6 +340,43 @@ func (g *perseverationGuard) trailingLoop() (unit, repeats int) {
 		}
 	}
 	return 0, 0
+}
+
+// A stream can degrade without repeating any block byte for byte: a few tiny
+// sentences in no fixed order, one per line, which the periodicity scan cannot
+// see. It is judged by structure alone, on the tail: many short lines drawn
+// from very few distinct ones. The numbers are a tradeoff like the bounds above.
+const (
+	collapseWindow  = 4096 // bytes of the tail examined
+	collapseLines   = 80   // short lines needed before it can be called a collapse
+	collapseRatio   = 6    // at most one distinct short line per this many
+	collapseMaxLine = 48   // bytes: longest line that counts as a fragment
+)
+
+// collapsedToFewLines reports whether the tail is a collapse onto a few tiny
+// lines. Blank lines separate and say nothing; long lines are real writing and
+// count against the verdict.
+func (g *perseverationGuard) collapsedToFewLines() bool {
+	tail := g.tail
+	if len(tail) > collapseWindow {
+		tail = tail[len(tail)-collapseWindow:]
+	}
+	distinct := map[string]struct{}{}
+	short, shortBytes, writtenBytes := 0, 0, 0
+	for line := range bytes.SplitSeq(tail, []byte{'\n'}) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		writtenBytes += len(line)
+		if len(line) > collapseMaxLine {
+			continue
+		}
+		short++
+		shortBytes += len(line)
+		distinct[string(line)] = struct{}{}
+	}
+	return short >= collapseLines && len(distinct)*collapseRatio <= short && shortBytes*10 >= writtenBytes*6
 }
 
 // trailingRepeats counts how many times the final period-length block repeats

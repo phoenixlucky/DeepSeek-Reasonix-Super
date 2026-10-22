@@ -68,7 +68,7 @@ describe("standing extension panel progress", () => {
       view: { body: [{ kind: "text", value: "Task summary" }, { kind: "button", label: "Inspect task", actionId: "/task-watch:inspect" }] },
     };
     const ui = render(<Extensions panels={[panel("Workspace sync", 0.4)]} views={[view]} onInvoke={invoke} />);
-    expect(ui.getByText("Task summary")).toBeTruthy();
+    expect(await ui.findByText("Task summary")).toBeTruthy();
     expect(ui.getAllByRole("progressbar")).toHaveLength(1);
     await userEvent.setup().click(ui.getByRole("button", { name: "Inspect task" }));
     expect(invoke.mock.calls).toEqual([["/task-watch:inspect"]]);

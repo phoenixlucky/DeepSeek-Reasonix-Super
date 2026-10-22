@@ -21,9 +21,11 @@ var renameFile = os.Rename
 // endpoints on either side (a move out of the store mutates it too); workDir
 // resolves relative paths.
 type moveFile struct {
-	roots   []string
-	guard   SessionDataGuard
-	managed ManagedConfigPaths
+	roots       []string
+	readRoots   []string
+	forbidRoots []string
+	guard       SessionDataGuard
+	managed     ManagedConfigPaths
 	// sessionTemp, when non-nil, adds the session's own temporary directory
 	// to the writable surface — the same directory bash writes through $TMPDIR.
 	sessionTemp *sessiontemp.Manager
@@ -43,6 +45,19 @@ func (moveFile) Schema() json.RawMessage {
 func (moveFile) ReadOnly() bool { return false }
 
 func (moveFile) WritesNamedPaths() bool { return true }
+
+// ReadPaths names the source: a move hands its content to the destination, so a
+// source under a forbidden-read root is refused whether the filesystem renames it
+// or has to copy it. The destination is only written, never read.
+func (m moveFile) ReadPaths(_ context.Context, args json.RawMessage) ([]string, error) {
+	var p struct {
+		SourcePath string `json:"source_path"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil || p.SourcePath == "" {
+		return nil, nil
+	}
+	return []string{resolveIn(m.workDir, resolveSessionTemp(m.sessionTemp, p.SourcePath))}, nil
+}
 
 func (m moveFile) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
@@ -64,6 +79,9 @@ func (m moveFile) Execute(ctx context.Context, args json.RawMessage) (string, er
 		return "", err
 	}
 	if err := confineWrite(ctx, m.roots, m.guard, m.managed, m.sessionTemp, dst); err != nil {
+		return "", err
+	}
+	if err := checkReadTargetAccess(m.readRoots, m.forbidRoots, src); err != nil {
 		return "", err
 	}
 	info, err := os.Stat(src)

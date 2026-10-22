@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -26,6 +27,7 @@ type askState struct {
 	notes         []string
 	entry         askEntry
 	urlSubmission urlSubmission
+	engagement    askEngagement
 }
 
 // askEntry is what the composer is taking while the panel is open.
@@ -70,6 +72,18 @@ func (st *askState) firstUnanswered(n int) int {
 
 // answerAsk takes a key while a question panel is open.
 func (m *model) answerAsk(it *Item, k string) (tea.Cmd, bool) {
+	cmd, handled := m.editAsk(it, k)
+	if !handled || it.Ask.Origin != nil || m.ask == nil || m.ask.item != it.ID || m.ask.engagement != askIdle {
+		return cmd, handled
+	}
+	m.ask.engagement = askEngaging
+	id, item := it.Ask.ID, it.ID
+	return tea.Batch(cmd, func() tea.Msg {
+		return askEngagementMsg{item: item, err: m.client.EngageQuestion(m.ctx, id)}
+	}), handled
+}
+
+func (m *model) editAsk(it *Item, k string) (tea.Cmd, bool) {
 	if it.Ask.Origin != nil && it.Ask.Origin.URL != "" {
 		return m.answerURLAsk(it, k)
 	}
@@ -331,7 +345,19 @@ func (m *model) askPanel(it *Item) []string {
 		termrender.Dim(strings.Repeat("─", min(m.width-2, 40))),
 		rowLine(st.cursor == typed+1, typed+2, "", i18n.M.AskChatInstead, false),
 	)
+	if left := time.Until(it.AskSkipAt); !it.AskSkipAt.IsZero() && m.ask.engagement == askIdle && it.Verdict == "" {
+		lines = append(lines, termrender.Dim(fmt.Sprintf(i18n.M.AskSkipFmt, skipSpan(left))))
+	}
 	return panel(lines, m.width, accentEdge)
+}
+
+// skipSpan is a countdown in the shortest form that reads at a glance.
+func skipSpan(d time.Duration) string {
+	secs := max(int((d+time.Second-1)/time.Second), 0)
+	if secs >= 60 {
+		return fmt.Sprintf("%d:%02d", secs/60, secs%60)
+	}
+	return fmt.Sprintf("%ds", secs)
 }
 
 // selected is what question i answers: its picks, then a typed answer or the

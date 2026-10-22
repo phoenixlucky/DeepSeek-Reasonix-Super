@@ -84,10 +84,16 @@ export class MockShell extends MockExtensions {
 
   // A path nobody has is the failure the pane has to render, so it is refused
   // here the way the kernel refuses it rather than quietly accepted.
-  async saveShell(prefer: string, path: string): Promise<ShellSettings> {
+  async saveShell(prefer: string, path: string, args: string[] = []): Promise<ShellSettings> {
+    if (args.length > 0) {
+      if (!/wsl\.exe$/i.test(path)) throw new Error(`这个 shell 用不了：${path} ${args.join(" ")}: did not run a command`);
+      const argv = [path, ...args];
+      this.sh = { ...this.sh, prefer, path, args, argv, effective: { ...GIT_BASH, name: "bash", path } };
+      return { ...this.sh };
+    }
     const found = (this.sh.options ?? []).find((o) => (path ? o.path === path : o.prefer === prefer));
     if (path && !found) throw new Error(`这个 shell 用不了：${path}: no such executable`);
-    this.sh = { ...this.sh, prefer, path, effective: prefer === "auto" ? this.sh.auto : (found ?? this.sh.auto) };
+    this.sh = { ...this.sh, prefer, path, args: undefined, argv: undefined, effective: prefer === "auto" ? this.sh.auto : (found ?? this.sh.auto) };
     return { ...this.sh };
   }
 }
@@ -110,4 +116,12 @@ function bounds(window: number, soft: number) {
 const CONTEXT: ContextBreakdown = {
   used: 24800, window: 128000, ...bounds(128000, 0),
   system: 5200, tools: 7400, user: 1800, reply: 3100, output: 7300,
+  largest: [
+    { class: "output", tool: "read_file", tokens: 3900 },
+    { class: "output", tool: "grep", tokens: 2100, active: true },
+    { class: "output", tool: "bash", tokens: 800 },
+    { class: "user", tokens: 900, active: true },
+    { class: "user", tokens: 600 },
+    { class: "reply", tokens: 1400 },
+  ],
 };

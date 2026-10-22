@@ -217,3 +217,16 @@ it("saves the address the probe resolved, not the bare host that was typed", asy
   await userEvent.click(screen.getByRole("button", { name: "添加来源" }));
   await waitFor(() => expect(saveProvider).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: "https://relay.example/v1" })));
 });
+
+it("asks for the things a person knows first and the name last", async () => {
+  const port = {
+    providerPresets: vi.fn(async () => []),
+    protocols: vi.fn(async () => [{ kind: "openai", discovery: "openai", serverWebSearch: false, reasoningParams: true }]),
+  } as unknown as Port;
+  render(<AddProvider port={port} taken={[]} known={[]} onDone={() => {}} onCancel={() => {}} />);
+  await screen.findByLabelText("接口地址");
+  const order = ["接口协议", "接口地址", "API Key", "来源名称"].map((label) => screen.getByLabelText(label));
+  for (let i = 1; i < order.length; i++) {
+    expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  }
+});

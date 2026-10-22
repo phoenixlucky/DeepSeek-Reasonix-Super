@@ -109,9 +109,10 @@ func (c *Controller) initRecoveryGate(reviewer recovery.Reviewer, headless bool)
 		Mode: func() string {
 			return c.ToolApprovalMode()
 		},
-		EmitPrompt:     c.emitRecoveryPrompt,
-		Reviewer:       reviewer,
-		PersistenceKey: c.SessionPath,
+		EmitPrompt:      c.emitRecoveryPrompt,
+		WaitingOnPerson: c.yieldForRecoveryCard,
+		Reviewer:        reviewer,
+		PersistenceKey:  c.SessionPath,
 		Persist: func(path string, snap recovery.Snapshot) {
 			c.persistRecoverySnapshot(path, snap)
 		},

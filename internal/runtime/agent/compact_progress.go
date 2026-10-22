@@ -66,7 +66,7 @@ func deriveFoldProgress(region []provider.Message, facts func(string) evidence.T
 			continue
 		}
 		failed := isErrorMessage(m)
-		rec := evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.Arguments), !failed, facts(call.Name))
+		rec := evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.ExecutionArguments()), !failed, facts(call.Name))
 		if ex := m.ToolExecution; ex != nil {
 			rec.ExitCode = ex.ExitCode
 			rec.Verification = ex.Verification

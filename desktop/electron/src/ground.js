@@ -12,4 +12,11 @@ function groundFor(prefs, systemDark) {
   return dark ? GROUND.dark : GROUND.light;
 }
 
-module.exports = { GROUND, groundFor };
+// The scheme the window frame takes. Windows draws a frameless window's border
+// from it, so a dark page on a light system needs it set to stay borderless.
+function themeSourceFor(prefs) {
+  const theme = prefs?.["rx-theme"];
+  return theme === "dark" || theme === "light" ? theme : "system";
+}
+
+module.exports = { GROUND, groundFor, themeSourceFor };

@@ -203,6 +203,8 @@ func refuseMarket(w http.ResponseWriter, err error) {
 		refuse(w, http.StatusConflict, "market.unpinned", "the approved version is not pinned to reviewed content", detail)
 	case errors.Is(err, market.ErrUnpreviewed):
 		refuse(w, http.StatusBadRequest, "market.unpreviewed", "an unreviewed install needs the digest of the preview it confirms", detail)
+	case errors.Is(err, market.ErrInvalidPluginSource):
+		refuse(w, http.StatusConflict, "market.invalid_plugin_source", "plugin or theme source must be an HTTPS GitHub tree URL pinned to a full 40-character lowercase hexadecimal commit; correct the source and resubmit", detail)
 	case errors.Is(err, market.ErrBadSource):
 		refuse(w, http.StatusConflict, "market.bad_source", "the approved version names a source that is not installed from here", detail)
 	case errors.Is(err, market.ErrNotTheme):

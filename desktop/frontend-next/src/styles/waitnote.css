@@ -1,1 +1,3 @@
 .activity-call-wait { margin: 6px 0; color: var(--faint); font: var(--w-reg) var(--fs-meta) var(--ui); }
+.stop-call { margin: 4px 0; padding: 2px 8px; border: 1px solid var(--border); border-radius: var(--r-sm); background: none; color: var(--dim); font: var(--w-reg) var(--fs-meta) var(--ui); cursor: pointer; }
+.stop-call:hover { color: var(--text); border-color: var(--faint); }

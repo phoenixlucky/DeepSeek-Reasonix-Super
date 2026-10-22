@@ -228,6 +228,24 @@ func TestLocalCommandsAreOfferedInTheMenu(t *testing.T) {
 	}
 }
 
+func TestQuitIsOfferedInTheMenuWhenTheHostDeclaresIt(t *testing.T) {
+	m, _ := queueModel(t, nil)
+	m.opts.QuitCommands = []string{"/quit", "/exit"}
+	var labels []string
+	for _, c := range m.localCommands("/qu") {
+		labels = append(labels, c.Label)
+	}
+	if got := strings.Join(labels, " "); got != "/queue /quit" {
+		t.Fatalf("/qu offers %q", got)
+	}
+	m.opts.QuitCommands = nil
+	for _, c := range m.localCommands("/qu") {
+		if c.Label == "/quit" {
+			t.Fatal("/quit offered although the host declares no quit command")
+		}
+	}
+}
+
 func TestQueueRefsRefuseWhatIsOutOfRangeOrAmbiguous(t *testing.T) {
 	snap := InboxSnapshot{Items: []InboxItem{{ID: "5aaa"}, {ID: "5bbb"}, {ID: "7ccc"}}}
 	for _, ref := range []string{"4", "0", "5", "9zz"} {

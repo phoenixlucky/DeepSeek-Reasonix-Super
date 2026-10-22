@@ -1,7 +1,9 @@
 package control
 
 import (
+	"errors"
 	"fmt"
+	"path/filepath"
 	"sync/atomic"
 
 	"reasonix/internal/contract/config"
@@ -59,7 +61,7 @@ func (s *skillSet) owedCatalog() string {
 	}
 	listed := s.list()
 	block := skill.IndexBlock(s.pathHits.Visible(listed))
-	if block == "" && s.catalog.sent() {
+	if block == "" && s.catalog.visible(availableSkillsTag) {
 		// Silence would leave the listing the model already has standing as
 		// current. Every skill being switched off is a fact, not an absence.
 		block = skillsAllOffBlock
@@ -67,13 +69,7 @@ func (s *skillSet) owedCatalog() string {
 			block = skillsNoneEligibleBlock
 		}
 	}
-	return s.catalog.owed(block)
-}
-
-// forgetDeliveredCatalog returns the listing to the unknown state: what the
-// model was sent is no longer in the context it samples from.
-func (s *skillSet) forgetDeliveredCatalog() {
-	s.catalog.forget()
+	return s.catalog.owed(availableSkillsTag, block)
 }
 
 // list returns the enabled skills, preferring the live store.
@@ -191,6 +187,54 @@ func (c *Controller) DeleteSkill(name string, scope skill.Scope) error {
 		return fmt.Errorf("no writable skill store in this session")
 	}
 	return w.Delete(name, scope)
+}
+
+var (
+	// ErrSkillNotRemovable is a skill with no folder of the user's own to delete:
+	// a built-in, or one a package provides, which goes when the package does.
+	ErrSkillNotRemovable = errors.New("this skill is not the user's own folder to remove")
+	// ErrSkillChanged is a removal aimed at a skill other than the one the list
+	// showed: the same name at another scope or path.
+	ErrSkillChanged = errors.New("the skill is no longer the one that was shown")
+)
+
+// RemoveSkill deletes the skill the person was shown, named by its scope and
+// path. A built-in or a package's skill is refused with its own identity, and a
+// request whose scope or path no longer matches what the name resolves to is
+// refused rather than aimed at whatever now answers to that name.
+func (c *Controller) RemoveSkill(name string, scope skill.Scope, path string) error {
+	w := c.skills.writer()
+	if w == nil {
+		return fmt.Errorf("no writable skill store in this session")
+	}
+	sk, ok := w.Read(name)
+	if !ok {
+		return &skill.NotFoundError{Name: name}
+	}
+	if !skillRemovable(sk) {
+		return ErrSkillNotRemovable
+	}
+	if sk.Scope != scope || filepath.Clean(sk.Path) != filepath.Clean(path) {
+		return ErrSkillChanged
+	}
+	return w.Delete(name, scope)
+}
+
+// skillRemovable is the one rule for which skills have a place of the user's own
+// to delete: not a built-in, not a package's, and backed by a file.
+func skillRemovable(sk skill.Skill) bool {
+	return sk.Scope != skill.ScopeBuiltin && sk.Plugin == "" && sk.Path != "" && sk.Path != "(builtin)"
+}
+
+// SkillRemoval says what removing sk would delete and whether that is a folder,
+// by the rule RemoveSkill follows; ok is false for a skill that cannot be removed.
+func (c *Controller) SkillRemoval(sk skill.Skill) (target string, folder, ok bool) {
+	w := c.skills.writer()
+	if w == nil || !skillRemovable(sk) {
+		return "", false, false
+	}
+	target, folder = w.RemovalTarget(sk)
+	return target, folder, true
 }
 
 // Skills scans the live Store, so a skill installed this session is listed.

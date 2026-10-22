@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -16,13 +17,31 @@ func renderToolsShell(b *strings.Builder, s ShellConfig, scope RenderScope) {
 		b.WriteString("# prefer = \"auto\"   # auto|bash|powershell|pwsh; empty/default = auto-detect\n")
 	}
 	if s.Path != "" {
-		fmt.Fprintf(b, "path   = %q   # absolute path to the shell executable; empty = PATH lookup\n\n", s.Path)
+		fmt.Fprintf(b, "path   = %q   # absolute path to the shell executable; empty = PATH lookup\n", s.Path)
 	} else {
-		b.WriteString("# path   = \"/opt/homebrew/bin/bash\"   # absolute path to the shell executable; empty = PATH lookup\n\n")
+		b.WriteString("# path   = \"/opt/homebrew/bin/bash\"   # absolute path to the shell executable; empty = PATH lookup\n")
 	}
+	if scope != RenderScopeProject {
+		renderShellArgs(b, s.Args)
+	}
+	b.WriteString("\n")
 	if scope != RenderScopeProject {
 		renderShellEnv(b, s.Env)
 	}
+}
+
+// renderShellArgs writes launcher arguments for [tools.shell] path. They are
+// the user's alone, so a project file never carries them.
+func renderShellArgs(b *strings.Builder, args []string) {
+	if len(args) == 0 {
+		b.WriteString("# args   = [\"-d\", \"Ubuntu\", \"--\", \"/bin/bash\"]   # Windows: launcher arguments for path (wsl.exe); verified by running them\n")
+		return
+	}
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = strconv.Quote(a)
+	}
+	fmt.Fprintf(b, "args   = [%s]   # launcher arguments for path, run as written (no shell)\n", strings.Join(quoted, ", "))
 }
 
 // renderShellEnv writes the [tools.shell.env] sub-table. The full template shows

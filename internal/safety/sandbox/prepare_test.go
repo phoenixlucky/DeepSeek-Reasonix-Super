@@ -126,7 +126,7 @@ func TestAnEscapeApproverThatIsThereIsFound(t *testing.T) {
 // is that this platform has both, and that the code is a code rather than the
 // sentence again.
 func TestTheUnavailableRefusalCarriesAnIdentityAndAHint(t *testing.T) {
-	code := UnavailableCode()
+	code := UnavailableCodeFor(Spec{Network: true})
 	if code == "" {
 		t.Fatal("an unavailable sandbox refuses with no identity to say")
 	}

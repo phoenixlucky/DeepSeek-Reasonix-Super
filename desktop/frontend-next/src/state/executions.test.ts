@@ -122,6 +122,13 @@ describe("identity, not accumulation", () => {
     expect(facts(s).tools).toBe(1);
   });
 
+  it("keeps the call's name through a progress frame that carries none", () => {
+    const s = run(initialState,
+      dispatch("a", "wait"),
+      { kind: "tool_progress", tool: { id: "a", name: "", output: "tick\n" } } as SessionEvent);
+    expect(s.executions.a.name).toBe("wait");
+  });
+
   // A call the wire gave no id has no identity to key on. The transcript cannot
   // merge one either — it draws the dispatch and the result as two cards — so
   // this is a bound of the wire, stated rather than papered over.

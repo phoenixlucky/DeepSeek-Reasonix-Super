@@ -442,6 +442,7 @@ export const SCRIPT: Beat[] = [
         projectionTokens: 31_200,
         coverageRequired: 12,
         coverageMissing: 2,
+        remains: { total: 31_200, at: 160_000, active: 6_400, parts: [{ name: "tool_output", tokens: 14_800 }, { name: "reply", tokens: 9_100 }, { name: "user", tokens: 4_300 }], largest: [{ role: "tool", tool: "browser_read", tokens: 7_200 }] },
       },
     },
   },

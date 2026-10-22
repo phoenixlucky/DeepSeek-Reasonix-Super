@@ -112,7 +112,7 @@ describe("the unread badge", () => {
     const wrap = (name: "setInterval" | "setTimeout") => {
       const real = window[name].bind(window) as (fn: TimerHandler, ms?: number, ...a: unknown[]) => number;
       return vi.spyOn(window, name).mockImplementation(((fn: TimerHandler, ms?: number, ...a: unknown[]) => {
-        if ((ms ?? 0) >= 10_000 && !new Error().stack?.includes("@testing-library")) long.push(ms!);
+        if ((ms ?? 0) >= 10_000 && !new Error().stack?.includes("@testing-library") && !new Error().stack?.includes("updatewatch")) long.push(ms!);
         return real(fn, ms, ...a);
       }) as typeof window.setTimeout);
     };
@@ -172,7 +172,8 @@ it("starts and rebinds feedback polling when the first local owner becomes avail
   await screen.findByRole("button", { name: /发送反馈.*3 项待查看/ });
   const first = (await h.runtimes()).find((rt) => !rt.host)!;
   const firstReads = read.mock.calls.length;
-  await userEvent.click(await screen.findByRole("treeitem", { name: /my-website/ }));
+  const project = await screen.findByRole("treeitem", { name: /my-website/ });
+  if (project.getAttribute("aria-expanded") === "false") await userEvent.click(project);
   await userEvent.click(await screen.findByRole("treeitem", { name: /站点改版/ }));
   await waitFor(async () => expect((await h.runtimes()).filter((rt) => !rt.host)).toHaveLength(2));
   expect(read).toHaveBeenCalledTimes(firstReads);

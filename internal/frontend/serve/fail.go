@@ -8,6 +8,7 @@ import (
 
 	"reasonix/internal/contract/config"
 	"reasonix/internal/session/control"
+	"reasonix/internal/state/memory"
 )
 
 // Reason is a machine-readable refusal: the kernel decides what happened, a
@@ -85,6 +86,9 @@ func keepRefusalStatus(status int, err error) error {
 // wherever it surfaces, and anything else keeps the old shape, so adoption is
 // incremental rather than a flag day.
 func writeErr(w http.ResponseWriter, fallback int, err error) {
+	if refuseMemoryDirectory(w, err) {
+		return
+	}
 	var c *coded
 	if errors.As(err, &c) {
 		refuse(w, c.status, c.reason.Code, c.reason.Message, c.reason.Params)
@@ -122,10 +126,22 @@ func refuseUnparsedConfig(w http.ResponseWriter, err error) bool {
 // keeps one code across every panel; anything else is that panel's own
 // rejection, carrying the kernel's words as the detail a reader acts on.
 func saveFailed(w http.ResponseWriter, status int, code string, err error) {
+	if refuseMemoryDirectory(w, err) {
+		return
+	}
 	if refuseUnparsedConfig(w, err) {
 		return
 	}
 	refuse(w, status, code, err.Error(), map[string]any{"detail": err.Error()})
+}
+
+func refuseMemoryDirectory(w http.ResponseWriter, err error) bool {
+	var directory *memory.DirectoryReadError
+	if !errors.As(err, &directory) {
+		return false
+	}
+	refuse(w, http.StatusInternalServerError, "memory.directory_unreadable", err.Error(), nil)
+	return true
 }
 
 // codedRefusal is the identity a coded error carries, for the caller that has to

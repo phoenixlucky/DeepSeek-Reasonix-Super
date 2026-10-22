@@ -51,7 +51,9 @@ func (t *turn) pendingCallError() error {
 func (t *turn) refuseCalls(ctx context.Context, err error) bool {
 	t.terminal, t.failed = true, true
 	t.responseID = ""
-	t.c.ResetContext()
+	if t.remember {
+		t.c.ResetContext()
+	}
 	_ = t.send(ctx, provider.Chunk{Type: provider.ChunkError, Err: err})
 	return false
 }

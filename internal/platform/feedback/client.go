@@ -58,17 +58,27 @@ type wireError struct {
 }
 
 var codeSentinels = map[string]error{
-	"feedback.too_large":          ErrTooLarge,
-	"feedback.rate_limited":       ErrRateLimited,
-	"feedback.invalid":            ErrInvalid,
-	"feedback.disabled":           ErrDisabled,
-	"feedback.duplicate":          ErrDuplicate,
-	"feedback.bad_token":          ErrBadToken,
-	"feedback.busy":               ErrBusy,
-	"feedback.image_metadata":     ErrImageMetadata,
-	"feedback.reply_limit":        ErrReplyLimit,
-	"feedback.not_replyable":      ErrNotReplyable,
-	"feedback.challenge_required": ErrChallengeRequired,
+	"feedback.too_large":           ErrTooLarge,
+	"feedback.rate_limited":        ErrRateLimited,
+	"feedback.invalid":             ErrInvalid,
+	"feedback.disabled":            ErrDisabled,
+	"feedback.duplicate":           ErrDuplicate,
+	"feedback.bad_token":           ErrBadToken,
+	"feedback.busy":                ErrBusy,
+	"feedback.image_metadata":      ErrImageMetadata,
+	"feedback.reply_limit":         ErrReplyLimit,
+	"feedback.not_replyable":       ErrNotReplyable,
+	"feedback.challenge_required":  ErrChallengeRequired,
+	"feedback.not_withdrawable":    ErrNotWithdrawable,
+	"feedback.not_found":           ErrNotFound,
+	"feedback.account_required":    ErrAccountRequired,
+	"feedback.link_conflict":       ErrLinkConflict,
+	"feedback.link_limit":          ErrLinkLimit,
+	"feedback.board_name_invalid":  ErrBoardNameInvalid,
+	"feedback.board_name_reserved": ErrBoardNameReserved,
+	"feedback.board_name_taken":    ErrBoardNameTaken,
+	"feedback.board_delisted":      ErrBoardDelisted,
+	"feedback.board_no_link":       ErrBoardNoLink,
 }
 
 func (s *Service) post(ctx context.Context, body wireSubmit, token string) (wireReceipt, error) {
@@ -106,10 +116,11 @@ func (s *Service) get(ctx context.Context, id, token string, out any) error {
 
 // postReply sends one reply. It is never retried: replies carry no idempotency
 // key, so a request that may have arrived must not be sent twice.
-func (s *Service) postReply(ctx context.Context, id, token, receipt, body string) (ReplyReceipt, error) {
+func (s *Service) postReply(ctx context.Context, id, token, receipt, body string, attachments ...wireAttachment) (ReplyReceipt, error) {
 	raw, err := json.Marshal(struct {
-		Body string `json:"body"`
-	}{body})
+		Body        string           `json:"body"`
+		Attachments []wireAttachment `json:"attachments,omitempty"`
+	}{body, attachments})
 	if err != nil {
 		return ReplyReceipt{}, err
 	}
@@ -123,6 +134,22 @@ func (s *Service) postReply(ctx context.Context, id, token, receipt, body string
 	var out ReplyReceipt
 	err = s.do(req, &out)
 	return out, err
+}
+
+// postWithdraw takes one report back. The worker treats a repeat as done, so
+// nothing here depends on the first answer having arrived.
+func (s *Service) postWithdraw(ctx context.Context, id, token, receipt string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.base+"/v1/feedback/"+url.PathEscape(receipt)+"/withdraw", strings.NewReader("{}"))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Install-Id", id)
+	req.Header.Set("X-Install-Token", token)
+	var out struct {
+		Status Status `json:"status"`
+	}
+	return s.do(req, &out)
 }
 
 // do performs one request and turns whatever came back into a sentinel.
@@ -162,6 +189,9 @@ func refusalOf(resp *http.Response, body []byte) error {
 		default:
 			if resp.StatusCode >= 500 && resp.StatusCode < 600 {
 				return errTransientResponse
+			}
+			if resp.StatusCode == http.StatusNotFound {
+				return ErrRouteAbsent
 			}
 			return ErrUnavailable
 		}

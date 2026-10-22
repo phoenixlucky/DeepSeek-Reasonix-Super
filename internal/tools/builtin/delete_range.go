@@ -15,9 +15,10 @@ import (
 func init() { tool.RegisterBuiltin(deleteRange{}) }
 
 type deleteRange struct {
-	roots   []string
-	guard   SessionDataGuard
-	managed ManagedConfigPaths
+	readPolicy editReadPolicy
+	roots      []string
+	guard      SessionDataGuard
+	managed    ManagedConfigPaths
 	// sessionTemp, when non-nil, adds the session's own temporary directory
 	// to the writable surface — the same directory bash writes through $TMPDIR.
 	sessionTemp *sessiontemp.Manager
@@ -103,7 +104,7 @@ func (d deleteRange) preview(ctx context.Context, args json.RawMessage) (diff.Ch
 		return diff.Change{}, editSource{}, err
 	}
 
-	src, err := readEditSource(ctx, d.overlay, p.Path)
+	src, err := d.readPolicy.source(ctx, d.overlay, p.Path)
 	if err != nil {
 		return diff.Change{}, editSource{}, fmt.Errorf("read %s: %w", p.Path, err)
 	}

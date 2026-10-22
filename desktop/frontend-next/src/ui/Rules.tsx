@@ -3,7 +3,8 @@ import { useEscape } from "./dismiss";
 import { t } from "../i18n";
 import type { AgentPort, PermissionLists, PermissionRules } from "../port/port";
 import { Switch } from "./Switch";
-import { reason } from "../i18n/kernel";
+import { reason, savedNotApplied } from "../i18n/kernel";
+import { SaveNote } from "./SaveNote";
 
 type List = "deny" | "ask" | "allow";
 
@@ -159,7 +160,7 @@ function group(lists: PermissionLists, query: string): Group[] {
 export function Rules({ port, onChanged }: { port: AgentPort; onChanged: () => void }) {
   const [rules, setRules] = useState<PermissionRules | null>(null);
   const [busy, setBusy] = useState("");
-  const [error, setError] = useState("");
+  const [note, setNote] = useState<{ text: string; unapplied: boolean } | null>(null);
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
   useEscape(adding, () => setAdding(false));
@@ -180,12 +181,12 @@ export function Rules({ port, onChanged }: { port: AgentPort; onChanged: () => v
 
   const apply = async (what: string, next: PermissionLists) => {
     setBusy(what);
-    setError("");
+    setNote(null);
     try {
       setRules(await port.savePermissions(next));
       onChanged();
     } catch (e) {
-      setError(reason(e));
+      setNote({ text: reason(e), unapplied: savedNotApplied(e) });
     } finally {
       setBusy("");
     }
@@ -193,11 +194,11 @@ export function Rules({ port, onChanged }: { port: AgentPort; onChanged: () => v
 
   const revoke = async (rule: string) => {
     setBusy(rule || "all");
-    setError("");
+    setNote(null);
     try {
       setRules(await port.revokeSessionGrant(rule));
     } catch (e) {
-      setError(reason(e));
+      setNote({ text: reason(e), unapplied: savedNotApplied(e) });
     } finally {
       setBusy("");
     }
@@ -205,12 +206,12 @@ export function Rules({ port, onChanged }: { port: AgentPort; onChanged: () => v
 
   const revokeRemembered = async (rule: string) => {
     setBusy(`remembered:${rule}`);
-    setError("");
+    setNote(null);
     try {
       setRules(await port.revokeRememberedProjectRule(rule));
       onChanged();
     } catch (e) {
-      setError(reason(e));
+      setNote({ text: reason(e), unapplied: savedNotApplied(e) });
     } finally {
       setBusy("");
     }
@@ -378,7 +379,7 @@ export function Rules({ port, onChanged }: { port: AgentPort; onChanged: () => v
       </div>
 
       {total > 0 && <p className="path">{rules.path}</p>}
-      {error && <div className="why">{error}</div>}
+      <SaveNote note={note} />
     </div>
   );
 }
@@ -450,3 +451,6 @@ function Granted({ rules, busy, onRevoke }: { rules: string[]; busy: string; onR
     </section>
   );
 }
+
+// The tool switches sit beside the rules that govern the same tools.
+export { ToolList } from "./ToolList";

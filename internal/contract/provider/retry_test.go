@@ -398,3 +398,86 @@ func TestSendWithRetryGivesAHeaderTimeoutOneRetry(t *testing.T) {
 		t.Fatalf("calls = %d, want the timed-out attempt plus exactly one retry", calls)
 	}
 }
+
+func shrinkBackoff(t *testing.T) {
+	t.Helper()
+	was := retryBackoffUnit
+	retryBackoffUnit = time.Microsecond
+	t.Cleanup(func() { retryBackoffUnit = was })
+}
+
+func failingUntil(n int) (*http.Client, *int) {
+	calls := new(int)
+	return &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
+		*calls++
+		if *calls <= n {
+			return statusResp(503, nil), nil
+		}
+		return statusResp(200, nil), nil
+	})}, calls
+}
+
+func TestSendWithRetryGivesUpAfterTheDefaultCount(t *testing.T) {
+	shrinkBackoff(t)
+	cl, calls := failingUntil(1000)
+	if _, err := SendWithRetry(context.Background(), cl, SendOptions{Provider: "p"}, newDummyReq); err == nil {
+		t.Fatal("a provider that never answers returned no error")
+	}
+	if *calls != MaxRetries+1 {
+		t.Fatalf("%d attempts, want the default %d", *calls, MaxRetries+1)
+	}
+}
+
+func TestSendWithRetryKeepsTryingWhenTheUserRemovedTheLimit(t *testing.T) {
+	shrinkBackoff(t)
+	cl, calls := failingUntil(MaxRetries * 3)
+	var last RetryInfo
+	ctx := WithRetryNotify(WithRetryLimit(context.Background(), RetriesUntilCancelled), func(i RetryInfo) { last = i })
+	resp, err := SendWithRetry(ctx, cl, SendOptions{Provider: "p"}, newDummyReq)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("unlimited retries did not outlast %d failures: %v", MaxRetries*3, err)
+	}
+	if last.Max != 0 || last.Attempt != MaxRetries*3 {
+		t.Fatalf("last notice = attempt %d of max %d, want attempt %d with no maximum", last.Attempt, last.Max, MaxRetries*3)
+	}
+	if *calls != MaxRetries*3+1 {
+		t.Fatalf("%d attempts", *calls)
+	}
+}
+
+func TestSendWithRetryHonorsALimitAboveTheDefault(t *testing.T) {
+	shrinkBackoff(t)
+	cl, calls := failingUntil(MaxRetries + 4)
+	ctx := WithRetryLimit(context.Background(), MaxRetries+5)
+	if _, err := SendWithRetry(ctx, cl, SendOptions{Provider: "p"}, newDummyReq); err != nil {
+		t.Fatalf("a raised limit still stopped early: %v", err)
+	}
+	if *calls != MaxRetries+5 {
+		t.Fatalf("%d attempts", *calls)
+	}
+}
+
+func TestSendWithRetryUnlimitedStopsWhenTheCallerCancels(t *testing.T) {
+	shrinkBackoff(t)
+	cl, calls := failingUntil(1 << 30)
+	ctx, cancel := context.WithCancel(WithRetryLimit(context.Background(), RetriesUntilCancelled))
+	ctx = WithRetryNotify(ctx, func(i RetryInfo) {
+		if i.Attempt == 25 {
+			cancel()
+		}
+	})
+	if _, err := SendWithRetry(ctx, cl, SendOptions{Provider: "p"}, newDummyReq); err == nil {
+		t.Fatal("a cancelled unlimited retry returned success")
+	}
+	if *calls > 40 {
+		t.Fatalf("kept going for %d attempts after the caller cancelled", *calls)
+	}
+}
+
+func TestBackoffDelayNeverCollapsesToZeroForLongRuns(t *testing.T) {
+	for _, attempt := range []int{20, 64, 65, 1000, 1 << 20} {
+		if d := backoffDelay(attempt, 0); d < maxBackoff {
+			t.Errorf("attempt %d backs off only %v, a hot loop", attempt, d)
+		}
+	}
+}

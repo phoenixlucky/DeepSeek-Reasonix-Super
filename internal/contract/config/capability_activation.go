@@ -64,6 +64,10 @@ type ActivationOverride struct {
 	// Identity is the digest of the declaration an enable was given for; set
 	// only for a repository-declared server (see ProjectDeclarationDigest).
 	Identity string `json:"identity,omitempty"`
+	// Identities are the declarations confirmed for this slot when several projects
+	// of a repository declare one name. Identity stays the latest of them, so a
+	// reader that only knows Identity still works (see confirmedDeclarations).
+	Identities []string `json:"identities,omitempty"`
 }
 
 // ActivationFile is the on-disk shape of $REASONIX_HOME/capability-activation.json.
@@ -414,6 +418,7 @@ func normalizeOverride(o ActivationOverride) ActivationOverride {
 	o.Owner = strings.TrimSpace(o.Owner)
 	o.Key = strings.TrimSpace(o.Key)
 	o.Identity = strings.TrimSpace(o.Identity)
+	o.Identities = slices.DeleteFunc(slices.Clone(o.Identities), func(s string) bool { return strings.TrimSpace(s) == "" })
 	if o.Kind != CapabilitySkill {
 		o.Kind = CapabilityMCP
 	}

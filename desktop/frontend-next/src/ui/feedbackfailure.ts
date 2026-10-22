@@ -158,3 +158,29 @@ function plainWait(params: Params): string {
 function replyOffline(code: string): FeedbackFailure {
   return { code, retry: "same", message: t("没能连上反馈服务。你写的回复还在；如果不确定它有没有送达，请先刷新列表看看，再决定要不要重发。") };
 }
+
+// Linking an install to the account has its own refusals; the rest read like
+// any other feedback refusal.
+export function linkFailure(e: unknown): FeedbackFailure {
+  if (!(e instanceof HttpError)) return { code: FEEDBACK_CODE.offline, retry: "same", message: t("没能连上反馈服务，请稍后重试。") };
+  const code = e.reason?.code ?? "";
+  switch (code) {
+    case FEEDBACK_CODE.accountRequired:
+      return { code, retry: "none", message: t("需要先登录账号。登录状态可能已过期，请在设置里重新登录。") };
+    case FEEDBACK_CODE.linkConflict:
+      return { code, retry: "none", message: t("这台电脑已经关联到另一个账号。请先用那个账号解除关联。") };
+    case FEEDBACK_CODE.linkLimit:
+      return { code, retry: "none", message: t("这个账号关联的电脑已达上限。请先解除一台不用的电脑。") };
+    case FEEDBACK_CODE.noInstall:
+      return { code, retry: "none", message: t("这台电脑还没有发过反馈，发出第一条之后才能关联账号。") };
+    case FEEDBACK_CODE.rateLimited:
+      return { code, retry: "later", message: windowed(e.reason?.params) ?? plainWait(e.reason?.params) };
+    case FEEDBACK_CODE.disabled:
+    case FEEDBACK_CODE.unavailable:
+      return { code, retry: "later", message: t("账号关联暂时不可用，请稍后再试。") };
+    case FEEDBACK_CODE.offline:
+      return { code, retry: "same", message: t("没能连上反馈服务，请稍后重试。") };
+    default:
+      return { code, retry: "later", message: t("操作没有完成，请稍后重试。") };
+  }
+}

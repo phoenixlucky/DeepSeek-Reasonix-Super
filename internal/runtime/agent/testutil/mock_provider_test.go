@@ -3,10 +3,27 @@ package testutil
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
+	"reasonix/internal/base/testenv"
 	"reasonix/internal/contract/provider"
 )
+
+type cancellationObservedContext struct {
+	context.Context
+	observed chan struct{}
+	once     sync.Once
+}
+
+func (c *cancellationObservedContext) Err() error {
+	err := c.Context.Err()
+	if err != nil {
+		c.once.Do(func() { close(c.observed) })
+	}
+	return err
+}
 
 func TestMockProviderStreamHonorsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -26,7 +43,9 @@ func TestMockProviderStreamHonorsCanceledContext(t *testing.T) {
 }
 
 func TestMockProviderStreamStopsOnContextCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx := &cancellationObservedContext{Context: parent, observed: make(chan struct{})}
 	mp := NewMock("mock", Turn{
 		Text: "first",
 		ToolCalls: []provider.ToolCall{
@@ -42,6 +61,13 @@ func TestMockProviderStreamStopsOnContextCancellation(t *testing.T) {
 		t.Fatalf("first chunk text = %q, want first", got)
 	}
 	cancel()
+	// Cancellation and a pending send can both be selectable. Wait until the
+	// producer observes cancellation before requiring its next error chunk.
+	select {
+	case <-ctx.observed:
+	case <-time.After(testenv.Budget(t)):
+		t.Fatal("producer did not observe context cancellation")
+	}
 	chunk, ok := <-ch
 	if !ok {
 		t.Fatal("stream closed without returning cancellation error")

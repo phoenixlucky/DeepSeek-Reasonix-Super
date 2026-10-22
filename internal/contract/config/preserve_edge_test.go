@@ -118,6 +118,27 @@ func TestRemovingTheLastProviderLeavesItsSubTablesWithIt(t *testing.T) {
 	}
 }
 
+func TestRemovingEveryProviderKeepsTheListEmpty(t *testing.T) {
+	seed := "config_version = 12\n[desktop]\nfuture = 1\n\n[[providers]]\nname = \"a\"\nkind = \"openai\"\nbase_url = \"http://a\"\nmodel = \"m\"\n"
+	got, saved := saveInPlace(t, seed, func(c *Config) error { _, err := c.RemoveProvider("a"); return err }, "future = 1")
+	if len(got.Providers) != 0 {
+		t.Fatalf("providers = %+v, want none once the last one is removed", got.Providers)
+	}
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Providers) != 0 {
+		t.Fatalf("loaded providers = %+v, want none once the last one is removed", loaded.Providers)
+	}
+	got, _ = saveInPlace(t, saved, func(c *Config) error {
+		return c.UpsertProvider(ProviderEntry{Name: "local", Kind: "openai", BaseURL: "http://127.0.0.1:9000/v1", Model: "m"})
+	}, "future = 1")
+	if _, ok := got.Provider("local"); !ok || len(got.Providers) != 1 {
+		t.Fatalf("providers = %+v, want local alone after adding one to an emptied list", got.Providers)
+	}
+}
+
 func TestAddingTheFirstProviderKeepsTheBuiltInOnes(t *testing.T) {
 	got, _ := saveInPlace(t, "config_version = 12\n[desktop]\nfuture = 1\n", func(c *Config) error {
 		return c.UpsertProvider(ProviderEntry{Name: "local", Kind: "openai", BaseURL: "http://127.0.0.1:9000/v1", Model: "m"})

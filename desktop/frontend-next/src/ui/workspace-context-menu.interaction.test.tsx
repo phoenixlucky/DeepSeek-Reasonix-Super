@@ -21,7 +21,7 @@ function draw(over: Partial<TreeWorkspace> = {}) {
   const onFold = vi.fn();
   const onOpen = vi.fn().mockResolvedValue(undefined);
   const onError = vi.fn();
-  render(<Workspaces hub={{ revealWorkspace, moveWorkspace, removeWorkspace } as never} tree={tree} treeRead
+  render(<Workspaces hub={{ revealWorkspace, moveWorkspace, removeWorkspace, openWithTargets: async () => [] } as never} tree={tree} treeRead
     runtimes={[]} active="" folded={new Set()} onFold={onFold} reload={reload} onOpen={onOpen}
     onFocus={() => {}} onClose={async () => {}} liveIds={() => []} runs={{}} onRename={() => {}}
     onError={onError} adder={{ add: () => {}, close: () => {}, at: null } as never} />);
@@ -82,7 +82,8 @@ it("switches the context menu to another project and preserves normal row and ad
   await userEvent.click(screen.getByRole("menuitem", { name: /在文件管理器中显示/ }));
   expect(revealWorkspace).toHaveBeenCalledExactlyOnceWith("/b");
   await userEvent.click(row("a"));
-  expect(onFold).toHaveBeenCalledExactlyOnceWith("/a", true);
+  expect(onFold).not.toHaveBeenCalled();
+  expect(row("a").hasAttribute("aria-expanded")).toBe(false);
   await userEvent.click(screen.getByRole("button", { name: "在 b 下新建会话" }));
   expect(onOpen).toHaveBeenCalledExactlyOnceWith({ root: "/b" });
   expect(screen.queryByRole("menu")).toBeNull();

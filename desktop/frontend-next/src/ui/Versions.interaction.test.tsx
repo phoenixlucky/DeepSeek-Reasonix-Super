@@ -81,6 +81,19 @@ describe("the version panel", () => {
     expect(line.getAttribute("aria-describedby")).toBeNull();
   });
 
+  it("says why the bar stopped when the connection was dropped for going quiet", async () => {
+    const port = portAt({ version: "2.21.0", phase: "downloading", received: 1024, total: 4096, stalls: 2 });
+    render(<Versions port={port} />);
+    expect(await screen.findByText("下载暂停了：连接长时间没有数据，已重连 2 次…")).toBeTruthy();
+  });
+
+  it("explains a download that stayed stuck by its code, with the way out", async () => {
+    const port = portAt({ version: "2.21.0", phase: "error", received: 0, total: 0, code: "update.download_stalled", stalls: 3, err: "update: the download stalled" });
+    render(<Versions port={port} />);
+    expect(await screen.findByText("2.21.0 下载卡住了")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "下载完整安装包" })).toBeTruthy();
+  });
+
   it("explains a move that did not land by its code, with the way out", async () => {
     const port = portAt({ version: "2.21.0", phase: "error", received: 0, total: 0, code: "update.not_applied", err: "update: set aside app.exe: access denied" });
     render(<Versions port={port} />);
@@ -88,5 +101,55 @@ describe("the version panel", () => {
     const link = screen.getByRole("link", { name: "下载完整安装包" });
     expect(link.getAttribute("href")).toBe("https://github.com/esengine/DeepSeek-Reasonix/releases/tag/studio-v2.21.0");
     expect(screen.getByText("update: set aside app.exe: access denied")).toBeTruthy();
+  });
+});
+
+describe("the version list's history", () => {
+  const many = (pinned = ""): VersionHub => ({
+    current: "2.20.0",
+    pinned,
+    stalePin: false,
+    latest: "2.20.0",
+    newer: false,
+    versions: [
+      { version: "2.20.0", tag: "studio-v2.20.0", publishedAt: "", current: true, older: false, hasNotes: false },
+      ...["2.19.0", "2.18.0", "2.17.0", "2.16.0", "2.15.0", "2.14.0"].map((version) => ({ version, tag: `studio-v${version}`, publishedAt: "", current: false, older: true, hasNotes: false })),
+    ],
+  });
+  const portFor = (h: VersionHub) => ({
+    versions: () => Promise.resolve(h),
+    pinVersion: vi.fn(() => Promise.resolve()),
+    goToVersion: vi.fn(() => Promise.resolve()),
+    restartToVersion: vi.fn(() => Promise.resolve()),
+    onUpdateProgress: () => () => {},
+  });
+
+  it("keeps the running release and the newest few earlier ones, with the rest one click away", async () => {
+    render(<Versions port={portFor(many())} />);
+    expect(await screen.findByText("2.19.0")).toBeTruthy();
+    expect(screen.getByText("2.17.0")).toBeTruthy();
+    expect(screen.queryByText("2.16.0")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "显示更早的 3 个版本" }));
+    expect(screen.getByText("2.14.0")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /显示更早的/ })).toBeNull();
+  });
+
+  it("never hides the version the person pinned", async () => {
+    render(<Versions port={portFor(many("2.14.0"))} />);
+    expect(await screen.findByText("2.14.0")).toBeTruthy();
+    expect(screen.queryByText("2.16.0")).toBeNull();
+  });
+});
+
+describe("the version panel's reads", () => {
+  it("opens on whatever the kernel already knows and asks afresh only on a retry", async () => {
+    const versions = vi
+      .fn((_refresh?: boolean) => Promise.resolve(hub))
+      .mockRejectedValueOnce(new HttpError(502, "mirror", { code: "studio.unreachable" }, true));
+    const port = { ...portAt({ version: "", phase: "idle", received: 0, total: 0 }), versions };
+    render(<Versions port={port} />);
+    await userEvent.click(await screen.findByRole("button", { name: "重试" }));
+    await screen.findByText("2.21.0");
+    expect(versions.mock.calls.map((c) => c[0])).toEqual([false, true]);
   });
 });

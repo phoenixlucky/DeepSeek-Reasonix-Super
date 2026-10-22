@@ -27,7 +27,7 @@ func TestIndexDropsExpiredFacts(t *testing.T) {
 		t.Fatalf("save expired fact: %v", err)
 	}
 
-	index := store.indexAt(now)
+	index := mustStore(t, store).indexAt(now)
 	if !strings.Contains(index, "live-fact") {
 		t.Fatalf("live fact missing from the index:\n%s", index)
 	}
@@ -50,7 +50,7 @@ func TestPrefixCostCountsPinnedBodiesOnly(t *testing.T) {
 	}, SaveOptions{}); err != nil {
 		t.Fatalf("save pinned fact: %v", err)
 	}
-	set := &Set{Store: store, PinnedGuidance: store.pinnedGuidanceForProject()}
+	set := &Set{Store: store, PinnedGuidance: mustStore(t, store).pinnedGuidanceForProject()}
 
 	cost := set.PrefixCost()
 	if cost.Pinned != 1 || cost.PinnedChars != len([]rune(body)) {

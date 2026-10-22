@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useModalFocus } from "./useModalFocus";
 import { createPortal } from "react-dom";
 import { t } from "../i18n";
 
@@ -11,6 +12,8 @@ interface Props {
 /** The picker-free path into a workspace. It only appears when the kernel says
  *  it has no native picker, so a desktop shell keeps its familiar dialog. */
 export function AddWorkspacePrompt({ busy, onSubmit, onClose }: Props) {
+  const sheet = useRef<HTMLDivElement>(null);
+  useModalFocus(sheet);
   const [path, setPath] = useState("");
   const input = useRef<HTMLInputElement>(null);
 
@@ -19,7 +22,7 @@ export function AddWorkspacePrompt({ busy, onSubmit, onClose }: Props) {
   }, []);
 
   return createPortal(
-    <div className="pickveil" role="dialog" aria-modal="true" aria-labelledby="addws-t">
+    <div ref={sheet} className="pickveil" role="dialog" aria-modal="true" aria-labelledby="addws-t">
       <form
         className="pickcard"
         data-action="workspace.add"

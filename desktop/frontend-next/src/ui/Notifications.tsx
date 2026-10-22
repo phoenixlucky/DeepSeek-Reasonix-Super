@@ -37,7 +37,7 @@ export function Notifications({ port }: { port: AgentPort }) {
       <div className="grp-hd">
         <h3>{t("通知")}</h3>
       </div>
-      <p className="hint">{t("只在你没盯着窗口的时候有用：一轮跑完、停下来等批准、模型反过来问你、反馈有了回复，都可以让系统提醒一次。")}</p>
+      <p className="hint">{t("一轮结束、等待批准、模型提问或反馈收到回复时，可以发送系统通知。完成后未读的会话会在应用图标上显示标记，查看对应会话后清除。")}</p>
       <div className="grp-items">
         <div className="lrow">
           <span className="tx">
@@ -82,6 +82,13 @@ export function Notifications({ port }: { port: AgentPort }) {
             <span className="ds">{t("你提交的反馈收到回复、或需要你补充信息时提醒一次，不带回复内容")}</span>
           </span>
           <Switch data-action="notify.feedback-reply" on={prefs.feedbackReply} busy={!active} label={t("反馈有新回复时")} onClick={() => flip({ feedbackReply: !prefs.feedbackReply })} />
+        </div>
+        <div className="lrow subrow" data-off={active ? undefined : ""}>
+          <span className="tx">
+            <span className="lb">{t("磁盘空间不足时")}</span>
+            <span className="ds">{t("项目或会话所在的磁盘剩余空间很少时提醒（不足 5 GB 或不足 3%），同一块盘长时间不重复提醒；只提醒，不会清理任何文件")}</span>
+          </span>
+          <Switch data-action="notify.disk-low" on={prefs.diskLow} busy={!active} label={t("磁盘空间不足时")} onClick={() => flip({ diskLow: !prefs.diskLow })} />
         </div>
       </div>
       <ApplyNote id="notify" />

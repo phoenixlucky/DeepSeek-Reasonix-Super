@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { current, t } from "../i18n";
 import type { FeedbackProfile } from "../port/feedback";
 import { LevelBadge } from "./LevelBadge";
@@ -49,13 +50,14 @@ export function FeedbackLevel({ profile: p, offline }: Props) {
   const next = p.nextLevel;
   const note = trustNote(p);
   const said = progressText(p);
+  const meaning = useId();
   return (
     <section className="fbk-level" aria-label={t("反馈等级")} data-level={p.level} data-trust={p.trustState} data-stale={offline ? "" : undefined}>
       <div className="fbk-level-hd">
         <LevelBadge level={p.level} decorative size={32} />
         <div className="fbk-level-id">
           <span className="fbk-level-name">{levelLabel(p.level)}</span>
-          <span className="fbk-level-progress">{said}</span>
+          <span className="fbk-level-progress" aria-describedby={meaning}>{said}</span>
         </div>
       </div>
       {next !== null && span > 0 && (
@@ -77,6 +79,7 @@ export function FeedbackLevel({ profile: p, offline }: Props) {
           </span>
         </div>
       )}
+      <p className="fbk-level-meaning" id={meaning}>{t("「已落地」指你的反馈已被修复或实现，并随新版本发布。")}</p>
       <p className="fbk-level-limits">
         {t("每小时最多 {h} 条反馈 · 每天 {d} 条 · 每小时 {r} 条回复", { h: limits.reportsPerHour, d: limits.reportsPerDay, r: limits.repliesPerHour })}
       </p>

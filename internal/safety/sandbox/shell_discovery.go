@@ -16,7 +16,11 @@ import (
 // drive discovery through a slow or hung interpreter on any OS.
 type ShellDiscovery struct {
 	Prefer, Path string
-	Warn         io.Writer
+	// Args are launcher arguments for Path (wsl.exe -d <distro> -- /bin/bash).
+	// With them the pinned program is proven by running it with them, and an
+	// unusable pair falls back to auto-detection.
+	Args []string
+	Warn io.Writer
 	// ProofDir, when set, keeps launch proofs between runs. It must sit in the
 	// user's own data tree; a proof never changes a sandbox decision.
 	ProofDir string
@@ -30,6 +34,9 @@ type ShellDiscovery struct {
 
 // Resolve is ResolveShell with the discovery settings above.
 func (d ShellDiscovery) Resolve() Shell {
+	if len(d.Args) > 0 {
+		return d.resolveLauncher()
+	}
 	memo := &provenBash
 	if d.Probe != nil {
 		memo = new(sync.Map)

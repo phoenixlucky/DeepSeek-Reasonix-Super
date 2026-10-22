@@ -58,7 +58,7 @@ func TestToolAfterRewriteCannotHideWrittenCodeFromProseWaiver(t *testing.T) {
 			reg := tool.NewRegistry()
 			reg.Add(namedFileWriter{root: root})
 			reg.Add(fakeTool{name: "bash"})
-			a := New(nil, reg, sessionstore.NewSession(""), Options{Extensions: d}, event.Discard)
+			a := New(nil, reg, sessionstore.NewSession(""), Options{Extensions: d, CheckTargetAccess: allowTestFileAccess}, event.Discard)
 			a.observeRoot = root
 			a.writeWorkspaceRoot = root
 			a.executeOne(context.Background(), &a.turn, provider.ToolCall{ID: "1", Name: "write_file", Arguments: `{"path":"Program.cs","content":"class Q {}\n"}`})
@@ -94,7 +94,7 @@ func TestToolAfterRewriteCannotHideTheOnlyWrittenCode(t *testing.T) {
 			reg := tool.NewRegistry()
 			reg.Add(namedFileWriter{root: root})
 			reg.Add(fakeTool{name: "bash"})
-			a := New(nil, reg, sessionstore.NewSession(""), Options{Extensions: d}, event.Discard)
+			a := New(nil, reg, sessionstore.NewSession(""), Options{Extensions: d, CheckTargetAccess: allowTestFileAccess}, event.Discard)
 			a.observeRoot = root
 			a.writeWorkspaceRoot = root
 			a.executeOne(context.Background(), &a.turn, provider.ToolCall{ID: "1", Name: "write_file", Arguments: `{"path":"Program.cs","content":"class Q {}\n"}`})
@@ -171,7 +171,7 @@ func TestProseNamedWriteLinkTargets(t *testing.T) {
 			reg := tool.NewRegistry()
 			reg.Add(namedFileWriter{root: root})
 			reg.Add(fakeTool{name: "bash"})
-			a := New(nil, reg, sessionstore.NewSession(""), Options{Extensions: d}, event.Discard)
+			a := New(nil, reg, sessionstore.NewSession(""), Options{Extensions: d, CheckTargetAccess: allowTestFileAccess}, event.Discard)
 			a.observeRoot = root
 			a.writeWorkspaceRoot = root
 			a.executeOne(context.Background(), &a.turn, provider.ToolCall{ID: "1", Name: "write_file", Arguments: `{"path":"NOTES.md","content":"note\n"}`})
@@ -237,7 +237,7 @@ func TestToolAfterRewriteAfterPassingCheckKeepsCheckOwed(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Add(namedFileWriter{root: root})
 	reg.Add(fakeTool{name: "bash"})
-	a := New(nil, reg, sessionstore.NewSession(""), Options{Extensions: newExtDispatcher(client, true, nil, extension.PointToolAfter)}, event.Discard)
+	a := New(nil, reg, sessionstore.NewSession(""), Options{Extensions: newExtDispatcher(client, true, nil, extension.PointToolAfter), CheckTargetAccess: allowTestFileAccess}, event.Discard)
 	a.observeRoot, a.writeWorkspaceRoot = root, root
 	a.executeOne(context.Background(), &a.turn, provider.ToolCall{ID: "1", Name: "write_file", Arguments: `{"path":"Program.cs","content":"class Q {}\n"}`})
 	zero := 0
@@ -268,7 +268,7 @@ func TestSidecarOnToolCallsIsAnUnseenWriter(t *testing.T) {
 		t.Run(string(tc.point), func(t *testing.T) {
 			d := dispatch.New(map[extension.InterceptorPoint][]extension.Contribution{tc.point: {sidecar}}, nil,
 				func(string) dispatch.Client { return nil }, nil, dispatch.Options{})
-			a := New(nil, tool.NewRegistry(), sessionstore.NewSession(""), Options{Extensions: d}, event.Discard)
+			a := New(nil, tool.NewRegistry(), sessionstore.NewSession(""), Options{Extensions: d, CheckTargetAccess: allowTestFileAccess}, event.Discard)
 			if got := a.unseenToolWriter(); got != tc.want {
 				t.Errorf("unseen writer = %v, want %v", got, tc.want)
 			}

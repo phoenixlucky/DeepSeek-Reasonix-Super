@@ -34,8 +34,18 @@ func (e *AuthRequiredError) DiagnosticFacts() string { return e.Error() }
 // statusFailure builds the error for a non-2xx answer, promoting a 401 that
 // carries a Bearer challenge to AuthRequiredError. A server with explicit credentials
 // configured is not asking for a sign-in: its token is wrong.
-func (t *httpTransport) statusFailure(resp *http.Response, bodyBytes int, rpc *rpcError) error {
+func (t *httpTransport) statusFailure(resp *http.Response, bodyBytes int, rpc *rpcError, operation string) error {
 	status := &httpStatusError{Status: resp.StatusCode, BodyBytes: bodyBytes, RPC: rpc}
+	if resp.StatusCode == http.StatusForbidden && !mcpdiag.HasAuthConfig(t.headers, nil, t.url) && t.oauth != nil {
+		for _, header := range resp.Header.Values("WWW-Authenticate") {
+			if c, ok := parseBearerChallengeFull(header); ok && c.Error == "insufficient_scope" {
+				scopes := scopeTokens(c.Scope)
+				resource := secrets.RedactEndpoint(t.url)
+				exhausted := recordInsufficientScope(t.oauth.stateDir, resource, operation, scopes)
+				return &InsufficientScopeError{Server: t.name, Resource: resource, Scopes: scopes, Exhausted: exhausted, cause: status}
+			}
+		}
+	}
 	if resp.StatusCode != http.StatusUnauthorized || mcpdiag.HasAuthConfig(t.headers, nil, t.url) {
 		return status
 	}

@@ -15,6 +15,7 @@ import (
 
 	"reasonix/internal/base/workspaceid"
 	"reasonix/internal/contract/config"
+	"reasonix/internal/contract/tool"
 	"reasonix/internal/ext/extension/sidecar"
 	"reasonix/internal/ext/plugin"
 	"reasonix/internal/runtime/agent"
@@ -45,6 +46,13 @@ type toolEnvironment struct {
 	evidenceSeal    *agent.EvidenceSeal
 }
 
+func (env toolEnvironment) targetAccessCheck() tool.TargetAccessCheck {
+	return (builtin.Workspace{
+		WriteRoots: env.writeRoots, ReadRoots: env.readRoots, ForbidReadRoots: env.forbidReadRoots,
+		SessionGuard: env.sessionGuard, ManagedConfig: env.managedConfig, SessionTemp: env.sessionTemp,
+	}).TargetAccessCheck()
+}
+
 func resolveToolEnvironment(opts Options, cfg *config.Config, roots config.Roots, root string, additionalDirs []string, shell sandbox.Shell, stderr io.Writer) toolEnvironment {
 	// The protected set masks a directory only if it exists when the sandbox is
 	// built, so the store's directory has to be there before any command runs.
@@ -68,15 +76,15 @@ func resolveToolEnvironment(opts Options, cfg *config.Config, roots config.Roots
 	if opts.SandboxNetworkOverride != nil {
 		env.network = *opts.SandboxNetworkOverride
 	}
-	bashMode := cfg.BashMode()
-	if override := strings.TrimSpace(opts.SandboxBashOverride); override != "" {
-		bashMode = override
-	}
+	bashMode := effectiveBashMode(opts, cfg)
 	// Config repair outside the workspace goes through the approval-gated file
 	// tools, never raw shell writes, so the bash write roots stay unwidened.
 	env.managedConfig = builtin.NewManagedConfigPaths(config.ReasonixManagedConfigPaths())
 	env.bash = sandbox.Spec{Mode: bashMode, WriteRoots: env.writeRoots, Pins: sandbox.PinWriteRoots(env.writeRoots), ForbidReadRoots: env.forbidReadRoots, Network: env.network,
-		HostAuthorities: sandbox.ParseAuthorities(cfg.Sandbox.HostAuthorities), Shell: shell, ShellEnv: cfg.Tools.Shell.Env}
+		HostAuthorities: sandbox.ParseAuthorities(cfg.Sandbox.HostAuthorities), AllowDevices: cfg.Sandbox.AllowDevices, Shell: shell, ShellEnv: cfg.Tools.Shell.Env}
+	// On Windows an enforcing spec is prepared here: its roots granted to the
+	// restricted token, or the reason it cannot be. Elsewhere this changes nothing.
+	env.bash = sandbox.GrantSpec(env.bash, roots.SandboxDir())
 	// Agent writes into Reasonix's own session stores race the app's saves;
 	// an explicit allow_write entry stays the sanctioned escape hatch.
 	allowWriteRoots := cfg.AllowWriteRoots()
@@ -85,8 +93,8 @@ func resolveToolEnvironment(opts Options, cfg *config.Config, roots config.Roots
 	}
 	env.sessionGuard = builtin.NewSessionDataGuard(roots.MemoryUserDir(), allowWriteRoots)
 	env.evidenceSeal = openEvidenceSeal(roots.MemoryUserDir(), root, env.bash)
-	if env.bash.Mode == "enforce" && !sandbox.Available() {
-		fmt.Fprintln(stderr, "warning: "+sandbox.UnavailableMessage())
+	if env.bash.Mode == "enforce" && !sandbox.AvailableFor(env.bash) {
+		fmt.Fprintln(stderr, "warning: "+sandbox.UnavailableMessageFor(env.bash))
 	}
 	env.routeEgress(cfg, stderr)
 	env.search = builtin.ResolveSearch(cfg.Tools.Search.Engine, cfg.Tools.Search.RgPath, stderr)

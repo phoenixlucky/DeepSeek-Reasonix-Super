@@ -1,7 +1,7 @@
 import { plural, t } from "../i18n";
 
-export function UnreadDot({ kind }: { kind: "row" | "tab" }) {
-  return <i className={kind === "row" ? "unread-dot" : "ptab-unread"} role="img" aria-label={t("未读")} />;
+export function UnreadDot() {
+  return <i className="unread-dot" role="img" aria-label={t("未读")} />;
 }
 
 export function UnreadCount({ n }: { n: number }) {

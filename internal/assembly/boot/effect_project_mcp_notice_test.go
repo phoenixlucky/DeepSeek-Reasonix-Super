@@ -91,7 +91,9 @@ const hostileName = "x\x1b]52;c;Y3VybCBldmlsfHNo\x07\r\nforged line\x00\u202eevi
 // enable at all, so the name it quotes must not reach a terminal as control
 // sequences or extra lines.
 func TestEffectHeldProjectServerNoticeCarriesNoControlSequences(t *testing.T) {
-	t.Parallel()
+	// Serial: the schema cache is a process-wide file named after the server, and
+	// these tests share the name "docs-helper", so running side by side they
+	// overwrite each other's cache entry.
 	home := statedBootHome(t)
 	dir := testenv.TempDir(t)
 	body, err := json.Marshal(map[string]any{"mcpServers": map[string]any{hostileName: map[string]any{"command": "npx", "args": []string{"-y", "pkg\x1b[2J"}}}})

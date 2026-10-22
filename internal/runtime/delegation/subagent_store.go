@@ -56,6 +56,9 @@ type SubagentRun struct {
 }
 
 func (r *SubagentRun) Release() {
+	if r != nil && r.store != nil && r.Ref != "" {
+		r.store.setLive(r.Ref, nil)
+	}
 	if r != nil && r.release != nil {
 		r.release()
 		r.release = nil
@@ -84,13 +87,17 @@ type SubagentStore struct {
 
 	mu     sync.Mutex
 	locked map[string]bool
+	// live holds the conversation of every run this process is executing, so a
+	// reader sees a child while it works: its file is written only at the end.
+	live  map[string]*liveRun
+	steer steerState
 }
 
 func NewSubagentStore(dir string) *SubagentStore {
 	if strings.TrimSpace(dir) == "" {
 		return nil
 	}
-	return &SubagentStore{dir: dir, locked: map[string]bool{}}
+	return &SubagentStore{dir: dir, locked: map[string]bool{}, live: map[string]*liveRun{}}
 }
 
 // WithDestroyedChecker makes saves for destroyed parent sessions no-op. This is
@@ -562,6 +569,7 @@ func (s *SubagentStore) MarkRunning(run *SubagentRun) error {
 	if s.parentDestroyed(run) {
 		return nil
 	}
+	s.setLive(run.Ref, run.Session)
 	meta := run.Meta
 	meta.Status = sessionstore.SubagentRunning
 	meta.UpdatedAt = time.Now().UTC()
@@ -671,7 +679,7 @@ func (s *SubagentStore) isAncestorSession(ancestor, current string) (bool, error
 	seen := map[string]bool{}
 	for cursor := current; cursor != ""; {
 		if seen[cursor] {
-			return false, fmt.Errorf("cycle at session %q", cursor)
+			return false, fmt.Errorf("%w: cycle at session %q", errLineageUnproven, cursor)
 		}
 		seen[cursor] = true
 		// Route through parentSessionPath so both the caller-provided id and
@@ -680,17 +688,17 @@ func (s *SubagentStore) isAncestorSession(ancestor, current string) (bool, error
 		// session directory.
 		metaPath, valid := s.parentSessionPath(cursor)
 		if !valid {
-			return false, fmt.Errorf("invalid session identifier %q", cursor)
+			return false, fmt.Errorf("%w: invalid session identifier %q", errLineageUnproven, cursor)
 		}
 		meta, ok, err := sessionstore.LoadBranchMeta(metaPath)
 		if err != nil {
 			return false, err
 		}
 		if !ok {
-			return false, fmt.Errorf("missing branch metadata for session %q", cursor)
+			return false, fmt.Errorf("%w: missing branch metadata for session %q", errLineageUnproven, cursor)
 		}
 		if strings.TrimSpace(meta.ID) != cursor {
-			return false, fmt.Errorf("branch metadata for session %q declares id %q", cursor, meta.ID)
+			return false, fmt.Errorf("%w: branch metadata for session %q declares id %q", errLineageUnproven, cursor, meta.ID)
 		}
 		if cursor == ancestor {
 			return true, nil

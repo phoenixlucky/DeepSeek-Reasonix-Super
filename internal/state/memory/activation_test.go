@@ -35,7 +35,7 @@ func TestRelevantGlobalGuidanceLeavesPrefixAndEntersRecall(t *testing.T) {
 		Body: "I mainly write Vue 2 with the options API and webpack tooling.",
 	})
 
-	if pinned := store.pinnedGuidanceForProject(); len(pinned) != 0 {
+	if pinned := mustStore(t, store).pinnedGuidanceForProject(); len(pinned) != 0 {
 		t.Fatalf("relevant global guidance must not ride the prefix: %+v", pinned)
 	}
 	result := AutoRecall(store, "帮我看看这个 Vue 2 options API webpack 配置", RecallOptions{})
@@ -53,7 +53,7 @@ func TestPinnedProjectFactRidesPrefixWithoutSelfShadowing(t *testing.T) {
 		Body: "Always run the repolint before pushing.",
 	})
 
-	pinned := store.pinnedGuidanceForProject()
+	pinned := mustStore(t, store).pinnedGuidanceForProject()
 	if len(pinned) != 1 || pinned[0].ID != "mem-proj-pin" {
 		t.Fatalf("project pinned fact must survive the project-shadow filter: %+v", pinned)
 	}
@@ -88,7 +88,7 @@ func TestPinnedBudgetRejectsOverflowAndAllowsUpdates(t *testing.T) {
 	}, SaveOptions{}); err != nil {
 		t.Fatalf("self-update within budget rejected: %v", err)
 	}
-	updated, _ := store.Read(saved.Memory.ID)
+	updated, _ := mustStore(t, store).Read(saved.Memory.ID)
 	if ResolveActivation(updated) != ActivationPinned {
 		t.Fatalf("update omitting activation must inherit pinned, got %+v", updated)
 	}
@@ -101,7 +101,7 @@ func TestUnpinPersistsExplicitRelevantForLegacyGuidance(t *testing.T) {
 		Description: "Legacy global preference", Type: TypeUser,
 		Scope: FactScopeGlobal, Body: "Old habit body.",
 	})
-	loaded, ok := store.Read("mem-legacy")
+	loaded, ok := mustStore(t, store).Read("mem-legacy")
 	if !ok || ResolveActivation(loaded) != ActivationPinned {
 		t.Fatalf("legacy guidance should load virtually pinned, got %+v", loaded)
 	}
@@ -110,7 +110,7 @@ func TestUnpinPersistsExplicitRelevantForLegacyGuidance(t *testing.T) {
 	if _, err := store.SaveWithOptions(loaded, SaveOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	after, _ := store.Read("mem-legacy")
+	after, _ := mustStore(t, store).Read("mem-legacy")
 	if ResolveActivation(after) != ActivationRelevant {
 		t.Fatalf("unpin must stick across reloads (explicit activation persisted), got %+v", after)
 	}
@@ -129,7 +129,7 @@ func TestIndexMarksPinnedFacts(t *testing.T) {
 	}, SaveOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	index := store.Index()
+	index := mustStore(t, store).Index()
 	if !strings.Contains(index, "[project/project pinned]") {
 		t.Fatalf("index must mark pinned facts:\n%s", index)
 	}

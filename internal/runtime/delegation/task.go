@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"reasonix/internal/runtime/agent"
-	"reasonix/internal/runtime/langpref"
 	"reasonix/internal/runtime/usecap"
 	"reasonix/internal/runtime/writeclaim"
 	"reasonix/internal/state/sessionstore"
@@ -53,7 +52,7 @@ const subagentToolBoundarySummary = "Recursive agent/skill tools are exposed onl
 // maxConcurrentBackgroundTasks is the legacy writer-background fallback used
 // only when a TaskTool has no session scheduler (tests). Production boots
 // inject MaxParallelWriters via SubagentScheduler.
-const maxConcurrentBackgroundTasks = writeclaim.DefaultMaxParallelWriters
+const maxConcurrentBackgroundTasks = 3
 
 // TaskTool spawns a sub-agent in its own session for a focused sub-task. The
 // sub-agent runs with a filtered tool whitelist and the same step budget shape
@@ -82,6 +81,7 @@ type TaskTool struct {
 	resolveProvider               func(modelRef, effort string) (provider.Provider, *provider.Pricing, int, error)
 	transcripts                   *SubagentStore
 	workspaceRoot                 string
+	optimisticClaims              bool
 	extraRoots                    []string
 	baseModel, baseEffort         string
 	identityProfile               func(modelRef, effort string) (string, string)
@@ -102,6 +102,10 @@ type TaskTool struct {
 	// bashSandboxEnforced reports whether OS sandbox can honour write roots
 	// for bash inside path-bound writer sub-agents.
 	bashSandboxEnforced func() bool
+	// childTools names the tools a child gains from the model it runs on, beyond
+	// what the parent holds: a tool the parent's model has no use for is not in
+	// the parent's registry, so a child on another model would never see it.
+	childTools func(modelRef string) []tool.Tool
 	// mutationObserver is shared with spawned sub-agents for checkpoint capture.
 	mutationObserver *checkpoint.MutationObserver
 	// recoveryGate is the shared Auto Guard boundary for
@@ -111,7 +115,8 @@ type TaskTool struct {
 	// sub-agent gets its own use_capability frontend so ledger state stays
 	// isolated while connections reuse the parent Host.
 	capabilityRuntime *usecap.MCPCapabilityRuntime
-	isolated          *taskIsolation               // nil unless the session offers worktree isolation
+	isolated          *taskIsolation // nil unless the session offers worktree isolation
+	checkTargetAccess tool.TargetAccessCheck
 	hooksForRole      func(string) agent.ToolHooks // nil: children fire no hooks
 }
 
@@ -130,6 +135,7 @@ type TaskToolOptions struct {
 	Temperature                           float64
 	ContextEditing, ArchiveDir, SysPrompt string
 	Gate                                  agent.Gate
+	CheckTargetAccess                     tool.TargetAccessCheck
 	KeepPolicy                            agent.KeepPolicy
 	SubagentModel                         string
 	SubagentEffort                        string
@@ -149,25 +155,26 @@ func NewTaskToolWithOptions(opts TaskToolOptions) *TaskTool {
 		sysPrompt = DefaultTaskSystemPrompt
 	}
 	return &TaskTool{
-		prov:             opts.Provider,
-		pricing:          opts.Pricing,
-		parentReg:        opts.ParentRegistry,
-		maxSteps:         opts.MaxSteps,
-		contextWindow:    opts.ContextWindow,
-		recentKeep:       opts.RecentKeep,
-		budgets:          opts.CompactionBudgets,
-		compactRatio:     opts.CompactRatio,
-		temperature:      opts.Temperature,
-		archiveDir:       opts.ArchiveDir,
-		keepPolicy:       opts.KeepPolicy,
-		sysPrompt:        sysPrompt,
-		gate:             opts.Gate,
-		hooksForRole:     opts.HooksForRole,
-		subagentModel:    opts.SubagentModel,
-		subagentEffort:   opts.SubagentEffort,
-		inheritedEffort:  opts.InheritedEffort,
-		resolveProvider:  opts.ResolveProvider,
-		maxSubagentDepth: agent.DefaultMaxSubagentDepth,
+		prov:              opts.Provider,
+		pricing:           opts.Pricing,
+		parentReg:         opts.ParentRegistry,
+		maxSteps:          opts.MaxSteps,
+		contextWindow:     opts.ContextWindow,
+		recentKeep:        opts.RecentKeep,
+		budgets:           opts.CompactionBudgets,
+		compactRatio:      opts.CompactRatio,
+		temperature:       opts.Temperature,
+		archiveDir:        opts.ArchiveDir,
+		keepPolicy:        opts.KeepPolicy,
+		sysPrompt:         sysPrompt,
+		gate:              opts.Gate,
+		checkTargetAccess: opts.CheckTargetAccess,
+		hooksForRole:      opts.HooksForRole,
+		subagentModel:     opts.SubagentModel,
+		subagentEffort:    opts.SubagentEffort,
+		inheritedEffort:   opts.InheritedEffort,
+		resolveProvider:   opts.ResolveProvider,
+		maxSubagentDepth:  agent.DefaultMaxSubagentDepth,
 	}
 }
 
@@ -179,27 +186,44 @@ func NewTaskToolWithOptions(opts TaskToolOptions) *TaskTool {
 // interactive prompt (there is no UI to answer one).
 //
 // Compatibility wrapper: new call sites should prefer NewTaskToolWithOptions.
-// The positional form is kept for at least one full iteration cycle.
+// An omitted or nil access check refuses file-target calls.
 func NewTaskTool(prov provider.Provider, pricing *provider.Pricing, parentReg *tool.Registry,
 	maxSteps, contextWindow, recentKeep int, compactRatio, temperature float64, archiveDir, sysPrompt string, gate agent.Gate,
-	keepPolicy agent.KeepPolicy, subagentModel, subagentEffort string, resolveProvider func(string, string) (provider.Provider, *provider.Pricing, int, error)) *TaskTool {
+	keepPolicy agent.KeepPolicy, subagentModel, subagentEffort string, resolveProvider func(string, string) (provider.Provider, *provider.Pricing, int, error), targetAccess ...tool.TargetAccessCheck) *TaskTool {
 	return NewTaskToolWithOptions(TaskToolOptions{
-		Provider:        prov,
-		Pricing:         pricing,
-		ParentRegistry:  parentReg,
-		MaxSteps:        maxSteps,
-		ContextWindow:   contextWindow,
-		RecentKeep:      recentKeep,
-		CompactRatio:    compactRatio,
-		Temperature:     temperature,
-		ArchiveDir:      archiveDir,
-		SysPrompt:       sysPrompt,
-		Gate:            gate,
-		KeepPolicy:      keepPolicy,
-		SubagentModel:   subagentModel,
-		SubagentEffort:  subagentEffort,
-		ResolveProvider: resolveProvider,
+		Provider:          prov,
+		Pricing:           pricing,
+		ParentRegistry:    parentReg,
+		MaxSteps:          maxSteps,
+		ContextWindow:     contextWindow,
+		RecentKeep:        recentKeep,
+		CompactRatio:      compactRatio,
+		Temperature:       temperature,
+		ArchiveDir:        archiveDir,
+		SysPrompt:         sysPrompt,
+		Gate:              gate,
+		CheckTargetAccess: legacyTaskTargetAccess(targetAccess),
+		KeepPolicy:        keepPolicy,
+		SubagentModel:     subagentModel,
+		SubagentEffort:    subagentEffort,
+		ResolveProvider:   resolveProvider,
 	})
+}
+
+// WithOptimisticClaims makes a writer that declared no write_paths take an
+// optimistic claim: it reserves nothing up front and holds only the path of the
+// write in progress. The default is the strict whole-workspace claim.
+func (t *TaskTool) WithOptimisticClaims(on bool) *TaskTool {
+	t.optimisticClaims = on
+	return t
+}
+
+// UndeclaredWriteClaim is the claim a writer takes when it names no paths.
+func (t *TaskTool) UndeclaredWriteClaim() (writeclaim.WritePathSet, error) {
+	if t.optimisticClaims {
+		return writeclaim.OptimisticWorkspaceClaim(t.workspaceRoot)
+	}
+	return writeclaim.WholeWorkspaceWriteClaim(t.workspaceRoot)
 }
 
 // WithTranscripts enables persisted sub-agent transcript continuation for this
@@ -280,6 +304,14 @@ func (t *TaskTool) WithProfileConfigResolvers(model, effort func(profile string)
 // the same write roots under the OS sandbox.
 func (t *TaskTool) WithBashSandboxEnforced(fn func() bool) *TaskTool {
 	t.bashSandboxEnforced = fn
+	return t
+}
+
+// WithChildTools supplies the tools a child gets because of its own model (an
+// image reader for a model that reads images). The parent's tool block is not
+// touched; only the child's registry is.
+func (t *TaskTool) WithChildTools(fn func(modelRef string) []tool.Tool) *TaskTool {
+	t.childTools = fn
 	return t
 }
 
@@ -364,7 +396,7 @@ func (r *ReadOnlyTaskTool) Execute(ctx context.Context, args json.RawMessage) (s
 	return r.task.RunProfileSpec(ctx, spec)
 }
 
-func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+func (t *TaskTool) executeTask(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
 		Prompt          string   `json:"prompt"`
 		Description     string   `json:"description"`
@@ -478,7 +510,7 @@ func (t *TaskTool) resolveWriterClaims(writePaths []string, requireClaim bool) (
 	if !requireClaim {
 		return writeclaim.WritePathSet{}, nil
 	}
-	return writeclaim.WholeWorkspaceWriteClaim(t.workspaceRoot)
+	return t.UndeclaredWriteClaim()
 }
 
 // settleSpecPrompts rejects a run with nothing to do and fills in the system
@@ -524,7 +556,7 @@ func (t *TaskTool) RunProfileSpec(ctx context.Context, spec ProfileExecSpec) (re
 	if err := t.settleSpecPrompts(&spec); err != nil {
 		return "", err
 	}
-
+	ctx = agent.BindTaskImages(ctx, spec.Task.Objective)
 	maxSteps := t.childMaxStepsForContext(ctx, spec.Sched.MaxSteps)
 	childDepth, err := t.nextSubagentDepth(ctx)
 	if err != nil {
@@ -535,12 +567,12 @@ func (t *TaskTool) RunProfileSpec(ctx context.Context, spec ProfileExecSpec) (re
 	// it and widen it with the user's answer; the audit at the end reads the
 	// same object, so a path the user granted is not reported as an escape.
 	writeGrant := writeclaim.NewWriteGrant(spec.Grant.WritePaths)
-	subReg, err := t.subRegistryFor(&spec, childDepth, writeGrant)
+	modelRef, effortRef := t.childRuntimeRef(ctx, spec.Worker.Model, spec.Worker.Effort)
+	subReg, err := t.childRegistry(&spec, childDepth, writeGrant, modelRef)
 	if err != nil {
 		return "", err
 	}
-	modelRef, effortRef := agent.VisionRefFor(ctx, spec.Worker.Model), spec.Worker.Effort
-	usageModelRef := t.usageModelRef(modelRef, effortRef)
+	usageModelRef := t.identifyChild(trk, modelRef, effortRef)
 	parentID, _, _, _ := agent.CallContext(ctx)
 	prov, pricing, ctxWin, err := t.resolveSubSessionRuntime(modelRef, effortRef)
 	if err != nil {
@@ -602,7 +634,7 @@ func (t *TaskTool) RunProfileSpec(ctx context.Context, spec ProfileExecSpec) (re
 		if spec.Grant.ReadOnly {
 			return t.runReadOnlySubSession(withUpstream(runCtx, spec.Context.Upstream), spec.Task.Objective, subReg, sink, maxSteps, prov, pricing, ctxWin, run.Session, childDepth, recoveryTaskID, usageModelRef, mutationObserver, "read_only_"+spec.Worker.Kind, grant)
 		}
-		return t.runSubSession(withUpstream(writeclaim.WithSubagentWriteGrant(runCtx, writeGrant), spec.Context.Upstream), spec.Task.Objective, subReg, sink, maxSteps, prov, pricing, ctxWin, run.Session, childDepth, recoveryTaskID, usageModelRef, mutationObserver, spec.Worker.Kind, grant, t.observeRootFor(backgroundWriter, writeGrant))
+		return t.runSubSession(t.withChildEffort(withUpstream(writeclaim.WithSubagentWriteGrant(runCtx, writeGrant), spec.Context.Upstream), ctx, modelRef, effortRef), spec.Task.Objective, subReg, sink, maxSteps, prov, pricing, ctxWin, run.Session, childDepth, recoveryTaskID, usageModelRef, mutationObserver, spec.Worker.Kind, grant, t.observeRootFor(backgroundWriter, writeGrant))
 	}
 
 	if spec.Sched.RunInBackground {
@@ -748,52 +780,6 @@ func (t *TaskTool) bashCanEnforceWriteRoots() bool {
 	return false
 }
 
-func (t *TaskTool) prepareTranscriptRunWithPrompt(ctx context.Context, subReg *tool.Registry, modelRef, effortRef, parentSession, execution, parentID, continueFrom, legacyForkFrom, systemPrompt, kind, name string) (*SubagentRun, error) {
-	continueFrom = strings.TrimSpace(continueFrom)
-	legacyForkFrom = strings.TrimSpace(legacyForkFrom)
-	parentSession = strings.TrimSpace(parentSession)
-	if continueFrom != "" && legacyForkFrom != "" {
-		return nil, fmt.Errorf("continue_from and fork_from are mutually exclusive; pass only continue_from")
-	}
-	if t.transcripts == nil {
-		return nil, fmt.Errorf("subagent transcript store is required")
-	}
-	if systemPrompt == "" {
-		systemPrompt = t.sysPrompt
-	}
-	kind = firstNonEmpty(kind, "task")
-	name = firstNonEmpty(name, "task")
-	if parentSession == "" {
-		if continueFrom != "" || legacyForkFrom != "" {
-			return nil, fmt.Errorf("subagent continuation requires a persisted session; none is active in this run")
-		}
-		return EphemeralSubagentRun(systemPrompt), nil
-	}
-	identityModel, identityEffort := t.effectiveIdentity(modelRef, effortRef)
-	spec := SubagentSpec{
-		Kind:             kind,
-		Name:             name,
-		WorkspaceRoot:    t.workspaceRoot,
-		ParentSession:    parentSession,
-		ExecutionID:      execution,
-		ParentToolCallID: parentID,
-		SystemPrompt:     systemPrompt,
-		Registry:         subReg,
-		ToolContext:      childToolIdentityContext(ctx),
-		Model:            identityModel,
-		Effort:           identityEffort,
-		ResumedFrom:      firstNonEmpty(continueFrom, legacyForkFrom),
-		UpstreamFrom:     upstreamSources(upstreamFromContext(ctx)),
-	}
-	if continueFrom != "" {
-		return t.transcripts.PrepareContinue(continueFrom, spec)
-	}
-	if legacyForkFrom != "" {
-		return t.transcripts.PrepareLegacyForkFrom(legacyForkFrom, spec)
-	}
-	return t.transcripts.PrepareFresh(spec)
-}
-
 func childToolIdentityContext(ctx context.Context) context.Context {
 	ctx = tool.WithoutGoalTurnRecorder(ctx)
 	ctx = memory.WithoutQueue(ctx)
@@ -873,8 +859,9 @@ func (t *TaskTool) resolveSubSessionRuntime(modelRef, effort string) (provider.P
 }
 
 func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *tool.Registry, sink event.Sink, maxSteps int, prov provider.Provider, pricing *provider.Pricing, ctxWin int, sess *sessionstore.Session, childDepth int, recoveryTaskID, modelRef string, mutationObserver *checkpoint.MutationObserver, entrance string, grant agent.ReviewReportGrant, observeRoot string) (string, error) {
-	opts := t.subagentOptions(ctx, maxSteps, pricing, ctxWin, childDepth, recoveryTaskID, mutationObserver)
+	opts := t.steerable(t.subagentOptions(ctx, maxSteps, pricing, ctxWin, childDepth, recoveryTaskID, mutationObserver), sess)
 	opts.ModelRef = modelRef
+	opts.RequestEffort, _ = ctx.Value(childEffortKey{}).(string)
 	opts.ObserveRoot = observeRoot
 	opts.RequireReviewReportKind = grant.Delivery
 	// Capture the pristine task before host framing is prepended: delivery
@@ -889,45 +876,10 @@ func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *too
 }
 
 func (t *TaskTool) runReadOnlySubSession(ctx context.Context, prompt string, subReg *tool.Registry, sink event.Sink, maxSteps int, prov provider.Provider, pricing *provider.Pricing, ctxWin int, sess *sessionstore.Session, childDepth int, recoveryTaskID, modelRef string, mutationObserver *checkpoint.MutationObserver, entrance string, grant agent.ReviewReportGrant) (string, error) {
-	opts := t.subagentOptions(ctx, maxSteps, pricing, ctxWin, childDepth, recoveryTaskID, mutationObserver)
+	opts := t.steerable(t.subagentOptions(ctx, maxSteps, pricing, ctxWin, childDepth, recoveryTaskID, mutationObserver), sess)
 	opts.RequireReviewReportKind = grant.Delivery
 	ctx, prompt, opts = t.prepareSubSession(ctx, prompt, opts, modelRef, entrance)
 	return agent.RunReadOnlySubAgentWithSession(ctx, prov, subReg, sess, prompt, opts, sink)
-}
-
-// subagentOptions is the single construction point for the run options every
-// sub-agent spawned through this tool shares (task, read_only_task, and
-// parallel_tasks children). Compaction, language preferences, and depth limits
-// must stay uniform across those paths — add new fields here, not at call sites.
-func (t *TaskTool) subagentOptions(ctx context.Context, maxSteps int, pricing *provider.Pricing, ctxWin, childDepth int, recoveryTaskID string, mutationObserver *checkpoint.MutationObserver) agent.Options {
-	opts := agent.Options{
-		MaxSteps:          maxSteps,
-		Temperature:       t.temperature,
-		Pricing:           pricing,
-		UsageSource:       event.UsageSourceSubagent,
-		Gate:              t.gate,
-		ContextWindow:     ctxWin,
-		RecentKeep:        t.recentKeep,
-		CompactionBudgets: t.budgets,
-		CompactRatio:      t.compactRatio,
-		ArchiveDir:        t.archiveDir,
-		KeepPolicy:        t.keepPolicy,
-		ResponseLanguage:  langpref.ResponseLanguageFromContext(ctx),
-		ReasoningLanguage: langpref.ReasoningLanguageFromContext(ctx),
-		SubagentDepth:     childDepth,
-		MaxSubagentDepth:  t.maxDepth(),
-		DeliveryProfile:   t.deliveryProfile,
-		Ablation:          t.ablation,
-		WorkspaceLease:    t.workspaceLease,
-		RecoveryGate:      t.recoveryGate,
-		RecoveryAgentID:   "subagent",
-		RecoveryTaskID:    recoveryTaskID,
-		MutationObserver:  mutationObserver,
-	}
-	if t.hooksForRole != nil {
-		opts.Hooks = t.hooksForRole(recoveryTaskID)
-	}
-	return t.withExtraRoots(opts)
 }
 
 func subagentRecoveryTaskID(ctx context.Context, ref string) string {

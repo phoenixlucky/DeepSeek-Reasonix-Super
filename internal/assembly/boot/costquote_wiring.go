@@ -5,6 +5,7 @@ import (
 	"reasonix/internal/contract/config"
 	"reasonix/internal/contract/event"
 	"reasonix/internal/contract/pricing"
+	"reasonix/internal/platform/otlp"
 	"reasonix/internal/state/stats"
 )
 
@@ -12,8 +13,8 @@ import (
 // CLI metrics, ACP/eventwire bridges, Desktop — reads the same
 // occurrence-time quote. Order from the agent:
 //
-//	Coalesce → GoalUsageTee → Sync → CostQuote → [Recorder] → frontend
-func quotedSink(cfg *config.Config, opts Options) (event.Sink, *event.QuoteContext) {
+//	Coalesce → GoalUsageTee → Sync → CostQuote → [Recorder] → [OTLP] → frontend
+func quotedSink(cfg *config.Config, opts Options, trace *otlp.Exporter) (event.Sink, *event.QuoteContext) {
 	ctx := &event.QuoteContext{
 		DisplayRequest: pricing.DisplayRequest{
 			Currency: cfg.ExplicitDisplayCurrency(),
@@ -33,7 +34,7 @@ func quotedSink(cfg *config.Config, opts Options) (event.Sink, *event.QuoteConte
 	}
 	// Innermost is the frontend sink; the recorder sits after quoting so history
 	// JSONL stores the CostQuote.
-	quoted := opts.Sink
+	quoted := otlp.NewSink(opts.Sink, trace, "reasonix")
 	if opts.StatsSource.Valid() {
 		quoted = stats.NewRecorder(quoted, opts.roots().StatsDir(), opts.StatsSource.String())
 	}

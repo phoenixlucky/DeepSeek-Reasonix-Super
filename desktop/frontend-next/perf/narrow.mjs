@@ -32,6 +32,17 @@ const probe = (page) =>
     };
     const outside = (parent) =>
       [...parent.children].filter((el) => live(el) && live(el).right > innerWidth + 1).map(name);
+    const flatOverlaps = (els) => {
+      const boxes = els.map((el) => [el, live(el)]).filter(([, r]) => r);
+      const hits = [];
+      for (let i = 0; i < boxes.length; i++)
+        for (let j = i + 1; j < boxes.length; j++) {
+          const x = Math.min(boxes[i][1].right, boxes[j][1].right) - Math.max(boxes[i][1].left, boxes[j][1].left);
+          const y = Math.min(boxes[i][1].bottom, boxes[j][1].bottom) - Math.max(boxes[i][1].top, boxes[j][1].top);
+          if (x > 1 && y > 1) hits.push(`${name(boxes[i][0])}/${name(boxes[j][0])}`);
+        }
+      return hits;
+    };
     const bar = document.querySelector(".chrome");
     const row = document.querySelector(".compose .row");
     const tools = document.querySelector(".compose .turntools");
@@ -42,7 +53,11 @@ const probe = (page) =>
     return {
       bar: { overlaps: overlaps(bar).concat(overlaps(bar.querySelector(".r"))), outside: outside(bar).concat(outside(bar.querySelector(".r"))) },
       row: { overlaps: overlaps(row), outside: outside(row) },
+      viewSwitch: [...bar.querySelectorAll(".view-action")].map((el) => el.getAttribute("data-value")),
+      sideAsk: (() => { const el = tools.querySelector('[data-action="side.toggle"]'); const r = el && live(el); return r ? { w: r.width, h: r.height } : null; })(),
+      toolsOverlaps: flatOverlaps([...tools.children]),
       toolsOverflow: [...tools.children].filter((el) => live(el) && live(el).right > tools.getBoundingClientRect().right + 1).map(name),
+      toolsOverlap: flatOverlaps([...tools.querySelectorAll("button")]),
       titleShown: t.width,
       titleOutsideCrumb: t.width > 0 && (t.left < clip.left - 1 || t.right > clip.right + 1),
       crumbWidth: clip.width,
@@ -50,7 +65,7 @@ const probe = (page) =>
     };
   });
 
-const CONTROLS = [".phone-action", ".find-action", ".theme-toggle", ".top-action", ".browser-action"];
+const CONTROLS = [".phone-action", ".find-action", ".theme-toggle", ".top-action", ".view-action"];
 
 // Opens the fold when there is one, then presses nothing: asks whether each control is on screen with nothing over it.
 async function reachable(page) {
@@ -93,8 +108,30 @@ const browser = await chromium.launch();
   check("at every room from 190 to 460 the title keeps its 4em floor", bad.length === 0, bad.join(" "));
   await page.close();
 }
+// A running turn swaps Send for Stop, which is wider; the toolbar must still sit on one line at every column width.
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto(`${BASE}?pref=zh&turns=2`, { waitUntil: "networkidle" });
+  await page.waitForSelector(".compose");
+  await page.fill('textarea[role="combobox"]', "hello");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".btn.stop");
+  const bad = [];
+  for (let room = 420; room <= 760; room += 20) {
+    await page.setViewportSize({ width: room, height: 800 });
+    await page.waitForTimeout(150);
+    const lines = await page.evaluate(() => {
+      const seen = [...document.querySelectorAll(".compose .row button")].filter((el) => el.getBoundingClientRect().width > 0 && el.checkVisibility());
+      const mids = seen.map((el) => { const r = el.getBoundingClientRect(); return r.top + r.height / 2; }).sort((a, b) => a - b);
+      return mids.filter((m, i) => i === 0 || m - mids[i - 1] > 6).length;
+    });
+    if (lines !== 1) bad.push(`${room}:${lines}`);
+  }
+  check("while a turn runs, the composer toolbar stays on one line from 420 to 760", bad.length === 0, bad.join(" "));
+  await page.close();
+}
 for (const scheme of ["light", "dark"]) {
-  for (const [width, zoom] of [[390, 1.8], [390, 1.3], [320, 1.8], [1280, 1]]) {
+  for (const [width, zoom] of [[390, 1.8], [390, 1.3], [390, 1], [320, 1.8], [320, 1], [1280, 1]]) {
     const page = await browser.newPage({ viewport: { width, height: 800 }, colorScheme: scheme, reducedMotion: "reduce" });
     page.setDefaultTimeout(8000);
     page.on("pageerror", (e) => fails.push("page error: " + e.message));
@@ -106,8 +143,12 @@ for (const scheme of ["light", "dark"]) {
     const m = await probe(page);
     check(`${tag}: title bar controls do not overlap`, m.bar.overlaps.length === 0, m.bar.overlaps.join(", "));
     check(`${tag}: title bar stays inside the window`, m.bar.outside.length === 0, m.bar.outside.join(", "));
+    check(`${tag}: the workbench switch is on the bar`, m.viewSwitch.includes("browser"), JSON.stringify(m.viewSwitch));
     check(`${tag}: composer row does not overlap`, m.row.overlaps.length === 0, m.row.overlaps.join(", "));
+    check(`${tag}: the side question icon is drawn in the toolbar`, !!m.sideAsk && m.sideAsk.w > 0 && m.sideAsk.h > 0, JSON.stringify(m.sideAsk));
+    check(`${tag}: composer toolbar controls do not overlap`, m.toolsOverlaps.length === 0, m.toolsOverlaps.join(", "));
     check(`${tag}: composer toolbar controls stay in the toolbar`, m.toolsOverflow.length === 0, m.toolsOverflow.join(", "));
+    check(`${tag}: composer toolbar buttons do not overlap`, m.toolsOverlap.length === 0, m.toolsOverlap.join(", "));
     check(`${tag}: the title keeps its 4em floor inside its own box`, m.crumbWidth >= 48 && !m.titleOutsideCrumb, `crumb ${Math.round(m.crumbWidth)}px`);
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/${process.env.NARROW_TAG ?? "shot"}-${scheme}-${width}-z${zoom}.png` });
     const hint = await page.evaluate(() => {

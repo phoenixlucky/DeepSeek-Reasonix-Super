@@ -23,8 +23,12 @@ type taskRuntime struct {
 	contract       *contract.Contract
 	contractRecord string
 	ledger         *evidence.Ledger
-	outcome        *evidence.OutcomeTracker
-	budget         runBudget
+	// origins keeps the text of this task's external results, apart from the messages.
+	origins *originLedger
+	// explained holds the obligations whose full explanation an ended turn already carried.
+	explained []string
+	outcome   *evidence.OutcomeTracker
+	budget    runBudget
 	// witness holds, per changed path, the lines a later output has to carry to
 	// have shown that change. It is working state, not evidence: the verdict
 	// lands on the receipt, so the ledger never holds file content.
@@ -44,8 +48,9 @@ type taskRuntime struct {
 
 func newTaskRuntime(limit TaskBudget) taskRuntime {
 	return taskRuntime{
-		ledger: evidence.NewLedger(),
-		budget: runBudget{limit: normalizeTaskBudget(limit)},
+		ledger:  evidence.NewLedger(),
+		origins: &originLedger{},
+		budget:  runBudget{limit: normalizeTaskBudget(limit)},
 	}
 }
 
@@ -90,6 +95,7 @@ func (t *taskRuntime) restartLedger() {
 		scopeID:       t.scopeID,
 		checkpoint:    t.checkpoint,
 		ledger:        t.ledger,
+		origins:       &originLedger{},
 		outcome:       evidence.NewOutcomeTracker(),
 		budget:        runBudget{limit: t.budget.limit},
 		overScanLimit: new(atomic.Bool),

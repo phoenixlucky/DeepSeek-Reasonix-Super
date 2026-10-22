@@ -31,8 +31,12 @@ type ShellOption struct {
 // probed instead of listed from a fixed table — offering a shell the host does
 // not have is a switch that breaks every command it accepts.
 type ShellSettings struct {
-	Prefer    string      `json:"prefer"`
-	Path      string      `json:"path,omitempty"`
+	Prefer string `json:"prefer"`
+	Path   string `json:"path,omitempty"`
+	// Args are the saved launcher arguments for Path, and Argv the exact command
+	// line that was run to verify them when they are in force.
+	Args      []string    `json:"args,omitempty"`
+	Argv      []string    `json:"argv,omitempty"`
 	Effective ShellOption `json:"effective"`
 	// Auto is what detection picks here, so "自动" can name its own outcome.
 	Auto     ShellOption   `json:"auto"`
@@ -44,23 +48,29 @@ type ShellSettings struct {
 // beside it.
 func (c *Controller) ShellSettings() ShellSettings {
 	prefer, path := "auto", ""
+	var args []string
 	if cfg, err := config.Load(); err == nil {
 		if p := strings.TrimSpace(cfg.Tools.Shell.Prefer); p != "" {
 			prefer = strings.ToLower(p)
 		}
 		path = strings.TrimSpace(cfg.Tools.Shell.Path)
+		args = cfg.Tools.Shell.Args
 	}
 	auto := sandbox.ResolveShell("", "", nil)
 	effective := auto
 	if prefer != "auto" || path != "" {
-		effective = sandbox.ResolveShell(prefer, path, nil)
+		effective = sandbox.ShellDiscovery{Prefer: prefer, Path: path, Args: args}.Resolve()
 	}
 	out := ShellSettings{
 		Prefer:    prefer,
 		Path:      path,
+		Args:      args,
 		Effective: shellOption(effective),
 		Auto:      shellOption(auto),
 		Platform:  shellrun.DescriptorFromShell(auto).Platform,
+	}
+	if got := effective.Args(); len(got) > 0 {
+		out.Argv = append([]string{effective.Path}, got...)
 	}
 	for _, sh := range sandbox.DetectShells() {
 		out.Options = append(out.Options, shellOption(sh))
@@ -109,14 +119,18 @@ func gitInstallRoot(path string) string {
 // path that cannot execute is refused on the screen that typed it rather than
 // on every command afterwards. The caller rebuilds the runtime, because boot
 // binds the interpreter into the shell tool while assembling it.
-func (c *Controller) SaveShellSettings(prefer, path string) error {
-	if err := sandbox.VerifyShell(prefer, path); err != nil {
+func (c *Controller) SaveShellSettings(prefer, path string, args ...string) error {
+	if len(args) > 0 {
+		if _, err := sandbox.VerifyLauncher(prefer, path, args); err != nil {
+			return fmt.Errorf("这个 shell 用不了：%w", err)
+		}
+	} else if err := sandbox.VerifyShell(prefer, path); err != nil {
 		return fmt.Errorf("这个 shell 用不了：%w", err)
 	}
 	unlock := config.LockUserConfigEdits()
 	defer unlock()
 	cfg := config.LoadForEdit(config.UserConfigPath())
-	if err := cfg.SetShell(prefer, path); err != nil {
+	if err := cfg.SetShell(prefer, path, args...); err != nil {
 		return err
 	}
 	return cfg.SaveTo(config.UserConfigPath())
@@ -210,6 +224,10 @@ func (c *Controller) RunShell(command string) {
 
 // RunShellWith is RunShell with how the command is followed up spelled out.
 func (c *Controller) RunShellWith(command string, opts ShellRun) {
+	if binding := c.CompositionBinding(); binding != nil && !compositionAllowsTool(binding, "bash") {
+		c.notice("shell is unavailable in this Agent composition")
+		return
+	}
 	command = strings.TrimSpace(command)
 	if command == "" {
 		c.notice(i18n.M.ShellExecEmpty)
@@ -249,6 +267,7 @@ func (c *Controller) RunShellWith(command string, opts ShellRun) {
 		res := shellrun.RunForeground(ctx, shellrun.Request{
 			Argv:           argv,
 			Dir:            c.workspaceRoot,
+			Env:            shellrun.CommandEnv(ctx),
 			Timeout:        shellTimeout,
 			WaitDelay:      shellWaitDelay,
 			CommandPreview: diagnosticPreview,

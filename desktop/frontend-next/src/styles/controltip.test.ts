@@ -40,8 +40,8 @@ describe("the shared control tooltip", () => {
     expect(dimmed.map((r) => r.selector)).toEqual([]);
   });
 
-  it("keeps a disabled refine button's glyph dimmed", () => {
-    const glyph = rules().find((r) => r.selector === ".studio-refine[disabled] > .studio-icon");
+  it("keeps an unavailable refine button's glyph dimmed", () => {
+    const glyph = rules().find((r) => r.selector === '.studio-refine[aria-disabled="true"] > .studio-icon');
     expect(glyph?.decls.get("opacity")).toBe(".35");
   });
 });

@@ -333,7 +333,7 @@ func (t *Tool) pluginPackageAction(req request, pkg pluginpkg.Package, source st
 	}
 	skills, commands, hooks, mcp := pkg.CapabilityCounts()
 	agents := pkg.Inventory().Agents
-	if pkg.ManifestKind != "reasonix" && skills+commands+hooks+mcp+len(agents) == 0 {
+	if pkg.ManifestKind != "reasonix" && skills+commands+hooks+mcp+len(agents)+len(pkg.Manifest.Mods) == 0 {
 		return action{}, newErr(ErrNoCompatibleCapabilities, "plugin %q has no Reasonix-compatible capabilities; skipped: %v", name, pkg.Compatibility.Skipped)
 	}
 	agentNames := make([]string, 0, len(agents))
@@ -383,6 +383,11 @@ func (t *Tool) pluginPackageAction(req request, pkg pluginpkg.Package, source st
 	if a.Runtime != nil {
 		a.RiskLevel = RiskHigh
 		a.RiskReasons = append(a.RiskReasons, "FULL TRUST: declares a runtime process that runs inside Reasonix — it can read the full session and environment, bypass permissions, and operate this machine directly. Command: "+hostLiteral(pluginpkg.RuntimeCommandLine(pkg.Manifest.Runtime)))
+	}
+	if len(pkg.Manifest.Mods) > 0 {
+		a.RiskLevel = RiskHigh
+		a.RiskReasons = append(a.RiskReasons, "FULL TRUST: a Claude Code mod — its hooks module runs on this machine as you, with no sandbox, when \"Run Claude Code mods\" is on; the listing below is read from the module's syntax tree and is not a guarantee of what it does")
+		a.Mod = modPreview(pkg)
 	}
 	slices.Sort(a.Skills)
 	slices.Sort(a.Agents)
@@ -469,7 +474,7 @@ func (t *Tool) applyInstallPluginPackage(ctx context.Context, req request, act *
 	}
 	if pkg.ManifestKind != "reasonix" {
 		skills, commands, hooks, mcp := pkg.CapabilityCounts()
-		if skills+commands+hooks+mcp+pkg.AgentCount() == 0 {
+		if skills+commands+hooks+mcp+pkg.AgentCount()+len(pkg.Manifest.Mods) == 0 {
 			return newErr(ErrInvalidManifest, "plugin %q no longer has any Reasonix-compatible capabilities", act.Name)
 		}
 	}

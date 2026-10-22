@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useModalFocus } from "./useModalFocus";
 import { createPortal } from "react-dom";
 import { t } from "../i18n";
 import { reason } from "../i18n/kernel";
@@ -29,6 +30,8 @@ interface Props {
  *  containing block for anything fixed inside it — the overlay would be trapped
  *  in a 320px column. */
 export function ChangePreview({ port, path, onClose }: Props) {
+  const sheet = useRef<HTMLDivElement>(null);
+  useModalFocus(sheet);
   const [diff, setDiff] = useState<string | null>(null);
   const [truncated, setTruncated] = useState(false);
   const [failed, setFailed] = useState("");
@@ -66,7 +69,7 @@ export function ChangePreview({ port, path, onClose }: Props) {
       onMouseDown={(e) => { veiled.current = e.target === e.currentTarget; }}
       onMouseUp={(e) => { if (veiled.current && e.target === e.currentTarget) onClose(); }}
     >
-      <div className="cpv-sheet" role="dialog" aria-modal="true" aria-label={path}>
+      <div ref={sheet} className="cpv-sheet" role="dialog" aria-modal="true" aria-label={path}>
         <div className="cpv-hd">
           <span className="p">{path}</span>
           <button className="btn sm" onClick={onClose}>

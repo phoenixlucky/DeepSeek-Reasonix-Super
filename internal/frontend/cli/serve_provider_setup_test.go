@@ -63,6 +63,7 @@ name = "remote-demo"
 kind = "openai"
 base_url = "https://example.invalid/v1"
 balance_url = "` + balanceServer.URL + `"
+balance_format = "deepseek"
 models = ["model-a"]
 default = "model-a"
 api_key_env = "REASONIX_TEST_REMOTE_MISSING_KEY"

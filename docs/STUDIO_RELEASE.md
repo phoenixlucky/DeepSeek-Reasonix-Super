@@ -25,10 +25,11 @@ Workflow: `.github/workflows/release-studio.yml`. Trigger: push of a `studio-vX.
 | P3 | `release-notes/studio/X.Y.Z.md` is in that commit and passes `make check`. | `git cat-file -e <sha>:release-notes/studio/X.Y.Z.md` |
 | P4 | The version is valid semver and above the latest tag. | `git tag -l 'studio-v*' --sort=-v:refname \| head -1` |
 | P5 | The Windows signing mode is known. `true` signs with Certum and blocks the release if signing fails; anything else ships unsigned and the body says so. | `gh variable list \| grep STUDIO_SIGNING` |
+| P6 | The DeepSeek Harness market index pins the current `integrations/dsh-plugin`. On failure run `node scripts/dsh-market-index.mjs --pin` and commit the index with the release notes. | `node scripts/dsh-market-index.mjs --check` |
 
 ## 3. Steps
 
-1. Write `release-notes/studio/X.Y.Z.md` (format in section 6), commit, push to `studio`.
+1. Gather `release-notes/studio/unreleased/*.md` (one file per pull request, named by its number, items named after it) into `release-notes/studio/X.Y.Z.md` (format in section 6), `git rm` the fragments in the same commit, push to `studio`.
 2. Wait until P2 holds for the commit that contains the notes.
 3. Tag the verified commit and push the tag:
 
@@ -53,7 +54,7 @@ Jobs in the run:
 | --- | --- | --- |
 | `resolve` | Validates the tag shape and that the commit is on `studio`. | fails on any other ref |
 | `signing-contract` | Validates `.signpath/contracts/release-signing.yml` against the workflows that reach the Certum credentials and prints its fingerprint. | fails on an undeclared signing workflow |
-| `build` | Builds windows/amd64, windows/arm64 (on a native `windows-11-arm` runner), darwin/amd64, darwin/arm64, linux/amd64; signs macOS. Every PE image in a Windows bundle must carry its architecture's machine type. With signing on, each Windows leg uploads its bundle instead of packaging it. | Apple secrets are required |
+| `build` | Builds windows/amd64, windows/arm64 (on a native `windows-11-arm` runner), darwin/amd64, darwin/arm64, linux/amd64, linux/arm64 (on a native `ubuntu-22.04-arm` runner, with a system-installed fpm because electron-builder's own is x86_64-only); signs macOS. Windows PE images and all Linux ELF images must match the package architecture. Linux packages pass installed-shell acceptance before upload. With signing on, each Windows leg uploads its bundle instead of packaging it. | Apple secrets are required |
 | `windows-sign-payload` | Only with `STUDIO_SIGNING_ENABLED=true`. One leg per architecture, run one after the other (`max-parallel: 1`). Refuses a bundle whose PE files differ from the declared list or are not all the leg's architecture, signs the release PE files, verifies them and the two Microsoft-signed DLLs, and records a digest of the whole signed tree as a job output. Installs no toolchain. | shared concurrency group `certum-signing`, environment `studio-release` |
 | `windows-package` | Builds each architecture's installer and zip from its signed tree as it came; the arm64 installer is packed with `ELECTRON_BUILDER_7Z_FILTER=BCJ`. Holds no secrets. | none |
 | `windows-verify-package` | Per architecture: checks the payload against the recorded digest, unpacks the zip and the installer, requires both trees to match the payload file for file and the installer to carry exactly its architecture's application archive, and outputs the SHA-256 of both packages. Holds no secrets and no environment. | none |
@@ -61,6 +62,7 @@ Jobs in the run:
 | `windows-install-smoke` | Runs `scripts/install-smoke.ps1` (the script pull requests run against the unsigned installer) with each architecture's installer on a runner of that architecture: silent per-user install, waits for the files to settle, checks the installed tree (the declared PE set, every image's architecture, the shell's own architecture, the kernel starting) and uninstalls. Holds no secrets and no environment. | `publish` waits for it |
 | `cli` | Builds `reasonix` archives for six OS/arch targets plus `SHA256SUMS`. | fails on a missing archive |
 | `publish` | Renders the notes with their authors, minisigns, writes `latest.json`, creates the GitHub release (a stable tag is GitHub latest only when it is the highest stable `studio-v*` tag; a candidate is a prerelease), mirrors to R2. `latest.json` goes to R2 only, never to the GitHub release. | environment `studio-release`; skipped unless `windows-install-smoke` and all four Windows signing jobs (every leg) succeeded, or signing is off (the smoke still runs); an unresolved `#N` stops it before signing |
+| `website` | Dispatches the `website` branch's Pages workflow after a stable publication, and waits for that deployment. / 正式版发布后触发 `website` 分支的官网工作流，并等待该次部署完成。 | official repository, stable releases only; requested version must appear in the generated changelog / 仅官方仓库正式版；生成的日志必须包含本次发布版本 |
 | `cli-gate` | Only with `STUDIO_PUBLISHES_CLI=true`. Requires `CLI_PUBLISH_FROZEN=true`. Checks out nothing and reads no secret. | fails while 1.x is not frozen, and then no other CLI job runs |
 | `cli-tag` | Only with `STUDIO_PUBLISHES_CLI=true`. For a stable or `-preview.N` version, creates the tag `vX.Y.Z` on the studio commit with the release tag identity (`RELEASE_TAG_TOKEN`, see below); an existing tag on that commit is kept, one elsewhere fails. | environment `studio-release`; runs after `publish` and `cli-gate`; checks out nothing, one inline step reads the token |
 | `cli-channels` | Only with `STUDIO_PUBLISHES_CLI=true` (unset today; 1.x owns the channels). Publishes `reasonix` and `@reasonix/cli-*` to npm with `--provenance`, then updates the Homebrew cask (not for a candidate). | no environment and no approval; `id-token: write` on this job only; runs after `publish`, `cli-gate` and `cli-tag` |
@@ -105,6 +107,24 @@ No other job requests `id-token` or references these two secrets, and no workflo
 
 Verify a published package with `npm view reasonix dist.attestations`: the attestation is present and names this repository.
 
+### Website changelog / 官网更新日志
+
+Every website build synchronizes missing published Studio releases before rendering.
+
+- Notes come verbatim from `release-notes/studio/X.Y.Z.md` at each release tag's commit, independently of the moving `studio` branch.
+- Sync errors or a missing requested version fail the build.
+- The release job dispatches Pages with `--ref website`, preserving the environment's branch restriction, and waits for the run identified by its release request ID.
+- The default branch's `pages.yml` only registers dispatch inputs; running it on `studio` fails.
+- Deploy the website changes before merging the Studio caller.
+
+每次官网构建都会先补齐已发布的 Studio 版本。
+
+- 原文取自各版本发布标签对应提交中的 `release-notes/studio/X.Y.Z.md`，不依赖持续变化的 `studio` 分支。
+- 同步失败或缺少本次发布版本时构建失败。
+- 发布任务通过 `--ref website` 触发官网部署，保留生产环境的分支限制，并按请求编号等待对应部署完成。
+- 默认分支的 `pages.yml` 仅注册触发参数，在 `studio` 上运行会失败。
+- 接入时先部署官网变更，再合并 Studio 调用方。
+
 ## 4. Verification
 
 | ID | Expected | Command |
@@ -116,6 +136,7 @@ Verify a published package with `npm view reasonix dist.attestations`: the attes
 | V5 | The manifest carries both Windows platforms, each resolving to its own installer. | `curl -s https://dl.reasonix.io/studio-vX.Y.Z/latest.json \| jq -r '.platforms["windows-amd64"].url, .platforms["windows-arm64"].url'` |
 | V6 | The arm64 installer is signed, and every PE image in it is ARM64 except the 32-bit `resources/elevate.exe` and uninstaller. | On Windows: `Get-AuthenticodeSignature ReasonixStudio-windows-arm64-installer.exe`, then `node desktop/electron/packaging/pe.js <unpacked-zip-dir> arm64` over the extracted portable zip. |
 | V7 | `windows-install-smoke` ran both legs and `windows-sign-payload` / `windows-sign-installer` each show an amd64 and an arm64 leg. | `gh run view <run> --json jobs --jq '.jobs[] \| select(.name \| test("Windows\|Certum")) \| "\(.name) \(.conclusion)"'` |
+| V8 | The `website` jobs succeed and the published version has a complete website changelog. / 官网任务成功，发布版本具有完整更新日志。 | Open `https://reasonix.io/changelog/vX.Y.Z/` and check its title, date and source link. / 核对标题、日期及原文链接。 |
 
 ## 5. Recovery
 
@@ -135,7 +156,7 @@ Verify a published package with `npm view reasonix dist.attestations`: the attes
 
 ## 6. Release note format
 
-File: `release-notes/studio/X.Y.Z.md`, without the tag's `v`. Language: Chinese. Enforced by `release-note` and `doc-prose`.
+File: `release-notes/studio/X.Y.Z.md`, without the tag's `v`. Language: Chinese, then English (R6). Enforced by `release-note` and `doc-prose`.
 
 | ID | Rule |
 | --- | --- |
@@ -144,6 +165,7 @@ File: `release-notes/studio/X.Y.Z.md`, without the tag's `v`. Language: Chinese.
 | R3 | One change is one list item within 200 display columns. |
 | R4 | Every item names its issue (`#123`), pull request or commit. |
 | R5 | Describe what the user observes. The explanation belongs in the linked commit. |
+| R6 | The same notes follow in English after a `---` line and the `<!-- lang:en -->` marker, under `## New`, `## Changed`, `## Fixed`, `## Removed`, `## Upgrade notes`, with the same items and references; R1 to R5 apply to each language. |
 
 The published body is rendered, not copied:
 
@@ -156,7 +178,7 @@ The published body is rendered, not copied:
 
 The repository owner and any login in `RELEASE_CREDIT_EXCLUDE` (comma separated) are treated like bots: never named in an item or in the list.
 
-A `## 贡献者` list of the credited authors closes the notes. A `#N` counts only at a line start or after whitespace, `(`, `（`, `、`, `，` or `,`, and never in code, an HTML comment or a link target. Write colours such as `#333` in a code span.
+A `## 贡献者` list of the credited authors closes the Chinese part, and a `## Contributors` list closes the English part. A `#N` counts only at a line start or after whitespace, `(`, `（`, `、`, `，` or `,`, and never in code, an HTML comment or a link target. Write colours such as `#333` in a code span.
 
 A lookup GitHub refuses, or cannot answer after retries, fails `publish` with a `release_credits.*` code. Preview with `node scripts/studio-release-notes.mjs release-notes/studio/X.Y.Z.md /tmp/notes.md`; it reads `GH_TOKEN`, else `gh auth token`.
 
@@ -229,9 +251,9 @@ The PE files are declared in `scripts/windows-signing-lib.ps1`. A PE file is a `
 
 A bundle holding a PE file the list does not name fails with `studio-signing.undeclared-pe`, and one missing a listed file with `studio-signing.missing-pe`. A person adds it to the right list.
 
-The release PE files as of 2.20.3:
+The release PE files:
 
-- `Reasonix Studio.exe`, `resources/bin/reasonix-studio-host.exe`, `resources/bin/reasonix-computer-helper.exe`
+- `Reasonix Studio.exe`, `resources/bin/reasonix-studio-host.exe`, `resources/bin/cua-driver.exe`
 - `dxcompiler.dll`, `ffmpeg.dll`, `vk_swiftshader.dll`, `vulkan-1.dll`
 
 | Rule | Detail |
@@ -286,13 +308,19 @@ Studio and 1.x signing jobs and smoke tests share the concurrency group `certum-
 `latest.json` keys `platforms` (and `deltas`) as `<GOOS>-<GOARCH>`, derived from the artifact name by `studio-manifest` and asked for by the running kernel through `runtime.GOOS` and `runtime.GOARCH`.
 
 - The key is the binary's own architecture, not the machine's. An x64 build running under ARM64 emulation asks for `windows-amd64` and keeps updating to the amd64 installer; it is not moved to a native build.
-- Linux ships a `.deb` and an `.rpm`, both named `ReasonixStudio-linux-<arch>.<ext>`.
+- Linux ships a `.deb`, an `.rpm` and an `.AppImage` for each of amd64 and arm64 (aarch64), all named `ReasonixStudio-linux-<arch>.<ext>`; the publish job requires all six by name.
+- The `.AppImage` is a download only: no `native_packages` key names it and no client replaces one, so an AppImage user downloads the next one. `scripts/verify-linux-appimage.sh` checks its type marker, its ELF machine, and that extracting it yields the kernel (for the right architecture) and the page.
+- CI and releases use `scripts/verify-linux-package.sh` to read both formats back: package name, architecture, root-owned update payload, every ELF image, and static Go binaries.
+- `scripts/linux-install-smoke.sh` runs only with `GITHUB_ACTIONS=true`. It installs and reinstalls the `.deb`, drives its packaged Electron window under Xvfb through a renderer-to-kernel request and second launch, checks normal shell/kernel exit, and uninstalls.
+- ARM64 packaging does not establish compatibility with every UOS/Kylin version. Qualify the target distribution's glibc, GTK/NSS, graphics/session environment and, for `.deb` self-update, apt, pkexec and Polkit. RPM updates remain manual.
 - `native_packages["linux-<arch>"]` is the `.deb` and has to stay that: every installed client hands it to dpkg.
 - The `.rpm` is `native_packages["linux-<arch>-rpm"]`. No shipped client reads it yet, so an `.rpm` install is updated by downloading the new package.
 - The `.rpm` carries no rpm GPG signature, and `dnf install` of a local file does not check one by default.
 - Its integrity rests on HTTPS and the minisign signature beside it. Verify with `minisign -Vm ReasonixStudio-linux-amd64.rpm -P RWSw66n0RsoSr6Zhh6qt5YO95YkpCayTOCMFVDNUQSjJYwxoYngNVBSq`, the key compiled into `internal/platform/update/verify.go`.
 - fpm spells the architecture in an `.rpm` name its own way (`x86_64`, `aarch64`); `desktop/electron/packaging/canonical-artifact-names.js` renames it to the release architecture and fails the build on any spelling left over.
 - When a client tries to install a release whose manifest lacks its key (and, on Linux, a matching `native_packages` key), staging fails with `update.no_package` naming the release page; no other architecture's package is substituted. A missing `deltas` entry means the full package is downloaded.
+
+Linux 验收：CI 与发布流程检查两种包的实际架构、权限与 Go 静态链接；安装测试仅在 `GITHUB_ACTIONS=true` 时运行，覆盖启动、内核通信、第二次启动、重装、正常退出和卸载。UOS／麒麟的具体版本仍需实机验证。
 
 A notes upload that fails does not fail `publish`: the step warns, `::warning::release notes for vX.Y.Z were not uploaded`, and the catalog entry is written without a `notes` field. Run the backfill (section 9) afterwards to attach them.
 

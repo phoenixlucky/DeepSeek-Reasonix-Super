@@ -35,6 +35,7 @@ name = "default"
 kind = "openai"
 base_url = "http://127.0.0.1:1/v1"
 balance_url = %q
+balance_format = "deepseek"
 models = ["shared-chat"]
 default = "shared-chat"
 `, walletURL)

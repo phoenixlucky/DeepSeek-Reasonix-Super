@@ -85,6 +85,7 @@ func runAdversarial(root string) int {
 			adversarialPrompts[t.Experiment])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", id, err)
+			m = failedMetrics(t, "adversarial", err)
 		}
 		verdict := "isolated"
 		if m.EscapeFoundAnswer {
@@ -173,6 +174,16 @@ func runOne(p provider.Provider, t contextTask, arm ablation.Set, armName, root 
 	return m, runErr
 }
 
+// failedMetrics is what a run that never reached a transcript leaves behind. It
+// carries the run's identity and the stage that ended it, so the failure stays a
+// countable fact; Failed keeps it out of every statistic.
+func failedMetrics(t contextTask, armName string, err error) contextMetrics {
+	return contextMetrics{
+		Task: t.ID, Arm: armName, Failed: true,
+		FailureStage: stageNoEvidence, Reason: err.Error(),
+	}
+}
+
 // finalAnswer is the last assistant text the turn produced.
 func finalAnswer(msgs []provider.Message) string {
 	for _, m := range slices.Backward(msgs) {
@@ -250,6 +261,7 @@ func runBoundaries(mode, root string) int {
 			m, err := runOne(p, t, armFor(side.scale, false), name, root, side.has, false)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%s [%s]: %v\n", t.ID, name, err)
+				m = failedMetrics(t, name, err)
 			}
 			all = append(all, m)
 			if side.has {
@@ -349,6 +361,7 @@ func runExperiment(mode, experiment, root string, dry bool, tasks []contextTask)
 			m, err := runOne(p, t, armFor(arm.scale, arm.searchOff), arm.name, root, cueVisible, dry)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%s [%s]: %v\n", t.ID, arm.name, err)
+				m = failedMetrics(t, arm.name, err)
 			}
 			byArm[arm.name] = append(byArm[arm.name], m)
 			all = append(all, m)
@@ -430,10 +443,16 @@ func writeResults(root string, info batchInfo, all []contextMetrics) int {
 		return 2
 	}
 	defer f.Close()
+	scored, failed := 0, 0
 	for _, m := range all {
 		if err := writeJSONLine(f, m); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
+		}
+		if m.Failed {
+			failed++
+		} else {
+			scored++
 		}
 	}
 	if err := writeTrajectories(root, all); err != nil {
@@ -444,7 +463,10 @@ func writeResults(root string, info batchInfo, all []contextMetrics) int {
 		fmt.Fprintln(os.Stderr, "write batch manifest:", err)
 		return 2
 	}
-	fmt.Printf("\n%d runs written to %s (with trajectories.jsonl and batch.json)\n", len(all), path)
+	// Both counts are named: a reader who sees only the batch size cannot tell
+	// measurements from attempts.
+	fmt.Printf("\n%d runs written to %s: scored=%d failed=%d (with trajectories.jsonl and batch.json)\n",
+		len(all), path, scored, failed)
 	return 0
 }
 
@@ -453,8 +475,20 @@ func writeResults(root string, info batchInfo, all []contextMetrics) int {
 // what a four-arm average cannot do.
 func reportBoundaries(all []contextMetrics) {
 	byKey := map[string]contextMetrics{}
+	scored, failed := 0, 0
 	for _, m := range all {
+		if m.Failed {
+			// No transcript, no boundary to compare: count the failure instead of
+			// printing the zero it left behind as a measurement.
+			failed++
+			continue
+		}
+		scored++
 		byKey[m.Task+"|"+m.Arm] = m
+	}
+	if scored == 0 {
+		fmt.Printf("\n## Across each task's cue boundary\n  no scored runs: scored=%d failed=%d (nothing to compare)\n", scored, failed)
+		return
 	}
 	var cueSide, noCueSide []contextMetrics
 	fmt.Println("\n## Across each task's cue boundary")

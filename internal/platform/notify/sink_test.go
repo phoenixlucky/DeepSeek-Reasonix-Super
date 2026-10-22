@@ -253,3 +253,14 @@ func TestFeedbackReplyChimesUnderTheSameSwitches(t *testing.T) {
 		t.Fatal("a reply chimed with its own switch off")
 	}
 }
+
+// A person taking a question over is not a new question: no second notification.
+func TestSinkDoesNotNotifyAgainWhenAQuestionIsTakenOver(t *testing.T) {
+	sender := &recordSender{}
+	sink := NewSink(&recordSink{}, sender, i18n.English, NewSettings(config.NotificationsConfig{Enabled: true, AskRequest: true}))
+	sink.Emit(event.Event{Kind: event.AskRequest, Ask: event.Ask{ID: "a1"}})
+	sink.Emit(event.Event{Kind: event.AskEngaged, Ask: event.Ask{ID: "a1"}})
+	if len(sender.messages) != 1 {
+		t.Fatalf("notifications = %d, want 1: taking the question over must not announce it again", len(sender.messages))
+	}
+}

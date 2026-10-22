@@ -277,3 +277,26 @@ func TestMoveCarriesEveryOwnedEntry(t *testing.T) {
 		}
 	}
 }
+
+// The Windows sandbox's grant record travels with the state root. Left behind, the
+// record is gone while the permission entries it lists stay on the folders, and
+// nothing would ever take them back.
+func TestMoveCarriesTheSandboxGrantRecord(t *testing.T) {
+	home := stateHome(t)
+	record := filepath.Join(home, "sandbox", "windows-grants.json")
+	if err := os.MkdirAll(filepath.Dir(record), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const body = `{"version":1,"sid":"S-1-5-21-1-2-3-12345","roots":[]}`
+	if err := os.WriteFile(record, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(testenv.TempDir(t), "moved")
+	if err := Move(t.Context(), PlanMove(t.Context(), config.RootState, target), nil); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(target, "sandbox", "windows-grants.json"))
+	if err != nil || string(got) != body {
+		t.Fatalf("the grant record was not carried intact: %q, %v", got, err)
+	}
+}

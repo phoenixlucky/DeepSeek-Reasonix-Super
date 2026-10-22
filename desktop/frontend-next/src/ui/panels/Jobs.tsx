@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { t } from "../../i18n";
 import type { JobEntry } from "../../port/port";
 import { StudioIcon } from "../StudioIcon";
+import { JobName, jobName } from "./JobName";
 
 // How an ended job finished, by the kernel's status: only "done" is a success,
 // and a job someone stopped is neither a success nor a fault.
@@ -12,7 +13,7 @@ const ENDED: Record<string, { label: string; tone: string }> = {
   interrupted: { label: "已中断", tone: "var(--faint)" },
 };
 
-export function Jobs({ jobs, onCancel }: { jobs: JobEntry[]; onCancel?: (id: string) => Promise<void> }) {
+export function Jobs({ jobs, onCancel, onView }: { jobs: JobEntry[]; onCancel?: (id: string) => Promise<void>; onView?: (id: string) => void }) {
   const [, tick] = useState(0);
   const [stopping, setStopping] = useState<ReadonlySet<string>>(new Set());
 
@@ -43,7 +44,15 @@ export function Jobs({ jobs, onCancel }: { jobs: JobEntry[]; onCancel?: (id: str
                 className="pip"
                 style={running ? { background: "var(--net)", animation: "tick 1.6s ease-in-out infinite" } : { background: ended?.tone ?? "var(--faint)" }}
               />
-              <span className="cmd">{j.label || j.id}</span>
+              <JobName job={j}>
+                {running && onView ? (
+                  <button type="button" className="cmd job-view" data-action="job.view" data-target={j.id} aria-label={t("查看输出：{cmd}", { cmd: jobName(j) })} onClick={() => onView(j.id)}>
+                    {jobName(j)}
+                  </button>
+                ) : (
+                  <span className="cmd" tabIndex={0}>{jobName(j)}</span>
+                )}
+              </JobName>
               <span className="rt">{running ? `${Math.floor((Date.now() - j.startedAt) / 1000)}s` : ended ? t(ended.label) : j.status}</span>
               {running && onCancel && (
                 <button
@@ -53,7 +62,7 @@ export function Jobs({ jobs, onCancel }: { jobs: JobEntry[]; onCancel?: (id: str
                   data-target={j.id}
                   disabled={stopping.has(j.id)}
                   title={t("停止")}
-                  aria-label={t("停止后台任务：{cmd}", { cmd: j.label || j.id })}
+                  aria-label={t("停止后台任务：{cmd}", { cmd: jobName(j) })}
                   onClick={() => {
                     setStopping((prev) => new Set(prev).add(j.id));
                     void onCancel(j.id).finally(() => setStopping((prev) => {

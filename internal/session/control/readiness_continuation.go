@@ -42,6 +42,12 @@ func (o *turnOrchestrator) continueUntilReady(ctx context.Context, turnErr error
 			// Ready, or a failure that has nothing to do with readiness.
 			return turnErr
 		}
+		// await_user promises that the host will not go on with the list. The turn
+		// ends with the readiness outcome as it stands, so the receipt still says
+		// what was not checked and the user reads the gaps when they come back.
+		if o.c.turnUserGate() != "" {
+			return turnErr
+		}
 		// A round that moved nothing at all is the only reliable stall: the
 		// category list stays identical while counts inside it move, and the
 		// counts themselves rise when landed work reveals a new requirement.

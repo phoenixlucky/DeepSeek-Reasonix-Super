@@ -1,8 +1,9 @@
-import { useCallback, useId, useState, type CSSProperties } from "react";
+import { useId, type CSSProperties } from "react";
 import { t } from "../i18n";
-import type { AgentPort, WorkspaceBranch, WorkspaceGit } from "../port/port";
+import type { AgentPort, WorkspaceGit } from "../port/port";
 import { Picker, type MenuItem } from "./Menu";
 import { StudioIcon } from "./StudioIcon";
+import { useWorkspaceBranches } from "./useWorkspaceBranches";
 
 interface Props {
   port: AgentPort;
@@ -17,7 +18,7 @@ interface Props {
   // Called when a switch lands (status refresh) and when it moved the tree
   // (the change list, the branch reading and the workspace view re-read).
   onChanged: () => void;
-  onSwitched?: () => void;
+  onSwitched?: (git: WorkspaceGit) => void;
   onError: (e: unknown) => void;
 }
 
@@ -51,14 +52,11 @@ function fitCard(anchor: HTMLDivElement) {
 // the pane's tree refresh; this component owns only the choosing.
 export function BranchChip({ port, git, changeCount, countElsewhere = false, onChanged, onSwitched, onError }: Props) {
   const branchTipId = useId();
-  const [busy, setBusy] = useState(false);
-  const [locals, setLocals] = useState<WorkspaceBranch[]>([]);
+  const { locals, moving, loadBranches, switchTo } = useWorkspaceBranches(port, onChanged, onSwitched, onError);
+  const busy = moving !== null;
   // The list re-reads on open: a terminal or another window can move HEAD
   // while this pane is not looking, and a stale list would offer a switch
   // the repository no longer means.
-  const loadBranches = useCallback(() => {
-    void port.branches().then((r) => setLocals(r.branches)).catch(() => setLocals([]));
-  }, [port]);
   // A branch another worktree holds is listed but closed: git would refuse
   // the switch, so the row says where the branch lives instead of failing.
   const branchItems: MenuItem[] = [
@@ -70,15 +68,22 @@ export function BranchChip({ port, git, changeCount, countElsewhere = false, onC
       desc: b.worktree ? t("已由其他工作树检出") : undefined,
     })),
   ];
-  const switchTo = (name: string) => {
-    if (busy) return;
-    setBusy(true);
-    void port.switchBranch(name)
-      .then(() => { onChanged(); onSwitched?.(); })
-      .catch(onError)
-      .finally(() => setBusy(false));
-  };
 
+  if (git && !git.repo && git.absent) {
+    const refused = git.absent === "refused";
+    return (
+      <div className="studio-branch-pop" onMouseEnter={(e) => fitCard(e.currentTarget)} onFocusCapture={(e) => fitCard(e.currentTarget)}>
+        <div className="mode plain studio-branch" data-norepo="" data-absent={git.absent} role="img" aria-label={refused ? t("Git 拒绝打开") : t("Git 未响应")} tabIndex={0} aria-describedby={branchTipId}>
+          <span className="ic" aria-hidden="true"><StudioIcon name="branch" /></span>
+          <span className="lb">{refused ? t("Git 拒绝打开") : t("Git 未响应")}</span>
+        </div>
+        <div className="studio-branch-card" style={cardStyle} id={branchTipId} role="tooltip">
+          <b>{refused ? t("这个文件夹有 Git 仓库，但 Git 拒绝打开它") : t("这个文件夹有 Git 仓库，但 Git 没有及时响应")}</b>
+          <span>{refused ? (git.detail ? t("Git 说：{detail}", { detail: git.detail }) : t("请在终端里运行 git status 查看原因")) : t("分支暂时无法显示。重新打开这个文件夹，或重启 Studio 后再试")}</span>
+        </div>
+      </div>
+    );
+  }
   if (git && !git.repo) {
     return (
       <div className="studio-branch-pop" onMouseEnter={(e) => fitCard(e.currentTarget)} onFocusCapture={(e) => fitCard(e.currentTarget)}>
@@ -109,8 +114,8 @@ export function BranchChip({ port, git, changeCount, countElsewhere = false, onC
         onPick={switchTo}
         label={<>
           <span className="ic" aria-hidden="true"><StudioIcon name="branch" /></span>
-          <span className="lb">{git.branch}</span>
-          {changeCount > 0 && !countElsewhere && <small>{t("{n} 个变更", { n: changeCount })}</small>}
+          <span className="lb">{moving === null ? git.branch : t("正在切换到 {branch}…", { branch: moving })}</span>
+          {changeCount > 0 && !countElsewhere && !busy && <small>{t("{n} 个变更", { n: changeCount })}</small>}
           <StudioIcon name="down" />
         </>}
       />

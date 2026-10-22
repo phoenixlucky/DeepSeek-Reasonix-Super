@@ -18,11 +18,6 @@ for (const scheme of ["light", "dark"]) {
     await page.goto(`${BASE}?pref=en&turns=2`, { waitUntil: "networkidle" });
     await page.waitForSelector(".app");
     const tag = `${scheme}/${label}`;
-    const tabs = () => page.evaluate(() => document.querySelectorAll(".workbench-tab").length);
-    await page.locator('[data-action="browser.open"]').first().click();
-    await page.waitForTimeout(700);
-    const direct = await page.evaluate(() => ({ launcher: !!document.querySelector(".workbench-launcher"), tabs: document.querySelectorAll(".workbench-tab").length }));
-    check(`${tag}: the title-bar Browser button goes straight to a browser`, direct.tabs === 1 && !direct.launcher, JSON.stringify(direct));
     await page.goto(`${BASE}?pref=en&turns=2`, { waitUntil: "networkidle" });
     await page.waitForSelector(".app");
     await page.locator('[data-action="pane.view"][data-value="browser"]').click();

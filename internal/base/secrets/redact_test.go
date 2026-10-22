@@ -305,3 +305,20 @@ func TestProcessEnvAlwaysFiltersRegisteredCredentialKeys(t *testing.T) {
 		t.Fatalf("ordinary env was removed with opt-in filtering off:\n%s", joined)
 	}
 }
+
+func TestProcessEnvMarksSubprocessesAsAgentChildren(t *testing.T) {
+	t.Setenv(AgentChildEnv, "0")
+	for _, filtered := range []bool{false, true} {
+		SetFilterSubprocessEnv(filtered)
+		var marks []string
+		for _, item := range ProcessEnv() {
+			if strings.HasPrefix(item, AgentChildEnv+"=") {
+				marks = append(marks, item)
+			}
+		}
+		if len(marks) != 1 || marks[0] != AgentChildEnv+"=1" {
+			t.Fatalf("filter=%v: marker = %v, want exactly one %s=1", filtered, marks, AgentChildEnv)
+		}
+	}
+	SetFilterSubprocessEnv(false)
+}

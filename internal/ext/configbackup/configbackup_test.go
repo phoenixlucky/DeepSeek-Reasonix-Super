@@ -77,7 +77,7 @@ func TestSealOpenRoundTripAndRejections(t *testing.T) {
 	}
 	back, err := Open(sealed, passphrase)
 	must(t, err)
-	if len(back.Items) != len(s.Items) || back.Format != FormatVersion {
+	if len(back.Items) != len(s.Items) || back.Format != s.Format {
 		t.Fatalf("round trip lost items: %d vs %d", len(back.Items), len(s.Items))
 	}
 	if _, err := Open(sealed, "wrong passphrase!"); !errors.Is(err, ErrCannotDecrypt) {
@@ -441,5 +441,86 @@ func TestPrivateKeySlotRuleIsExact(t *testing.T) {
 		if got := !deniedKey(key); got != want {
 			t.Errorf("%q allowed=%v, want %v", key, got, want)
 		}
+	}
+}
+
+func TestSnapshotVersionsThroughEncryptedEnvelope(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		format int
+		want   error
+	}{
+		{"legacy", 1, nil},
+		{"hook identities", 2, nil},
+		{"future", FormatVersion + 1, ErrUnsupportedFormat},
+		{"missing", 0, ErrMalformed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Snapshot{Format: tc.format, Categories: []Category{CategoryAutomation}}
+			sealed, err := Seal(s, passphrase)
+			must(t, err)
+			if sealed[len(envelopeMagic)] != 1 {
+				t.Fatal("snapshot versions must retain the existing encrypted envelope")
+			}
+			back, err := Open(sealed, passphrase)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("open format %d: %v, want %v", tc.format, err, tc.want)
+			}
+			if err == nil && back.Format != tc.format {
+				t.Fatalf("format changed on round trip: %d", back.Format)
+			}
+		})
+	}
+}
+
+func TestCollectUsesOldestRequiredFormat(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		categories []Category
+		command    string
+		format     int
+	}{
+		{"settings", []Category{CategorySettings}, "", 1},
+		{"statusline only", []Category{CategoryAutomation}, "", 1},
+		{"omitted empty hook", []Category{CategoryAutomation}, "  ", 1},
+		{"hooks excluded", []Category{CategorySettings}, "echo check", 1},
+		{"hooks included", []Category{CategoryAutomation}, "echo check", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			machine(t, "[statusline]\ncommand = \"echo status\"\n")
+			if tc.command != "" {
+				raw, err := json.Marshal(hook.Settings{Hooks: map[hook.Event][]hook.HookConfig{
+					hook.PostToolUse: {{Command: tc.command}},
+				}})
+				must(t, err)
+				must(t, os.WriteFile(hook.GlobalSettingsPath(""), raw, 0o600))
+			}
+			s := collectAll(t, tc.categories...)
+			if s.Format != tc.format {
+				t.Fatalf("format = %d, want %d", s.Format, tc.format)
+			}
+			sealed, err := Seal(s, passphrase)
+			must(t, err)
+			back, err := Open(sealed, passphrase)
+			must(t, err)
+			if back.Format != tc.format {
+				t.Fatalf("round-trip format = %d, want %d", back.Format, tc.format)
+			}
+		})
+	}
+}
+
+func TestTheInterfaceItemCarriesTheTextSize(t *testing.T) {
+	var src config.Config
+	src.Desktop.Appearance.Zoom = 1.2
+	src.Desktop.Appearance.TextSize = 1.15
+	raw, err := encodeTOML(lookOf(&src))
+	must(t, err)
+	var look interfaceSettings
+	must(t, decodeTOML(raw, &look))
+	var dst config.Config
+	look.applyTo(&dst)
+	if got := dst.Desktop.Appearance; got.Zoom != 1.2 || got.TextSize != 1.15 {
+		t.Fatalf("restored appearance = %+v, want the zoom and the text size", got)
 	}
 }

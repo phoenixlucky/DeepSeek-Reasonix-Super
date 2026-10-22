@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
 import "./testkit";
 import { Composer } from "./Composer";
 import { MockPort } from "../port/mock";
@@ -57,7 +58,7 @@ function touchPointer() {
 }
 
 function draw(
-  over: { running?: boolean; onSubmit?: (text: string) => Promise<boolean>; port?: MockPort; st?: SessionStatus; changeCount?: number; host?: string; git?: WorkspaceGit | null; onTreeChanged?: () => void } = {},
+  over: { running?: boolean; onSubmit?: (text: string) => Promise<boolean | "shell_unavailable">; port?: MockPort; st?: SessionStatus; changeCount?: number; host?: string; git?: WorkspaceGit | null; onTreeChanged?: () => void } = {},
 ) {
   const port = over.port ?? new MockPort();
   const onSubmit = over.onSubmit ?? vi.fn(async () => true);
@@ -142,6 +143,22 @@ describe("composer submission", () => {
     expect(document.activeElement).toBe(box);
   });
 
+  it("leaves a command this connection will never run selected, so the next message replaces it and goes", async () => {
+    const onSubmit = vi.fn(async (text: string): Promise<boolean | "shell_unavailable"> => (text.startsWith("!") ? "shell_unavailable" : true));
+    const { box } = draw({ onSubmit });
+    fireEvent.change(box, { target: { value: "!ls -la" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith("!ls -la"));
+    await waitFor(() => expect(box.value).toBe("!ls -la"));
+    await waitFor(() => expect([box.selectionStart, box.selectionEnd]).toEqual([0, 7]));
+    const user = userEvent.setup();
+    await user.keyboard("你好");
+    expect(box.value).toBe("你好");
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenLastCalledWith("你好"));
+    await waitFor(() => expect(box.value).toBe(""));
+  });
+
   it("restores a folded long paste as a chip instead of flattening it", async () => {
     const pending = deferred<boolean>();
     const { box } = draw({ onSubmit: () => pending.promise });
@@ -152,6 +169,65 @@ describe("composer submission", () => {
     await act(async () => pending.resolve(false));
     expect(await screen.findByText("81 行 · 展开到输入框")).toBeTruthy();
     expect(box.value).toBe("");
+  });
+});
+
+describe("a long paste kept as a file", () => {
+  const body = Array.from({ length: 120 }, (_, i) => `log line ${i}`).join("\n");
+  const pointer = "[pasted text kept out of this message: 120 lines, 1.2 KB]\nSaved: .reasonix/attachments/clipboard-1.txt\nRead a window of it with read_file (offset/limit), or search it with grep. It is not in this message.\n";
+
+  it("saves only when asked, and sends the pointer in place of the text", async () => {
+    const port = new MockPort();
+    const keep = vi.spyOn(port, "keepText").mockResolvedValue({ path: ".reasonix/attachments/clipboard-1.txt", pointer });
+    const onSubmit = vi.fn(async () => true);
+    const { box } = draw({ port, onSubmit });
+    fireEvent.paste(box, { clipboardData: { files: [], getData: () => body } });
+    expect(keep).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "存为文件" }));
+    await waitFor(() => expect(keep).toHaveBeenCalledWith(body));
+    expect(await screen.findByText("已存为文件 · 模型按需读取")).toBeTruthy();
+
+    fireEvent.change(box, { target: { value: "看一下这段日志", selectionStart: 7 } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const sent = String((onSubmit.mock.calls[0] as unknown[])[0]);
+    expect(sent).toContain("看一下这段日志");
+    expect(sent).toContain(".reasonix/attachments/clipboard-1.txt");
+    expect(sent).not.toContain("log line 7");
+  });
+
+  it("sends the text itself when it was never saved", async () => {
+    const onSubmit = vi.fn(async () => true);
+    const { box } = draw({ onSubmit });
+    fireEvent.paste(box, { clipboardData: { files: [], getData: () => body } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(String((onSubmit.mock.calls[0] as unknown[])[0])).toContain("log line 7");
+  });
+
+  it("keeps the text in the chip and says why when saving fails", async () => {
+    const port = new MockPort();
+    vi.spyOn(port, "keepText").mockRejectedValue(new HttpError(500, "x", { code: "attachment.write_failed", error: "disk full", params: { detail: "disk full" } }));
+    const onSubmit = vi.fn(async () => true);
+    const { box } = draw({ port, onSubmit });
+    fireEvent.paste(box, { clipboardData: { files: [], getData: () => body } });
+    fireEvent.click(screen.getByRole("button", { name: "存为文件" }));
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(String((onSubmit.mock.calls[0] as unknown[])[0])).toContain("log line 7");
+  });
+
+  it("can still expand a saved chip back into the box", async () => {
+    const port = new MockPort();
+    vi.spyOn(port, "keepText").mockResolvedValue({ path: ".reasonix/attachments/clipboard-1.txt", pointer });
+    const { box } = draw({ port });
+    fireEvent.paste(box, { clipboardData: { files: [], getData: () => body } });
+    fireEvent.click(screen.getByRole("button", { name: "存为文件" }));
+    await screen.findByText("已存为文件 · 模型按需读取");
+    fireEvent.click(screen.getByRole("button", { name: /展开到输入框/ }));
+    expect(box.value).toContain("log line 7");
   });
 });
 
@@ -406,6 +482,22 @@ describe("composer menus", () => {
     }
   });
 
+  it("does not announce loading while prose is typed after a finished slash command", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const port = new MockPort();
+      const request = deferred<Completion>();
+      vi.spyOn(port, "complete").mockReturnValue(request.promise);
+      const { box } = draw({ port });
+      const prose = "/review 审查一下当前工作空间的代码结构";
+      fireEvent.change(box, { target: { value: prose, selectionStart: prose.length } });
+      act(() => vi.advanceTimersByTime(400));
+      expect(screen.queryByText("正在加载命令与技能…")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not flash loading for a fast slash catalog answer", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
@@ -501,6 +593,19 @@ describe("composer menus", () => {
     expect(screen.getByRole("img", { name: "非 Git 仓库" })).toBeTruthy();
   });
 
+  it("says git refused a folder that has a repository, with what git printed, and not 'no repository'", () => {
+    draw({ git: git({ repo: false, absent: "refused", detail: "fatal: detected dubious ownership in repository" }) });
+    expect(screen.queryByRole("img", { name: "非 Git 仓库" })).toBeNull();
+    expect(screen.getByRole("img", { name: "Git 拒绝打开" })).toBeTruthy();
+    expect(document.body.textContent).toContain("Git 说：fatal: detected dubious ownership in repository");
+  });
+
+  it("says git did not answer, which is a different thing from refusing", () => {
+    draw({ git: git({ repo: false, absent: "unavailable" }) });
+    expect(screen.getByRole("img", { name: "Git 未响应" })).toBeTruthy();
+    expect(document.body.textContent).toContain("Git 没有及时响应");
+  });
+
   // Not answered yet is not the same fact as not a repository, and the two
   // must not render as one word.
   it("renders nothing before git has answered", () => {
@@ -565,6 +670,23 @@ describe("composer menus", () => {
 });
 
 describe("composer attachments", () => {
+  it("cancels an upload when its attachment is removed", async () => {
+    const port = new MockPort();
+    let signal: AbortSignal | undefined;
+    vi.spyOn(port, "attach").mockImplementation((_blob?: Blob, _name?: string, abort?: AbortSignal) => {
+      signal = abort;
+      return new Promise<Attachment>(() => {});
+    });
+    const { container, unmount } = draw({ port });
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [new File(["apk"], "large.apk")] } });
+    expect(signal?.aborted).toBe(false);
+    fireEvent.click(await screen.findByRole("button", { name: "移除 large.apk" }));
+    expect(signal?.aborted).toBe(true);
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [new File(["apk"], "another.apk")] } });
+    expect(signal?.aborted).toBe(false);
+    unmount();
+    expect(signal?.aborted).toBe(true);
+  });
   it("settles files independently and keeps a failed item actionable", async () => {
     const port = new MockPort();
     const attach = vi.fn(async (_blob: Blob, name: string): Promise<Attachment> => {

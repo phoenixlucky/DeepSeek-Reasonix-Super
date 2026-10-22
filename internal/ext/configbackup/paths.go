@@ -113,10 +113,21 @@ func absPaths(words ...string) []PathRef {
 			continue
 		}
 		seen[w] = true
-		_, err := os.Stat(w)
-		out = append(out, PathRef{Path: w, Exists: err == nil})
+		out = append(out, PathRef{Path: w, Exists: statable(w) && existsHere(w)})
 	}
 	return out
+}
+
+// statable is whether a word out of a backup is worth asking the disk about. The
+// answer is only a hint shown beside the command, so a word that climbs out of
+// where it starts or is not plain text is reported missing without a look.
+func statable(p string) bool {
+	return len(p) <= 1024 && !strings.Contains(p, "..") && !strings.ContainsAny(p, "\x00\r\n")
+}
+
+func existsHere(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }
 
 func isAbsAnywhere(p string) bool {

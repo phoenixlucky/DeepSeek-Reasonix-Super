@@ -91,24 +91,29 @@ func (c *Client) fetchCatalog(ctx context.Context) ([]provider.Descriptor, error
 	if err != nil {
 		return nil, err
 	}
+	out, err := c.fetchCatalogAt(ctx, base, token)
+	return out.Providers, err
+}
+
+func (c *Client) fetchCatalogAt(ctx context.Context, base, token string) (catalogResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+PathCatalog, nil)
 	if err != nil {
-		return nil, err
+		return catalogResponse{}, err
 	}
 	req.Header.Set(HeaderToken, token)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return catalogResponse{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, decodeWireError(resp)
+		return catalogResponse{}, decodeWireError(resp)
 	}
 	var out catalogResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
+		return catalogResponse{}, err
 	}
-	return out.Providers, nil
+	return out, nil
 }
 
 // Resolve binds a selection to the broker. It performs no call: a provider
@@ -159,6 +164,16 @@ func (b *brokered) Stream(ctx context.Context, req provider.Request) (<-chan pro
 	base, token, err := b.client.target()
 	if err != nil {
 		return nil, err
+	}
+	if req.Summary && len(req.Tools) > 0 {
+		// Capability and POST use one authenticated target, never the picker's stale cache.
+		catalog, probeErr := b.client.fetchCatalogAt(ctx, base, token)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if probeErr != nil || !catalog.SummaryToolChoiceNone {
+			return nil, provider.ErrSummaryToolsUnsupported
+		}
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base+PathStream, bytes.NewReader(body))
 	if err != nil {

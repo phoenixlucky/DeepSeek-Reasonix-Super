@@ -59,13 +59,14 @@ it("marks a truncated count as a lower bound", async () => {
   expect(screen.getByText("目录过大，已统计到时间上限，实际占用不小于此数")).toBeTruthy();
 });
 
-function recover(answer: { imported: number; warnings: number; recognised: boolean; skipped?: LegacySkip[] }) {
+function recover(answer: { imported: number; warnings: number; recognised: boolean; skipped?: LegacySkip[] }, picked: string | null = "/old") {
   const port = { storage: vi.fn(async () => state([])) } as unknown as AgentPort;
   const hub = {
-    pickFolder: vi.fn(async () => "/old"),
+    pickFolder: vi.fn(async () => picked),
     importLegacySessions: vi.fn(async () => ({ summary: "", skipped: [], ...answer })),
   } as unknown as HubPort;
   render(<Storage port={port} hub={hub} workspace="/ws" onRecovered={() => {}} />);
+  return hub;
 }
 
 const pickOld = async () => {
@@ -73,6 +74,24 @@ const pickOld = async () => {
   fireEvent.click(screen.getByText("选择旧版数据目录…"));
   await flush();
 };
+
+it("asks for the path in words when the folder panel could not be shown, and imports from it", async () => {
+  const hub = recover({ imported: 2, warnings: 0, recognised: true }, null);
+  await pickOld();
+  expect(hub.importLegacySessions).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText("旧版数据目录路径"), { target: { value: "/home/a/.reasonix" } });
+  fireEvent.click(screen.getByText("导入此文件夹"));
+  await flush();
+  expect(hub.importLegacySessions).toHaveBeenCalledWith("/home/a/.reasonix", "/ws");
+  expect(screen.getByText(/已找回 2 个会话。/)).toBeTruthy();
+});
+
+it("does not ask for a path when the person closed the folder panel", async () => {
+  const hub = recover({ imported: 0, warnings: 0, recognised: true }, "");
+  await pickOld();
+  expect(hub.importLegacySessions).not.toHaveBeenCalled();
+  expect(screen.queryByLabelText("旧版数据目录路径")).toBeNull();
+});
 
 it("says the folder holds no 1.x sessions when it was not recognised", async () => {
   recover({ imported: 0, warnings: 0, recognised: false });

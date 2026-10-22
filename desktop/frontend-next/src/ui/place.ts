@@ -1,4 +1,5 @@
-import { useLayoutEffect } from "react";
+import { useLayoutEffect, type RefObject } from "react";
+import { onFolds } from "./viewport";
 
 // Placing a fixed element while the interface is zoomed puts two coordinate
 // systems into one calculation. Measured in Chromium with html{zoom:1.5}: a
@@ -64,15 +65,29 @@ export function beside(
 /** useFollow keeps a fixed layer on its anchor while it is open. Capture,
  *  because the scroller that moves the anchor is not the window; `key` is
  *  whatever else changes the layer's size. */
-export function useFollow(open: boolean, place: () => void, key?: unknown): void {
+export function useFollow(open: boolean, place: () => void, key?: unknown, scope?: {
+  anchor: RefObject<HTMLElement | null>;
+  container: RefObject<HTMLElement | null>;
+}): void {
   useLayoutEffect(() => {
     if (!open) return;
     place();
+    const transition = (event: Event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const anchor = scope?.anchor.current;
+      const container = scope?.container.current;
+      if (target === container || (anchor && target.contains(anchor))) place();
+    };
+    const stopFolds = onFolds(place);
     addEventListener("scroll", place, true);
     addEventListener("resize", place);
+    addEventListener("transitionend", transition, true);
     return () => {
+      stopFolds();
       removeEventListener("scroll", place, true);
       removeEventListener("resize", place);
+      removeEventListener("transitionend", transition, true);
     };
-  }, [open, place, key]);
+  }, [open, place, key, scope?.anchor, scope?.container]);
 }

@@ -563,3 +563,20 @@ func TestToWirePartialDispatchClaimsNoContextCost(t *testing.T) {
 		t.Fatalf("zero cost should be omitted from the wire: %s", b)
 	}
 }
+
+func TestToWireSubagentStatusCarriesItsRate(t *testing.T) {
+	w := ToWire(event.Event{Kind: event.ToolProgress, Tool: event.Tool{
+		ID: "c1", Name: event.SubagentProgressStatusName, Output: "reasoning", RateTokensPerSec: 42,
+	}})
+	b, err := json.Marshal(w)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"rate":42`) {
+		t.Fatalf("status JSON = %s, want rate 42", b)
+	}
+	quiet, _ := json.Marshal(ToWire(event.Event{Kind: event.ToolProgress, Tool: event.Tool{ID: "c1", Name: event.SubagentProgressStatusName, Output: "tool"}}))
+	if strings.Contains(string(quiet), `"rate"`) {
+		t.Fatalf("a status with no rate wrote one: %s", quiet)
+	}
+}

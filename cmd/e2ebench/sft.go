@@ -4,8 +4,11 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -44,8 +47,9 @@ type sftToolFunction struct {
 // from trajectoryRecord because that one deliberately omits tool output: the
 // analysis passes would otherwise hold every result of every run in memory.
 type sftRecord struct {
-	RunHeader *sftRunHeader `json:"run_header"`
-	Event     *struct {
+	BenchmarkRun *sftProvenance `json:"benchmark_run"`
+	RunHeader    *sftRunHeader  `json:"run_header"`
+	Event        *struct {
 		Kind      string `json:"kind"`
 		Text      string `json:"text"`
 		Reasoning string `json:"reasoning"`
@@ -162,22 +166,28 @@ func convertSFT(records []sftRecord) []sftMessage {
 }
 
 func readSFTRecords(path string) ([]sftRecord, error) {
+	records, _, err := readSFTSnapshot(path)
+	return records, err
+}
+
+func readSFTSnapshot(path string) ([]sftRecord, string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer f.Close()
 	var out []sftRecord
-	sc := bufio.NewScanner(f)
+	h := sha256.New()
+	sc := bufio.NewScanner(io.TeeReader(f, h))
 	sc.Buffer(make([]byte, 0, 1<<20), 64<<20)
 	for sc.Scan() {
 		var rec sftRecord
 		if err := json.Unmarshal(sc.Bytes(), &rec); err != nil {
-			continue
+			return nil, "", err
 		}
 		out = append(out, rec)
 	}
-	return out, sc.Err()
+	return out, hex.EncodeToString(h.Sum(nil)), sc.Err()
 }
 
 // verifyPrefix reports the header and how many of the run's rounds it provably
@@ -213,6 +223,10 @@ func buildSFTSample(id, prompt, path string) (*sftSample, string) {
 	if err != nil {
 		return nil, "unreadable: " + err.Error()
 	}
+	return buildSFTSampleRecords(id, prompt, records)
+}
+
+func buildSFTSampleRecords(id, prompt string, records []sftRecord) (*sftSample, string) {
 	hdr, covered, total := verifyPrefix(records)
 	if hdr == nil {
 		return nil, "no run header"
@@ -267,36 +281,27 @@ func runSFTMode(dir, suite, reportPath, out string) error {
 		return fmt.Errorf("no *.trajectory.jsonl files under %s", dir)
 	}
 	slices.Sort(paths)
-	prompts, err := sftPrompts(suite)
-	if err != nil {
-		return err
-	}
-	passed, err := sftVerdicts(reportPath)
+	inputs, err := sftInputs(paths, suite, reportPath)
 	if err != nil {
 		return err
 	}
 
-	f, err := os.Create(out)
+	f, err := os.CreateTemp(filepath.Dir(out), ".sft-export-*")
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+	defer os.Remove(f.Name())
 	buf := bufio.NewWriter(f)
 	enc := json.NewEncoder(buf)
 	kept := 0
-	for _, p := range paths {
-		id := strings.TrimSuffix(filepath.Base(p), ".trajectory.jsonl")
-		switch {
-		case !passed[id]:
-			fmt.Fprintf(os.Stderr, "skip %s: the grader did not pass it\n", id)
-			continue
-		case prompts[id] == "":
-			fmt.Fprintf(os.Stderr, "skip %s: no task prompt under %s\n", id, suite)
-			continue
+	for input, err := range inputs {
+		if err != nil {
+			return err
 		}
-		sample, why := buildSFTSample(id, prompts[id], p)
+		sample, why := buildSFTSampleRecords(input.id, input.prompt, input.records)
 		if sample == nil {
-			fmt.Fprintf(os.Stderr, "skip %s: %s\n", id, why)
+			fmt.Fprintf(os.Stderr, "skip %s: %s\n", input.id, why)
 			continue
 		}
 		if err := enc.Encode(sample); err != nil {
@@ -307,23 +312,17 @@ func runSFTMode(dir, suite, reportPath, out string) error {
 	if err := buf.Flush(); err != nil {
 		return err
 	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(f.Name(), out); err != nil {
+		return err
+	}
 	fmt.Fprintf(os.Stderr, "wrote %d of %d runs to %s\n", kept, len(paths), out)
 	return nil
 }
 
-func sftPrompts(suite string) (map[string]string, error) {
-	tasks, err := loadTasks(suite)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]string, len(tasks))
-	for _, t := range tasks {
-		out[t.ID] = t.Prompt
-	}
-	return out, nil
-}
-
-func sftVerdicts(path string) (map[string]bool, error) {
+func sftVerdicts(path string) (map[string]map[string]result, error) {
 	if path == "" {
 		return nil, fmt.Errorf("-report is required: it names the run report whose grader verdicts decide what is kept")
 	}
@@ -335,9 +334,27 @@ func sftVerdicts(path string) (map[string]bool, error) {
 	if err := json.Unmarshal(raw, &results); err != nil {
 		return nil, err
 	}
-	out := make(map[string]bool, len(results))
+	out := make(map[string]map[string]result, len(results))
 	for _, r := range results {
-		out[r.ID] = r.Passed
+		if r.Skipped {
+			continue
+		}
+		if r.Segments > 1 {
+			return nil, fmt.Errorf("%s: SFT export does not support segmented runs", r.ID)
+		}
+		if r.SFT == nil || r.SFT.RunID == "" || r.SFT.TaskSHA256 == "" || r.SFT.TrajectorySHA256 == "" || r.SFT.Prompt == "" {
+			if !r.Passed {
+				continue
+			}
+			return nil, fmt.Errorf("%s: report lacks SFT provenance; regenerate it with trajectories", r.ID)
+		}
+		if out[r.ID] == nil {
+			out[r.ID] = make(map[string]result)
+		}
+		if _, exists := out[r.ID][r.SFT.TrajectorySHA256]; exists {
+			return nil, fmt.Errorf("%s: duplicate verdict for one trajectory", r.ID)
+		}
+		out[r.ID][r.SFT.TrajectorySHA256] = r
 	}
 	return out, nil
 }

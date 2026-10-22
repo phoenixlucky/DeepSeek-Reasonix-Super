@@ -1,19 +1,25 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useModalFocus } from "./useModalFocus";
+import { SettingsLeaveContext, useSettingsLeave } from "./SettingsLeave";
 import { t } from "../i18n";
 import { listenAction } from "./listen";
 import { useRuntimeReload } from "./RuntimeReload";
-import { HttpError } from "../port/port";
-import type { AccountState, AgentPort, Appearance as Look, CapabilityScope, McpEntry, ModelEntry, PluginPackage, SessionStatus, SkillEntry } from "../port/port";
-import { arrowTabs } from "./tablist";
+import type { CapabilityScope, McpEntry, ModelEntry, PluginPackage, SkillEntry } from "../port/port";
 import { useSettingsSearch } from "./useSettingsSearch";
 import { bytes, tokens as fmtTokens } from "../i18n/format";
-import { ICON, NAV, SECTION_NAME } from "./prefsnav";
+import { SECTION_NAME } from "./prefsnav";
+import { SettingsNav } from "./SettingsNav";
 import { Group, SCOPE_SAID } from "./Group";
+import { PlanApproval, DefaultMode } from "./PlanApproval";
+import { PeersSection } from "./PeersSection";
+import { SessionCoordination } from "./SessionCoordination";
 import type { Section } from "./prefsnav";
 import { AddServer } from "./AddServer";
 import { PhoneAccess } from "./PhoneAccess";
+import { PhoneReminders } from "./PhoneReminders";
+import { remoteDeviceId } from "../port/cloud_remote";
+import { PhoneNotifications } from "./PhoneNotifications";
 import { Remotes } from "./Remotes";
-import type { HubPort } from "../port/hub";
 import type { RemoteHost } from "../port/remote";
 import { AddPlugin } from "./AddPlugin";
 import { Packages } from "./Packages";
@@ -21,21 +27,29 @@ import { ExtTabs, MarketGroup } from "./Market";
 import { InstalledLocation } from "./InstalledLocation";
 import { Switch } from "./Switch";
 import { ServerRow } from "./ServerRow";
-import { SkillRow } from "./SkillRow";
+import { SkillGroups } from "./SkillRow";
 import { Hooks } from "./Hooks";
+import { ScheduledRuns } from "./ScheduledRuns";
 import { Network } from "./Network";
 import { Shell as ShellPicker } from "./Shell";
-import { Rules } from "./Rules";
+import { ExternalOrigin } from "./ExternalOrigin";
+import { Rules, ToolList } from "./Rules";
 import { ConfigTrouble } from "./ConfigTrouble";
 import { Compaction } from "./Compaction";
 import { Sandbox } from "./Sandbox";
 import { BrowserTools } from "./BrowserTools";
 import { AskTimeout } from "./AskTimeout";
+import { SessionRef } from "./SessionRef";
+import { TraceExport } from "./TraceExport";
+import { ModHost } from "./ModHost";
+import { WebAccess } from "./WebAccess";
 import { ProgressWatch } from "./ProgressWatch";
 import { DisplaySettings } from "./DisplaySettings";
 import { AutoArchive } from "./AutoArchive";
+import { AgentPresets } from "./AgentPresets";
 import { Account } from "./Account";
 import { Backup } from "./Backup";
+import { BackupFile } from "./BackupFile";
 import { Providers } from "./Providers";
 import { activeKind, groupVendors } from "./Models";
 import { ModelUsage } from "./ModelUsage";
@@ -52,8 +66,9 @@ import { UsageSettings } from "./UsageSettings";
 import { Storage } from "./Storage";
 import { Appearance, SCHEMES } from "./Appearance";
 import { ScopeBar } from "./CapabilityScope";
-import { SAVED_NOT_APPLIED, reason } from "../i18n/kernel";
+import { savedNotApplied, reason } from "../i18n/kernel";
 import { SettingsHeading } from "./SettingsHeading";
+import type { SettingsProps as Props } from "./SettingsProps";
 import { APPROVALS, approvalName, approvalNote } from "./approvals";
 
 // An empty list hides Advanced. Only features available in the legacy app
@@ -64,37 +79,9 @@ const ELSEWHERE: string[] = [];
 // label. A failed server keeps its error on the row that names it.
 const NET_MODE: Record<string, string> = { auto: "跟随系统", env: "环境变量", custom: "手动", off: "直连" };
 
-interface Props {
-  // The window's own port, not a pane's: remote machines belong to the window,
-  // and their endpoints sit above every pane's prefix.
-  hub: HubPort;
-  onError: (e: unknown) => void;
-  port: AgentPort;
-  // Machine-scoped pages use the window owner; session and project controls
-  // continue to use the active pane.
-  networkPort?: AgentPort;
-  localWorkspacePort?: AgentPort;
-  networkHost?: string;
-  status: SessionStatus | null;
-  theme: string;
-  reloadThemes: () => void;
-  onTheme: (t: string) => void;
-  contrast: string;
-  weight: string;
-  onWeight: (v: string) => void;
-  look: Look;
-  onLook: (look: Look) => void;
-  onContrast: (c: string) => void;
-  onClose: () => void;
-  onChanged: () => void;
-  onSessionsRecovered?: () => void;
-  at?: string;
-  account: AccountState | null;
-  accountUnread: string;
-  reloadAccount: () => void;
-  workspaceRoot?: string;
-}
 export function Settings({ hub, onError, port, networkPort, localWorkspacePort, networkHost, status, theme, onTheme, contrast, onContrast, weight, onWeight, look, onLook, onClose, onChanged, onSessionsRecovered, reloadThemes, at: opened, account: acct, accountUnread, reloadAccount, workspaceRoot }: Props) {
+  const navigation = useSettingsLeave();
+  const close = useCallback(() => navigation.leave(onClose), [navigation.leave, onClose]);
   const homePort = networkPort ?? port;
   const localPort = localWorkspacePort ?? homePort;
   const [openedSection, openedAnchor = ""] = (opened ?? "").split(":", 2);
@@ -140,6 +127,7 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
   const [memCount, setMemCount] = useState(0);
   const [ruleCount, setRuleCount] = useState(0);
   const root = useRef<HTMLDivElement>(null);
+  useModalFocus(root);
   const veiled = useRef(false);
   const reloadExt = useCallback(() => {
     const refresh = ++extRefresh.current;
@@ -213,9 +201,9 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
   }, []);
 
   useEffect(() => {
-    const onKey = (e: Event) => (e as KeyboardEvent).key === "Escape" && !updatingPkg.applying && onClose();
+    const onKey = (e: Event) => (e as KeyboardEvent).key === "Escape" && !updatingPkg.applying && close();
     return listenAction(window, "keydown", { action: "settings.close", listener: onKey });
-  }, [onClose, updatingPkg.applying]);
+  }, [close, updatingPkg.applying]);
 
   useEffect(() => {
     loadModels();
@@ -242,7 +230,7 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
       await fn();
       onChanged();
     } catch (e) {
-      setNote({ text: reason(e), unapplied: e instanceof HttpError && SAVED_NOT_APPLIED.includes(e.reason?.code ?? "") });
+      setNote({ text: reason(e), unapplied: savedNotApplied(e) });
     } finally {
       setBusy("");
     }
@@ -268,7 +256,6 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
     setProtocol((p) => ({ ...p, [key]: kind }));
     if (plan.do === "switch") run(plan.ref, () => port.setModel(plan.ref));
   };
-  const efforts = models.find((m) => m.ref === status?.modelRef)?.efforts ?? [];
   const preset = t("自动");
   const approval = approvalName(status?.toolApprovalMode, "—");
   const broken = mcp.filter((m) => m.state === "failed").length;
@@ -289,9 +276,11 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
   // each section rides on its own row, so the risky one is legible from here.
   const nav: Record<Section, string> = {
     session: status?.plan ? t("计划模式") : preset,
+    persona: "",
     model: status?.modelRef?.split("/").pop() ?? "—",
     providers: models.length ? t("{n} 个服务", { n: groupVendors(models).length }) : "",
     tools: ruleCount ? `${approval} · ${ruleCount}` : approval,
+    peers: "",
     hooks: hookCount ? t("{n} 条", { n: hookCount }) : t("关"),
     ext: broken ? t("{n} 个异常", { n: broken }) : packages.length ? t("{n} 个包", { n: packages.length }) : `${looseMcp.length + looseOn}`,
     network: netMode,
@@ -316,10 +305,12 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
   const found = useSettingsSearch(query, shown, remoteBook);
   // 落点：跳过去之后短暂标一下「就是这里」。这是导航反馈，不是状态变化。
   const go = (section: Section, anchor: string) => {
-    setAt(section);
-    setQuery("");
-    setLanded(anchor);
-    if (section === "ext") setExtTab(anchor === "market" ? "market" : "installed");
+    navigation.leave(() => {
+      setAt(section);
+      setQuery("");
+      setLanded(anchor);
+      if (section === "ext") setExtTab(anchor === "market" ? "market" : "installed");
+    });
   };
   useEffect(() => {
     if (!landed) return;
@@ -349,14 +340,14 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
   }, [landed, at]);
 
   return (
-    <div
+    <SettingsLeaveContext.Provider value={navigation.register}><div
       className="prefs"
       ref={root}
       tabIndex={-1}
       onMouseDown={(e) => { veiled.current = e.target === e.currentTarget; }}
       // Both ends of the press have to land on the veil. A drag that started
       // inside the sheet and let go outside is a selection, not a dismissal.
-      onMouseUp={(e) => { if (veiled.current && e.target === e.currentTarget && !updatingPkg.applying) onClose(); }}
+      onMouseUp={(e) => { if (veiled.current && e.target === e.currentTarget && !updatingPkg.applying) close(); }}
       data-action-mouseup="settings.close"
     >
       <div className="prefs-sheet" role="dialog" aria-modal="true" aria-labelledby="prefs-title">
@@ -384,7 +375,7 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
             }
           }}
         />
-        <button className="btn sm" data-action="settings.close" disabled={updatingPkg.applying} onClick={onClose}>
+        <button className="btn sm" data-action="settings.close" disabled={updatingPkg.applying} onClick={close}>
           {t("关闭")} <span className="esc">Esc</span>
         </button>
         {found !== null && (
@@ -411,7 +402,7 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
                   <span className="cost">
                     {[
                       t(SCOPE_SAID[e.scope]),
-                      e.apply === "runtime-rebuild" ? t("重建运行时") : e.apply === "restart" ? t("重启后生效") : "",
+                      e.apply === "runtime-rebuild" ? t("重建运行时") : e.apply === "restart" ? t("重启后生效") : e.apply === "on-open" ? t("新开的会话生效") : e.apply === "next-turn" ? t("下个回合起生效") : e.apply === "next-rebuild" ? t("下次会话构建时生效") : "",
                     ].filter(Boolean).join(" · ")}
                   </span>
                 </button>
@@ -422,33 +413,7 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
       </div>
       <ConfigTrouble port={port} onRepaired={onChanged} />
       <div className="prefs-body">
-        <nav className="prefs-nav" role="tablist" aria-label={t("设置分类")} onKeyDown={arrowTabs}>
-          {NAV.map(([group, items]) => {
-            const rows = items.filter(([id]) => shown(id));
-            // A heading over nothing is worse than no heading: remote is absent
-            // on a kernel without it, advanced until something moves in.
-            if (rows.length === 0) return null;
-            return (
-              <Fragment key={group}>
-                <div className="navsec">{t(group)}</div>
-                {/* One tab stop for the list, arrows move inside it: twelve
-                    stops made Tab the wrong way through this screen. */}
-                {rows.map(([id, name]) => (
-                  <button key={id} id={`prefs-${id}`} role="tab" title={t(name)}
-                    data-action="settings.section" data-value={id}
-                    tabIndex={at === id ? 0 : -1}
-                    aria-selected={at === id} disabled={updatingPkg.applying} onClick={() => setAt(id)}>
-                    <svg viewBox="0 0 16 16" aria-hidden="true">{ICON[id]}</svg>
-                    <span className="nm">{t(name)}</span>
-                    <span className="nv" title={nav[id] || undefined} data-danger={danger(id) ? "" : undefined}>
-                      {nav[id]}
-                    </span>
-                  </button>
-                ))}
-              </Fragment>
-            );
-          })}
-        </nav>
+        <SettingsNav at={at} values={nav} shown={shown} danger={danger} disabled={updatingPkg.applying} onSelect={(section) => { if (section !== at) navigation.leave(() => setAt(section)); }} />
 
         <div className="prefs-main" role="tabpanel" aria-labelledby={`prefs-${at}`} data-sec={at}>
           <Boundary
@@ -497,9 +462,10 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
                     onClick={() => run("plan", () => port.setPlanMode(!status?.plan))}
                   />
                 </div>
-              </Group>
+              </Group><DefaultMode port={port} />
               <DisplaySettings port={port} />
               <AskTimeout port={port} />
+              <SessionRef port={port} />
               <ProgressWatch port={port} />
               <AutoArchive port={port} />
               <Group id="session-dir" title={t("会话写入位置")}>
@@ -526,6 +492,8 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
             </>
           )}
 
+          {at === "persona" && <AgentPresets port={port} focusPersona={landed === "persona"} />}
+
           {at === "providers" && (
             <Group id="providers" title={t("模型服务")}
               hint={t("选择一个服务查看和修改；地址、密钥与模型列表保存后生效。自定义中转站的协议与模型会在连接后自动探测。")}>
@@ -539,7 +507,7 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
           {at === "model" && (
             <>
               <Group id="model" title={t("按用途选择模型")} now={nav.model}
-                hint={t("默认模型用于当前对话和大多数任务，其他用途默认跟随它；只有要为某件事换一个模型时才改。网页搜索默认用对话模型自带的搜索；指定独立搜索模型后，每次搜索多一次计费，且不带对话上下文。切换会保留对话并重建运行时，任务执行期间无法修改。")}>
+                hint={t("按用途选择模型和思考强度；自动使用模型的默认档位。未选择命名模型时显示消息预览。切换会保留对话。")}>
                 <ModelUsage models={models} roles={roles} main={status?.modelRef} busy={busy} protocol={protocol}
                   onMain={(ref) => run(ref, async () => {
                     await port.setModel(ref);
@@ -548,24 +516,10 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
                     // be re-read or the controlled select snaps back.
                     loadModels();
                   })}
-                  onRole={(role, ref) => run(`role:${role}`, () => port.setRole(role, ref).finally(loadRoles))}
+                  effort={status?.effort || "auto"} onEffort={(level) => run(`effort:${level}`, () => port.setEffort(level))}
+                  onRole={(role, ref, effort) => run(`role:${role}`, () => port.setRole(role, ref, effort).finally(loadRoles))}
                   overrides={overrides} onClearOverride={(role, key) => run(`role:${role}`, () => port.clearRoleOverride(role, key).finally(loadRoles))} />
               </Group>
-              {efforts.length > 0 ? (
-                <Group id="effort" title={t("推理强度")} hint={t("以下档位由当前模型的端点支持，auto 表示使用端点自身的默认值。")}>
-                  <div className="seg" role="group" aria-label={t("推理强度")}>
-                    {efforts.map((e) => (
-                      <button key={e} data-action="reasoning.effort" data-value={e}
-                        aria-pressed={(status?.effort || "auto") === e}
-                        onClick={() => run(e, () => port.setEffort(e))}>
-                        {e}
-                      </button>
-                    ))}
-                  </div>
-                </Group>
-              ) : (
-                <Group id="effort" title={t("推理强度")} hint={t("当前模型未提供可调的推理档位，因此不显示该选项。")} />
-              )}
               <Group id="context" title={t("上下文维护")}
                 hint={t("默认按模型容量自动整理。自定义中转站若无法提供最大上下文，先按 160k 计算；你可以在这里填写实际容量。")}>
                 <Compaction port={port} onChanged={onChanged} />
@@ -592,12 +546,24 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
                 </div>
                 <p className="note">{approvalNote(status?.toolApprovalMode)}</p>
               </Group>
+              <Group id="external-origin"
+                title={t("外部文字")}
+                hint={t("网页和工具结果里的文字可能是别人写给 agent 的指令。开启后，照抄这些文字的调用先问你。")}
+              >
+                <ExternalOrigin port={port} onChanged={onChanged} />
+              </Group>
+              <Group id="plan-approval"
+                title={t("计划批准")}
+                hint={t("计划模式提交计划后，默认等你点批准才开始执行。长时间无人值守的任务可以改成自动批准。")}
+              >
+                <PlanApproval port={port} />
+              </Group>
               <Group id="rules"
                 title={t("明确的规则")}
                 hint={t("上一项决定是否请求确认，此处决定哪些操作始终禁止、哪些无需确认。修改会重建运行时，任务运行期间无法变更。")}
               >
                 <Rules port={port} onChanged={onChanged} />
-              </Group>
+              </Group><ToolList port={port} />
               <Group id="sandbox"
                 title={t("沙箱")}
                 hint={t("批准之后可以操作的范围。该限制不依赖 agent 自觉：写入范围由工具实施，命令隔离由操作系统实施。")}
@@ -616,16 +582,23 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
               >
                 <BrowserTools port={port} onChanged={onChanged} />
               </Group>
+              <WebAccess port={port} />
+              <SessionCoordination port={port} onChanged={onChanged} />
             </>
           )}
 
+          {at === "peers" && <PeersSection port={port} hub={hub} />}
+
           {at === "hooks" && (
-            <Group id="hooks"
-              title={t("自动化")}
-              hint={t("在 agent 执行任务前后运行自定义命令。这些命令在本机以当前用户权限运行；可拦截 agent 的两个事件已在下方标出。")}
-            >
-              <Hooks port={port} onChanged={afterExtChange} />
-            </Group>
+            <>
+              <Group id="hooks"
+                title={t("自动化")}
+                hint={t("在 agent 执行任务前后运行自定义命令。这些命令在本机以当前用户权限运行；可拦截 agent 的两个事件已在下方标出。")}
+              >
+                <Hooks port={port} onChanged={afterExtChange} />
+              </Group>
+              <ScheduledRuns port={port} />
+            </>
           )}
           {at === "ext" && (
             <>
@@ -644,6 +617,7 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
                 >
                   {reload.note}
                 </Group>
+                <ModHost port={port} />
                 <Group id="plugins"
                   title={t("插件包")}
                   now={packages.length ? t("{n} 个", { n: packages.length }) : undefined}
@@ -715,9 +689,7 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
                       : "模型自动发现已关闭：仅显式指定的技能会运行。开关立即生效，自下一条消息起，无需新建会话。",
                   )}
                 >
-                  {looseSkills.map((sk) => (
-                    <SkillRow key={sk.name} sk={sk} implicit={implicit} port={port} onDone={afterExtChange} root={scopeAt} onFailed={setFailed} />
-                  ))}
+                  <SkillGroups skills={looseSkills} implicit={implicit} port={port} onDone={afterExtChange} root={scopeAt} onFailed={setFailed} />
                   {extErrors.skills && <div className="rnote" data-s="bad" role="alert">{extErrors.skills} <button className="act" data-action="extensions.refresh" disabled={extRefreshing} onClick={reloadExt}>{t("重试")}</button></div>}
                   {looseSkills.length === 0 && !extRefreshing && !extErrors.skills && <div className="empty">{t("当前工作目录下没有技能。")}</div>}
                 </Group>
@@ -733,6 +705,7 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
               <Network port={networkPort ?? port} host={networkHost ?? ""} />
             </Group>
           )}
+          {at === "network" && <TraceExport port={port} />}
 
           {at === "remote" && (
             <Group id="remote"
@@ -743,6 +716,8 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
             </Group>
           )}
           {at === "remote" && <PhoneAccess hub={hub} onError={onError} />}
+          {at === "remote" && <PhoneNotifications hub={hub} port={port} onError={onError} />}
+          {at === "remote" && remoteDeviceId() && <PhoneReminders host={remoteDeviceId()!} />}
 
           {at === "account" && (
             <Group id="account"
@@ -752,14 +727,13 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
               <Account port={port} state={acct} unread={accountUnread} reload={reloadAccount} />
             </Group>
           )}
+          {at === "account" && <Group id="backup-file" title={t("导出与导入配置")} hint={t("不用账号：把本机的模型、扩展、记忆等配置加密导出成一个文件，换机器时再导入。")}><BackupFile port={port} /></Group>}
           {at === "account" && acct?.signedIn && acct.user && (
             <Group id="backup" title={t("云备份")} hint={t("把本机的模型、扩展、记忆等配置加密保存到账号，换机器或重装后按项恢复。")}>
               <Backup port={port} />
             </Group>
           )}
-
           {at === "versions" && <About port={homePort} />}
-
           {at === "memory" && (
             <Group id="memory"
               title={t("记忆")}
@@ -794,6 +768,6 @@ export function Settings({ hub, onError, port, networkPort, localWorkspacePort, 
         </div>
       </div>
       </div>
-    </div>
+    </div></SettingsLeaveContext.Provider>
   );
 }

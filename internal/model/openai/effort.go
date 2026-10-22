@@ -100,6 +100,10 @@ func depthOnly(levels []string) []string {
 	return out
 }
 
+// RequestEfforts lists the depths a request's EffortOverride may take; empty means
+// overrides are ignored and the effort this client was built with is the only one.
+func (c *client) RequestEfforts() []string { return append([]string(nil), c.requestEfforts...) }
+
 // requestEffort resolves one request's reasoning depth: a vocabulary-approved
 // EffortOverride wins, anything else falls back to the configured effort.
 func (c *client) requestEffort(req provider.Request) string {

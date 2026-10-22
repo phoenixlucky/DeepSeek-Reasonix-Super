@@ -168,6 +168,10 @@ interface (`call` / `notify` / `close`) abstracts that, so the MCP-level logic
   answer `roots/list` with its file URI. `tools/call` includes a per-call
   `_meta.progressToken`; matching `notifications/progress` messages stream into
   the existing tool-progress event path.
+- A local stdio server's `tools/call` also carries `_meta["io.reasonix/cwd"]` (the
+  workspace root) and `_meta["io.reasonix/readOnly"]` (true in plan mode).
+- Remote HTTP and SSE servers get neither, so no local path leaves the machine. A
+  key the call already carries is kept, and both are hints, not authority.
 - A stdio server uses one persistent transport for initialize, reads, and
   writes, preserving state such as browser sessions across tool calls. The
   process uses the server's process sandbox because process confinement cannot
@@ -373,10 +377,17 @@ digest, so a constraint keeps its protection across repeated compaction.
 
 A turn past those bounds folds like any other content. Prefix it with `[[keep]]`
 (keep policy `user_marked`, on by default) to hold it verbatim regardless of
-size. That drop is never silent: compaction telemetry carries `user_kept` and
+its own size.
+
+Marked turns have a budget of their own: together they may spend `window×15%`,
+newest first, and the oldest fold into the digest past it. A kept turn rides
+into every later fold, so an unbounded mark would grow what each fold carries
+until its candidate could not land under the trigger.
+
+That drop is never silent: compaction telemetry carries `user_kept` and
 `user_dropped` counts, and a committed checkpoint that had to fold one of your
-turns emits a warning naming `[[keep]]` — the projection reads as complete
-either way, so the count is the only thing that distinguishes them.
+turns, marked or not, emits a warning. The projection reads as complete either
+way, so the count is the only thing that distinguishes them.
 
 Two properties bound that loss. Each fold re-derives its digest from the
 canonical transcript rather than from the previous digest, so digests do not
@@ -1072,12 +1083,19 @@ type Chunk struct {
 
 ## 5. Configuration (TOML)
 
-Resolution order: **flag > project `./reasonix.toml` > the user config file
+Resolution order: **flag > project config > the user config file
 > built-in defaults**. Starting with **Reasonix v1.8.1**, the user config lives
 at `~/.reasonix/config.toml` on macOS/Linux and
 `%AppData%\reasonix\config.toml` on Windows. See
 [Configuration paths](./CONFIG_PATHS.md) for migration and related data paths.
-Fields marked user/global only are not overridden by project `reasonix.toml`.
+
+- Project config uses `./reasonix.toml` when present, otherwise
+  `.reasonix/reasonix.toml`; the two are never merged.
+- Reads and edits use the same selected path. New project configs still default
+  to `./reasonix.toml`.
+- A malformed or inaccessible root file does not permit fallback.
+- Fields marked user/global only are not overridden by either project config.
+
 Provider entries name secrets with `api_key_env`; saved key values live in
 Reasonix's global `<Reasonix home>/.env`, shared by CLI and desktop. Project
 `.env`, home `.env`, inherited shell environment variables, legacy credentials,

@@ -5,17 +5,24 @@ import type { AgentPort, Appearance as Look, ThemePack } from "../port/port";
 import { ZOOM_PRESETS } from "./zoom";
 import { chord } from "./keys";
 import { host } from "../port/host";
-import { MONO_FAMILIES, UI_FAMILIES, installed, readSizeOf, readSteps } from "./look";
+import { MONO_FAMILIES, TEXT_STEPS, UI_FAMILIES, installed, readSizeOf, readSteps } from "./look";
 import { STORAGE as LANG_KEY, t } from "../i18n";
 import { pct } from "../i18n/format";
 import { reason } from "../i18n/kernel";
 import { Notifications } from "./Notifications";
 import { Folding } from "./Folding";
 import { WindowSection } from "./WindowSection";
+import { LiveGraceSection } from "./LiveGraceSection";
+import { LegacySessionsSection } from "./LegacySessionsSection";
+import { OpenSessionLimitSection } from "./OpenSessionLimitSection";
+import { LiveStreamBudgetSection } from "./LiveStreamBudgetSection";
+import { NewAnswerSection } from "./NewAnswerSection";
+import { SessionQuickSection } from "./SessionQuickSection";
 import { NavRailSection } from "./NavRailSection";
 import { GraphicsSection } from "./GraphicsSection";
 import { SendShortcut } from "./SendShortcut";
 import { SessionTabsSetting } from "./SessionTabsSetting";
+import { EscStopSetting } from "./EscStopSetting";
 import { ThemeImport } from "./ThemeImport";
 import { ThemeRemove } from "./ThemeRemove";
 import { useThemeInventory } from "./useThemeInventory";
@@ -154,7 +161,7 @@ export function Appearance({ port, theme, onTheme, contrast, onContrast, weight,
   );
   const cell = (p: ThemePack) => (
     <div className="pal-cell" key={p.id}>
-      <Swatch pack={p} theme={theme} name={p.name} on={!!p.active} onPick={() => pick(p.id)} />
+      <Swatch pack={p} theme={theme} name={t(p.name)} on={!!p.active} onPick={() => pick(p.id)} />
       {p.removable && <ThemeRemove name={p.name} onRemove={() => remove(p.id)} />}
     </div>
   );
@@ -165,10 +172,10 @@ export function Appearance({ port, theme, onTheme, contrast, onContrast, weight,
   // page a user opens merely to switch between light and dark. If one of them
   // is active it remains visible beside the foundations, so the current state
   // never disappears into a closed disclosure.
-  const foundations = packs.filter((p) => !p.background?.image);
-  const activeIllustrated = packs.find((p) => p.active && p.background?.image);
+  const foundations = packs.filter((p) => !p.background?.image && !p.sky);
+  const activeIllustrated = packs.find((p) => p.active && (p.background?.image || p.sky));
   const featured = activeIllustrated ? [...foundations, activeIllustrated] : foundations;
-  const illustrated = packs.filter((p) => p.background?.image && p.id !== activeIllustrated?.id);
+  const illustrated = packs.filter((p) => (p.background?.image || p.sky) && p.id !== activeIllustrated?.id);
 
   // A change lands on screen through App's own effect; this only sends it on
   // so the next launch opens the same way.
@@ -328,7 +335,7 @@ export function Appearance({ port, theme, onTheme, contrast, onContrast, weight,
         <div className="grp-hd">
           <h3>{t("大小")}</h3>
         </div>
-        <p className="hint">{t("「界面」会同时缩放边距与控件，「正文」仅调整对话中的文字大小，两者独立设置。")}</p>
+        <p className="hint">{t("「界面」会同时缩放边距与控件，「界面文字」只放大侧栏、设置等处的文字，「正文」仅调整对话中的文字大小，三者独立设置。")}</p>
         {host().inShell() && <p className="hint">{t("键盘：{up} 放大，{down} 缩小，{reset} 恢复标准，同样调整「界面」大小。", { up: chord("+"), down: chord("-"), reset: chord("0") })}</p>}
         <div className="grp-items">
           <div className="prow">
@@ -357,6 +364,16 @@ export function Appearance({ port, theme, onTheme, contrast, onContrast, weight,
               onChange={(e) => set({ zoom: Number(e.target.value) })}
             />
             <span className="now">{pct(look.zoom || 1)}</span>
+          </div>
+          <div className="prow">
+            <span className="tx">{t("界面文字")}</span>
+            <div className="seg" data-text role="group" aria-label={t("界面文字大小")}>
+              {TEXT_STEPS.map(([v, name]) => (
+                <button key={v} data-action="appearance.text-size" aria-pressed={(look.textSize || 1) === v} onClick={() => set({ textSize: v === 1 ? 0 : v })}>
+                  {t(name)}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="prow">
             <span className="tx">{t("正文")}</span>
@@ -546,8 +563,15 @@ export function Appearance({ port, theme, onTheme, contrast, onContrast, weight,
 
       <WindowSection port={port} />
       <NavRailSection />
+      <LiveGraceSection />
+      <LegacySessionsSection />
+      <OpenSessionLimitSection />
+      <LiveStreamBudgetSection />
+      <SessionQuickSection />
+      <NewAnswerSection />
       <GraphicsSection />
       <SendShortcut />
+      <EscStopSetting />
       <SessionTabsSetting />
       <Folding />
       <Notifications port={port} />
@@ -556,12 +580,10 @@ export function Appearance({ port, theme, onTheme, contrast, onContrast, weight,
           once, not that any one control is obscure. The summary says what is
           folded and whether it has been changed — a disclosure hiding a value
           somebody set is a screen disagreeing with the window itself. */}
-      <details className="advset">
-        <summary>
-          <span className="tx">
-            <span className="lb">{t("高级外观")}</span>
-            <span className="ds">{changed.length ? t("已修改：{list}", { list: changed.join(" · ") }) : t("字体、文字粗细、文字对比度、视觉效果")}</span>
-          </span>
+      <details className="advset appearance-advanced">
+        <summary className="grp" id="set-advanced-appearance" data-setting="advanced-appearance">
+          <h3 className="grp-hd"><span>{t("高级外观")}</span></h3>
+          <span className="hint">{changed.length ? t("已修改：{list}", { list: changed.join(" · ") }) : t("字体、文字粗细、文字对比度、视觉效果")}</span>
         </summary>
         <section className="grp" id="set-font" data-setting="font">
           <div className="grp-hd">
@@ -718,7 +740,7 @@ function Swatch({
     : undefined;
 
   return (
-    <button className="pal" type="button" data-action="theme.activate" data-value={pack?.id ?? ""} title={pack?.description || name} data-on={on ? "" : undefined} aria-pressed={on} onClick={onPick}>
+    <button className="pal" type="button" data-action="theme.activate" data-value={pack?.id ?? ""} title={pack?.description ? t(pack.description) : name} data-on={on ? "" : undefined} aria-pressed={on} onClick={onPick}>
       <span className="pal-art" style={style}>
         <span className="pal-rail" />
         <span className="pal-body">

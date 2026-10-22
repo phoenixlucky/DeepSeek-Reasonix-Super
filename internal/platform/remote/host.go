@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -145,7 +146,14 @@ func ResolveJumpHosts(cfg *config.Config, chain []string, sshCfg *SSHConfigSourc
 	return out, nil
 }
 
+// ErrNotSSHHost marks a configured machine that is reached some other way, so
+// an SSH dial never reads its (absent) address as a host to connect to.
+var ErrNotSSHHost = errors.New("remote: host is not reached over ssh")
+
 func resolveEntry(e config.RemoteHostEntry, sshCfg *SSHConfigSource) (ResolvedHost, error) {
+	if k := e.HostKind(); k != config.RemoteKindSSH {
+		return ResolvedHost{}, fmt.Errorf("%w: %q is kind %q", ErrNotSSHHost, e.Name, k)
+	}
 	r := ResolvedHost{
 		Name:          e.Name,
 		HostName:      strings.TrimSpace(e.Host),

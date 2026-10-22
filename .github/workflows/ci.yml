@@ -15,7 +15,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Cheap path gate for pull requests. PRs confined to docs/release-notes
@@ -88,7 +88,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: node --test scripts/ci-platform-scope.test.mjs scripts/cli-archive-build.test.mjs scripts/release-credits.test.mjs scripts/update-contributors.test.mjs scripts/update-acknowledgments.test.mjs scripts/markdown-refs.test.mjs scripts/studio-release-notes.test.mjs scripts/publish-cli-pointer.test.mjs scripts/studio-release-flags.test.mjs scripts/studio-notes-publish.test.mjs scripts/withdraw-version.test.mjs scripts/brew-cask-guard.test.mjs scripts/feedback-sync.test.mjs npm/publish.test.mjs
+      - run: node --test scripts/linux-install-smoke.test.mjs scripts/studio-artifacts.test.mjs scripts/ci-platform-scope.test.mjs scripts/cli-archive-build.test.mjs scripts/cli-archive-contents.test.mjs scripts/release-credits.test.mjs scripts/update-contributors.test.mjs scripts/update-acknowledgments.test.mjs scripts/markdown-refs.test.mjs scripts/studio-release-notes.test.mjs scripts/publish-cli-pointer.test.mjs scripts/studio-release-flags.test.mjs scripts/studio-notes-publish.test.mjs scripts/withdraw-version.test.mjs scripts/brew-cask-guard.test.mjs scripts/feedback-sync.test.mjs npm/publish.test.mjs
 
   # The ruleset requires the per-OS check names (test (ubuntu-latest) etc.).
   # A matrix job skipped at job level reports no per-leg checks at all, so
@@ -179,6 +179,23 @@ jobs:
           REASONIX_RELEASE_CACHE_GUARD: "1"
         run: go test ./...
 
+      - name: test (Windows composition links)
+        if: env.RUN_STEPS == 'true' && runner.os == 'Windows' && github.event_name == 'pull_request'
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -count=1 -timeout=3m -json -run '^Test(CaptureDirectoryMaterializesContainedLinks|CaptureDirectoryRefusesUnsafeLinks|CaptureHookFileFlattensContainedLink|MaterializeStillRejectsLinkedRetainedFilesAndRoot|WindowsCompositionJunctions|WindowsLiveSkillJunctions|CompositionRetainsLinkedSkillAcrossRestart|CompositionLinkedSkillRejectsLinkedResources|CompositionLinkedExtensionResources|CompositionLinkedHookResources)$' ./internal/state/agentpreset ./internal/ext/skill ./internal/assembly/boot | tee "$RUNNER_TEMP/composition-links.jsonl"
+          jq -se '
+            ["TestCaptureDirectoryMaterializesContainedLinks", "TestCaptureDirectoryRefusesUnsafeLinks",
+             "TestCaptureHookFileFlattensContainedLink", "TestMaterializeStillRejectsLinkedRetainedFilesAndRoot",
+             "TestWindowsCompositionJunctions", "TestWindowsLiveSkillJunctions", "TestCompositionRetainsLinkedSkillAcrossRestart",
+             "TestCompositionLinkedSkillRejectsLinkedResources", "TestCompositionLinkedExtensionResources",
+             "TestCompositionLinkedHookResources"] as $required |
+            [.[] | select(.Action == "pass") | .Test] as $passed |
+            all(.[]; .Action != "skip") and (($required - $passed) | length == 0)
+          ' "$RUNNER_TEMP/composition-links.jsonl"
+
       # Pull requests run a Windows smoke suite: the packages that actually
       # carry *_windows.go code, the startup/checkpoint packages with portable
       # filesystem contracts, plus cmd/. The full ./... sweep stays on pushes
@@ -204,6 +221,12 @@ jobs:
           REASONIX_RELEASE_CACHE_GUARD: "1"
           WINDOWS_SANDBOX_WAIT_MS: "20000"
         run: go test -count=1 -p 4 -timeout=18m ./internal/runtime/agent/... ./internal/platform/appidentity/... ./internal/assembly/boot/... ./internal/state/checkpoint/... ./internal/frontend/cli/... ./internal/session/control/... ./internal/base/filelock/... ./internal/base/fileutil/... ./internal/ext/hook/... ./internal/state/instruction/... ./internal/ext/mcplaunch/... ./internal/platform/notify/... ./internal/base/proc/... ./internal/platform/remote/... ./internal/platform/repair/... ./internal/safety/sandbox/... ./internal/base/sysproxy/... ./internal/state/workspacelease/... ./cmd/...
+
+      # Worktree rollback is absent from the broad Windows PR smoke list.
+      - name: test (Windows worktree rollback)
+        if: env.RUN_STEPS == 'true' && runner.os == 'Windows' && github.event_name == 'pull_request'
+        timeout-minutes: 3
+        run: go test -count=1 -timeout=2m -run '^TestDiscardUnpublished.*OnWindows$|^TestCreateFromDetachedHEADAndOccupiedBranch$' ./internal/platform/worktree
 
       # The general Windows PR smoke list intentionally omits internal/contract/tool.
       # Keep the session-temp portability contract covered without widening the
@@ -238,7 +261,9 @@ jobs:
           WINDOWS_SANDBOX_WAIT_MS: "20000"
         shell: bash
         run: |
-          go test -count=1 -p 4 -timeout=18m -json ./... | tee "$RUNNER_TEMP/full.jsonl" |
+          # internal/assembly/boot alone takes 14-15 minutes on a Windows runner;
+          # the package limit leaves headroom inside the step limit above.
+          go test -count=1 -p 4 -timeout=28m -json ./... | tee "$RUNNER_TEMP/full.jsonl" |
             jq -rj --unbuffered 'select(.Action == "output" and .Test == null) | .Output'
 
       - name: test (full) failure detail
@@ -515,6 +540,7 @@ jobs:
         run: |
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 \
             -ignore 'label "windows-11-arm" is unknown' \
+            -ignore 'label "ubuntu-22.04-arm" is unknown' \
             .github/workflows/release-studio.yml \
             .github/workflows/studio-certum-signing-smoke.yml \
             .github/workflows/ci.yml

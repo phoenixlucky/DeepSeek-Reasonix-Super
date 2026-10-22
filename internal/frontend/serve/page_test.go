@@ -2,6 +2,8 @@ package serve
 
 import (
 	"io"
+	"io/fs"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -89,5 +91,110 @@ func TestFindPageRefusesADirectoryWithNoIndex(t *testing.T) {
 	got, err := FindPage(dir)
 	if err != nil || got == nil {
 		t.Fatalf("FindPage(%q) = %v, %v; want the directory", dir, got, err)
+	}
+}
+
+// A type another program registered for an extension (on Windows the standard
+// library reads them from the registry) must not decide what the page's own
+// files are served as: an SVG that is not image/svg+xml is a broken image.
+func TestThePagesFilesKeepTheirTypeWhateverTheMachineRegistered(t *testing.T) {
+	for ext, bad := range map[string]string{".svg": "application/octet-stream", ".js": "text/plain", ".css": "text/plain"} {
+		want := map[string]string{".svg": "image/svg+xml", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}[ext]
+		if err := mime.AddExtensionType(ext, bad); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = mime.AddExtensionType(ext, want) })
+	}
+	page := fstest.MapFS{
+		"assets/logo.svg": &fstest.MapFile{Data: []byte("<svg xmlns='http://www.w3.org/2000/svg'/>")},
+		"assets/app.js":   &fstest.MapFile{Data: []byte("//")},
+		"assets/app.css":  &fstest.MapFile{Data: []byte("a{}")},
+	}
+	srv := httptest.NewServer(withPage(http.NotFoundHandler(), page))
+	defer srv.Close()
+	for path, want := range map[string]string{
+		"/assets/logo.svg": "image/svg+xml",
+		"/assets/app.js":   "text/javascript; charset=utf-8",
+		"/assets/app.css":  "text/css; charset=utf-8",
+	} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if got := resp.Header.Get("Content-Type"); got != want {
+			t.Errorf("%s is served as %q, want %q", path, got, want)
+		}
+	}
+}
+
+// A package manager that puts a link on the PATH leaves the page beside the
+// real executable, not beside the link. Homebrew's cask does exactly that.
+func TestPageIsFoundBesideTheRealExecutableOfALink(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "Caskroom", "reasonix", "2.0.0")
+	dist := filepath.Join(real, "frontend-next", "dist")
+	if err := os.MkdirAll(dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte("<title>studio</title>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(real, "reasonix")
+	if err := os.WriteFile(exe, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(bin, "reasonix")
+	if err := os.Symlink(exe, link); err != nil {
+		t.Skipf("no symlinks here: %v", err)
+	}
+
+	page := pageBeside(link)
+	if page == nil {
+		t.Fatal("the page beside the real executable was not found through the link")
+	}
+	if _, err := fs.Stat(page, "index.html"); err != nil {
+		t.Errorf("the page found has no index.html: %v", err)
+	}
+}
+
+// A page beside the link itself still wins over one beside its target, so an
+// install that never used a link resolves as it always did.
+func TestPageBesideTheLinkComesFirst(t *testing.T) {
+	root := t.TempDir()
+	for _, d := range []string{"here", "there"} {
+		dist := filepath.Join(root, d, "frontend-next", "dist")
+		if err := os.MkdirAll(dist, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte(d), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	target := filepath.Join(root, "there", "reasonix")
+	if err := os.WriteFile(target, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "here", "reasonix")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("no symlinks here: %v", err)
+	}
+	page := pageBeside(link)
+	if page == nil {
+		t.Fatal("no page found")
+	}
+	got, err := fs.ReadFile(page, "index.html")
+	if err != nil || string(got) != "here" {
+		t.Errorf("found %q (%v), want the page beside the link", got, err)
+	}
+}
+
+func TestNoPageBesideAnExecutableIsNil(t *testing.T) {
+	if page := pageBeside(filepath.Join(t.TempDir(), "reasonix")); page != nil {
+		t.Errorf("found a page where none exists")
 	}
 }

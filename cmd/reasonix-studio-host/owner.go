@@ -20,8 +20,13 @@ const (
 
 // showOnToastClick is what a clicked toast runs: ask the shell, which is the
 // only process that can bring its window forward, to do so.
-func showOnToastClick(o *shellOwner) func() {
-	return func() { _ = o.ask(actShow) }
+func showOnToastClick(o *shellOwner, log io.Writer) func() {
+	return func() {
+		fmt.Fprintln(log, "notify: toast clicked")
+		if err := o.ask(actShow); err != nil {
+			fmt.Fprintf(log, "notify: toast click could not reach the shell: %v\n", err)
+		}
+	}
 }
 
 // shellOwner is the application this process was spawned by, reached over the

@@ -1,8 +1,10 @@
 import { t } from "./index";
 import { FOLD_WHY, NO_CODE_WHY } from "./compaction_why";
+import { CONTEXT_COMPOSITION, contextCompositionVars } from "./context_composition";
+import { SUBAGENT_WAITING, subagentWaitingVars } from "./subagent_waiting";
 import { EXTENSION_SKIPPED, extensionSkippedVars } from "./extension_skipped";
 import { INBOX_RECOVERED, inboxRecoveredVars } from "./inbox_recovered";
-import { JOB_FAILED, JOB_FINISHED, JOB_KILLED, jobErrorText, jobNoticeVars } from "./job_notice";
+import { JOB_FAILED, JOB_FINISHED, JOB_KILLED, JOB_STALLED, jobErrorText, jobNoticeVars, jobStalledVars } from "./job_notice";
 import { NOTICE_TEXT } from "./notices";
 import { PERMISSION_RULES_DORMANT, permissionRulesDormantVars } from "./permission_rules_dormant";
 
@@ -22,6 +24,9 @@ const VARS: Record<string, (detail: string | undefined) => NoticeVars | undefine
   [JOB_FINISHED]: jobNoticeVars,
   [JOB_KILLED]: jobNoticeVars,
   [JOB_FAILED]: jobNoticeVars,
+  [JOB_STALLED]: jobStalledVars,
+  [CONTEXT_COMPOSITION]: contextCompositionVars,
+  [SUBAGENT_WAITING]: subagentWaitingVars,
   display_currency: (detail) => ({ mode: detail || "auto" }),
   compact_declined: compactReason("compact_declined"),
   compact_failed: compactReason("compact_failed"),

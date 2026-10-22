@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reasonix/internal/contract/pricing"
 	"strings"
+	"time"
 
 	"reasonix/internal/contract/provider"
 )
@@ -218,6 +219,29 @@ func (c *Config) OfficialCatalogProvider(modelRef string) string {
 		return ""
 	}
 	return officialProviderKind(entry)
+}
+
+// LiveTariff is the window the vendor's own schedule bills modelRef in at the
+// given instant, when its rate is the vendor's table. The vendor is read off the
+// endpoint like OfficialCatalogProvider, and a custom price answers nothing.
+func (c *Config) LiveTariff(modelRef string, at time.Time) (pricing.Tariff, bool) {
+	entry, ok := c.ResolveModel(modelRef)
+	if !ok {
+		return pricing.Tariff{}, false
+	}
+	model := modelRef
+	if i := strings.LastIndex(modelRef, "/"); i >= 0 {
+		model = modelRef[i+1:]
+	}
+	price := entry.PriceForModel(model)
+	if price == nil {
+		return pricing.Tariff{}, false
+	}
+	card := pricing.RateCard{CacheHit: price.CacheHit, Input: price.Input, Output: price.Output, Currency: pricing.NormalizeCurrency(price.Currency)}
+	if card.Currency == "" {
+		card.Currency = "CNY"
+	}
+	return pricing.LiveTariff(officialProviderKind(entry), model, card, at)
 }
 
 // QuoteForUsage builds a CostQuote from a provider price and usage tokens.

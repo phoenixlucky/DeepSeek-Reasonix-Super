@@ -25,6 +25,15 @@ type EvidenceSeal struct {
 	// leaves the bundle without workspace observation.
 	Root     string
 	Observer *observation.Observer
+	// takeHook replaces Observer.Take in tests that need a snapshot of a chosen speed.
+	takeHook func(ctx context.Context, root string) observation.Snapshot
+}
+
+func (s *EvidenceSeal) take(ctx context.Context, root string) observation.Snapshot {
+	if s.takeHook != nil {
+		return s.takeHook(ctx, root)
+	}
+	return s.Observer.Take(ctx, root)
 }
 
 // shadowBundleKind names the record kind. The bundle observes and gates
@@ -114,13 +123,13 @@ func sha256Hex(b []byte) string {
 // record of the workspace stream and reports the seal. A failed seal changes
 // nothing about the turn: the bundle is a shadow, and the audit carries the
 // store's typed cause instead.
-func (a *Agent) sealShadowBundle(input string, c *taskcontract.Contract, rep completion.Report, receipts []evidence.Receipt, blocked bool) {
+func (a *Agent) sealShadowBundle(ctx context.Context, input string, c *taskcontract.Contract, rep completion.Report, receipts []evidence.Receipt, blocked bool) {
 	seal := a.svc.evidenceSeal
 	if seal == nil || seal.Store == nil || seal.Stream == "" {
 		return
 	}
-	obs := a.observeWorkspace(seal)
-	ctx, cancel := context.WithTimeout(context.Background(), sealWait)
+	obs := a.observeWorkspace(ctx, seal)
+	ctx, cancel := context.WithTimeout(ctx, sealWait)
 	defer cancel()
 	cs := a.settleContract(ctx, seal)
 	res := verdict.Evaluate(verdict.Input{

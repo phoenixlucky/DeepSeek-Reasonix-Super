@@ -122,10 +122,17 @@ func TestRunSFTModeKeepsOnlyGradedPasses(t *testing.T) {
 	writeTraj(t, traj, "palindrome", body...)
 
 	report := filepath.Join(dir, "r.json")
-	raw, _ := json.Marshal([]result{
-		{task: task{ID: "fizzbuzz"}, Passed: true},
-		{task: task{ID: "palindrome"}, Passed: false},
-	})
+	tasks, err := loadTasks(corpusDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var results []result
+	for _, task := range tasks {
+		if task.ID == "fizzbuzz" || task.ID == "palindrome" {
+			results = append(results, gradedSFTResult(t, traj, task, task.ID == "fizzbuzz"))
+		}
+	}
+	raw, _ := json.Marshal(results)
 	if err := os.WriteFile(report, raw, 0o644); err != nil {
 		t.Fatal(err)
 	}

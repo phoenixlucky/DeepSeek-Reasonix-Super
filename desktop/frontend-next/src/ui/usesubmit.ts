@@ -3,6 +3,12 @@ import { HttpError, type AgentPort, type ChipCall } from "../port/port";
 import { localId } from "../state/session";
 import type { reduceTraj } from "../state/trajectory";
 
+/** What came of one line: sent, taken back, or refused because this
+ *  connection cannot run a `!` command at all. The third is a different thing to
+ *  do next from the second, and is the only one where what was typed is not a
+ *  message to edit but a command to replace. */
+export type Submitted = boolean | "shell_unavailable";
+
 type TrajAction = Parameters<typeof reduceTraj>[1];
 type Dispatcher = Dispatch<never>;
 
@@ -37,7 +43,7 @@ export function useSubmit({ port, running, dispatch, trajDispatch, refreshStatus
   );
 
   return useCallback(
-    async (text: string, chips?: ChipCall) => {
+    async (text: string, chips?: ChipCall): Promise<Submitted> => {
       const steering = running;
       const id = localId();
       dispatch({ kind: "__user", text, pending: steering, id } as never);
@@ -55,7 +61,7 @@ export function useSubmit({ port, running, dispatch, trajDispatch, refreshStatus
       } catch (e) {
         dispatch({ kind: "__unsent", id } as never);
         fail(e);
-        return false;
+        return e instanceof HttpError && e.reason?.code === "shell.unavailable_over_http" ? "shell_unavailable" : false;
       }
     },
     [port, running, dispatch, trajDispatch, submitOrQueue, fail],

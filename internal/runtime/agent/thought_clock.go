@@ -10,8 +10,9 @@ import (
 // thoughtClock measures one response's thinking: from its first reasoning text
 // to the first answer output (text or a tool call). A response that answered
 // without reasoning thought for no time; one that stopped mid-thought ends at
-// its last reasoning text.
-type thoughtClock struct{ start, last, end time.Time }
+// its last reasoning text. begin is when the request went out and first the
+// first output of any kind after it: the time to first token.
+type thoughtClock struct{ begin, first, start, last, end time.Time }
 
 // observe reads one stream chunk: reasoning text keeps the thought going, and
 // any answer output ends it.
@@ -19,11 +20,28 @@ func (c *thoughtClock) observe(chunk provider.Chunk, now time.Time) {
 	switch chunk.Type {
 	case provider.ChunkReasoning:
 		if chunk.Text != "" {
+			c.output(now)
 			c.reasoning(now)
 		}
 	case provider.ChunkText, provider.ChunkToolCallStart, provider.ChunkToolCall:
+		c.output(now)
 		c.answer(now)
 	}
+}
+
+func (c *thoughtClock) output(now time.Time) {
+	if c.first.IsZero() {
+		c.first = now
+	}
+}
+
+// firstMs is the time from the request to the first output in milliseconds, 0
+// when the request's start was not noted or nothing has arrived.
+func (c *thoughtClock) firstMs() int64 {
+	if c.begin.IsZero() || c.first.IsZero() {
+		return 0
+	}
+	return c.first.Sub(c.begin).Milliseconds()
 }
 
 // emitAssistantMessage sends the settled frame of one response, with the

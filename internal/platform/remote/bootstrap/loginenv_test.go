@@ -42,7 +42,7 @@ func (c *scriptConn) Exec(_ context.Context, cmd string) (remote.ExecResult, err
 	return c.fn(cmd)
 }
 
-func (c *scriptConn) SFTP() (*sftpfs.FS, error) { return nil, errors.New("no sftp") }
+func (c *scriptConn) Files() (sftpfs.Files, error) { return nil, errors.New("no sftp") }
 
 func TestCaptureLoginEnvParsesPathThroughNoise(t *testing.T) {
 	fixedNonce(t)
@@ -339,5 +339,41 @@ func TestEachEntryPointCapturesOnceOnTheRawConnection(t *testing.T) {
 				t.Fatalf("%d captures on the raw connection, want 1", n)
 			}
 		})
+	}
+}
+
+type detachingConn struct {
+	scriptConn
+	detached []string
+}
+
+func (c *detachingConn) ExecDetached(_ context.Context, cmd string) (remote.ExecResult, error) {
+	c.detached = append(c.detached, cmd)
+	return remote.ExecResult{}, nil
+}
+
+// A machine that needs launches kept alive by something outside the call must
+// still get them with the login PATH in front, and one that does not runs a
+// launch as a plain command.
+func TestAWrappedConnectionStillLaunchesThroughTheDetachedPath(t *testing.T) {
+	env := loginEnv{Outcome: EnvCaptured, Path: []string{"/opt/bin"}}
+	inner := &detachingConn{scriptConn: scriptConn{fn: func(string) (remote.ExecResult, error) { return remote.ExecResult{}, nil }}}
+	d, ok := withLoginEnv(env, inner).(Detacher)
+	if !ok {
+		t.Fatal("the wrapper hides the detached path")
+	}
+	if _, err := d.ExecDetached(context.Background(), "serve"); err != nil {
+		t.Fatal(err)
+	}
+	if len(inner.detached) != 1 || !strings.HasPrefix(inner.detached[0], "export PATH='/opt/bin':") || !strings.HasSuffix(inner.detached[0], "serve") || len(inner.execs) != 0 {
+		t.Fatalf("detached = %q, execs = %q", inner.detached, inner.execs)
+	}
+
+	plain := &scriptConn{fn: func(string) (remote.ExecResult, error) { return remote.ExecResult{}, nil }}
+	if _, err := withLoginEnv(env, plain).(Detacher).ExecDetached(context.Background(), "serve"); err != nil {
+		t.Fatal(err)
+	}
+	if len(plain.execs) != 1 || !strings.HasSuffix(plain.execs[0], "serve") {
+		t.Fatalf("a plain machine did not get the launch as a command: %q", plain.execs)
 	}
 }

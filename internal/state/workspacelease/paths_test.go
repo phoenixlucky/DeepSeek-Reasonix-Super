@@ -94,7 +94,7 @@ func TestPathLeaseRetainsEarlierWritesAndRefusesWidening(t *testing.T) {
 	}
 }
 
-func TestInvalidPathLeaseFallsBackToWholeWorkspace(t *testing.T) {
+func TestUnresolvablePathLeaseFallsBackToWholeWorkspace(t *testing.T) {
 	root, locks := pathLeaseRoot(t), testenv.TempDir(t)
 	a, _ := New(root, locks, nil)
 	b, _ := New(root, locks, nil)
@@ -102,14 +102,79 @@ func TestInvalidPathLeaseFallsBackToWholeWorkspace(t *testing.T) {
 	b.BeginRun()
 	defer a.EndRun()
 	defer b.EndRun()
-	if err := a.AcquirePaths(context.Background(), []string{filepath.Join(root, "..", "outside")}); err != nil {
+	if err := a.AcquirePaths(context.Background(), []string{"  "}); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 	if err := b.AcquirePaths(ctx, []string{"inside"}); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("outside path narrowed scope: %v", err)
+		t.Fatalf("a blank path narrowed scope: %v", err)
 	}
+}
+
+// A path that resolves to somewhere outside the workspace (an extra writable
+// root) is its own claim: it excludes writers of the same path and nothing else.
+func TestAPathOutsideTheWorkspaceIsItsOwnClaim(t *testing.T) {
+	root, locks, extra := pathLeaseRoot(t), testenv.TempDir(t), testenv.TempDir(t)
+	attempt := func(ctx context.Context, o *Owner, paths ...string) error { return o.AcquirePaths(ctx, paths) }
+	short := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.Background(), 150*time.Millisecond)
+	}
+	setup := func(t *testing.T, opts ...Option) (*Owner, *Owner) {
+		a, _ := New(root, locks, nil)
+		b, _ := New(root, locks, nil, opts...)
+		a.BeginRun()
+		b.BeginRun()
+		t.Cleanup(func() { a.EndRun(); b.EndRun() })
+		return a, b
+	}
+	for name, opts := range map[string][]Option{"strict": nil, "optimistic": {WithoutWholeWorkspaceHold()}} {
+		t.Run("an outside write does not take the workspace from a file holder, "+name, func(t *testing.T) {
+			a, b := setup(t, opts...)
+			if err := attempt(context.Background(), a, filepath.Join(root, "tmp", "report.md")); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := short()
+			defer cancel()
+			if err := attempt(ctx, b, filepath.Join(extra, "out.txt")); err != nil {
+				t.Fatalf("a write outside the workspace waited on a file inside it: %v", err)
+			}
+		})
+	}
+	t.Run("two writers of the same outside file exclude each other", func(t *testing.T) {
+		a, b := setup(t)
+		file := filepath.Join(extra, "out.txt")
+		if err := attempt(context.Background(), a, file); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := short()
+		defer cancel()
+		if err := attempt(ctx, b, file); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("the same outside file was granted twice: %v", err)
+		}
+	})
+	t.Run("an outside folder excludes the files under it", func(t *testing.T) {
+		a, b := setup(t)
+		if err := attempt(context.Background(), a, extra); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := short()
+		defer cancel()
+		if err := attempt(ctx, b, filepath.Join(extra, "sub", "out.txt")); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("a file under a held outside folder was granted: %v", err)
+		}
+	})
+	t.Run("an outside claim leaves the workspace to others", func(t *testing.T) {
+		a, b := setup(t)
+		if err := attempt(context.Background(), a, filepath.Join(extra, "out.txt")); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := short()
+		defer cancel()
+		if err := attempt(ctx, b, filepath.Join(root, "src", "x.go")); err != nil {
+			t.Fatalf("an outside claim held the workspace: %v", err)
+		}
+	})
 }
 
 func TestPathLeaseExcludesLegacyWorkspaceLock(t *testing.T) {

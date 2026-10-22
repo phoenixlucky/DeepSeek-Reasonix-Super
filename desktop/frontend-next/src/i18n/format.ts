@@ -52,6 +52,15 @@ export function elapsed(ms: number): string {
   return parts.filter(([n]) => n > 0).map(([n, u]) => `${n}${u}`).join(" ");
 }
 
+/** clock names the moment a turn began: the time of day for today, with the date
+ *  before it for any other day, in the reader's language and 24-hour clock. */
+export function clock(at: number, now = Date.now()): string {
+  const day = (ms: number) => new Date(ms).toDateString();
+  const time = new Intl.DateTimeFormat(tag(), { hour: "2-digit", minute: "2-digit", hour12: false }).format(at);
+  if (day(at) === day(now)) return time;
+  return `${new Intl.DateTimeFormat(tag(), { month: "numeric", day: "numeric" }).format(at)} ${time}`;
+}
+
 /** seconds spells a millisecond duration. One place by default — the callers
  *  that used to pick their own each picked a different one. */
 export const seconds = (ms: number, digits = 1) => `${decimals(ms / 1000, digits)}s`;

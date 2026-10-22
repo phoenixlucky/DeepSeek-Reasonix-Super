@@ -1,3 +1,6 @@
+import { measureInteractions } from "./interactions";
+import { foldExtension } from "./extension";
+import { surfaceHistory } from "../ui/surface/call";
 import type { CostCoverage, Receipt, Tool, WireEvent } from "../port/wire";
 import { noteTool, type Executions } from "./executions";
 import { estimateTokens, sample } from "../port/tokens";
@@ -13,7 +16,7 @@ import { splitProviderSearch } from "./providersearch";
 
 export type { Item, Metrics, PlanStep, RememberedFact, RuntimeNotice, SessionState, TodoStatus, TurnTerminal, Waiting };
 export { currentStep, stepDone, stepLabel };
-import { askFromCall, promptOpen, prompted, sealByReceipt } from "./prompts";
+import { askAnnounced, askEngaged, askFromCall, promptOpen, prompted, sealByReceipt } from "./prompts";
 import { nameTurnStart, othersSteer } from "./turn_start";
 import { appendText, foldMessage, sealSay } from "./say";
 import { nextId } from "./ids";
@@ -21,7 +24,9 @@ import { worked } from "./worked";
 import { chipLabel, IDLE, RUNNING } from "./chip";
 import { foldStall } from "./stall";
 import { nameQueued, withoutPendingRow } from "./queued";
-import { dropTool, foldLastRead, foldTool, isSubagentProgress, mergeReads, notePhase } from "./fold";
+import { capToolOutput } from "./outputcap";
+import { dropTool, foldLastRead, foldProgress, foldTool, isSubagentProgress, mergeReads, notePhase, noteRan } from "./fold";
+import { rebuild } from "./rebuild";
 export { chipLabel };
 export { quoteAmount };
 
@@ -35,7 +40,10 @@ const WAITING_WORKSPACE = "等待工作区";
 const WAITING_MODEL = "等待模型回复";
 
 export const initialState: SessionState = {
+  interactionIDs: { asked: [], answered: [] },
+  interactions: { requests: 0, questions: 0, options: 0, answers: 0, customAnswers: 0 },
   error: "",
+  errorFrom: "",
   executions: {},
   terminal: null,
   runtime: [],
@@ -113,8 +121,6 @@ function sealTurn(items: Item[], err?: string): Item[] {
   // the flag is the identity, and its err only repeats the sentinel.
   return [...sealed, { t: "notice" as const, id: nextId(), level: "error", text: err }];
 }
-
-
 // The card reads the call's own arguments: they carry what was saved and how it
 // will be recalled, which the tool's textual receipt does not.
 function parseRemembered(tool: Tool): RememberedFact | null {
@@ -161,7 +167,7 @@ const holdsWait = new Set<string>([
 // bumps it. Wrapping the switch keeps that rule in one place instead of on each
 // of its two dozen returns.
 export function reduce(s: SessionState, ev: SessionEvent): SessionState {
-  const next = foldStall(apply(s, ev), ev);
+  const next = foldStall(apply(measureInteractions(s, ev), ev), ev);
   if (next.items === s.items) return next;
   const streamed = ev.kind === "text" || ev.kind === "reasoning";
   const bumped = streamed ? next : { ...next, revision: next.revision + 1 };
@@ -185,6 +191,10 @@ const highest = (items: Item[]) => items.reduce((n, i) => Math.max(n, seqOf(i.id
  *  renders and the one that was never drawn still owes its entrance. */
 function entering(prev: SessionState, next: SessionState, ev: SessionEvent): Partial<SessionState> {
   if (ev.kind === "__restore") return { entranceOwed: [], enteredThrough: highest(next.items) };
+  if (ev.kind === "__extension_snapshot" || ("extension" in ev && ev.extension?.code)) return {
+    entranceOwed: prev.entranceOwed.filter(id => next.items.some(i => i.id === id && !(i.t === "extension" && i.ext.code))),
+    enteredThrough: Math.max(prev.enteredThrough, highest(next.items)),
+  };
   const fresh = next.items.filter((i) => seqOf(i.id) > prev.enteredThrough).map((i) => i.id);
   if (fresh.length === 0) return {};
   return {
@@ -198,13 +208,17 @@ function entering(prev: SessionState, next: SessionState, ev: SessionEvent): Par
 export type SessionEvent =
   | WireEvent
   | { kind: "__restore"; items: Item[]; plan?: PlanStep[]; executions: Executions }
+  | { kind: "__extension_snapshot"; surfaces: import("../port/wire").ExtensionSurface[] }
   | { kind: "__todos"; plan: PlanStep[] }
   | { kind: "__totals"; hit: number; miss: number; cost?: number; currency?: string; coverage?: CostCoverage; incompleteReason?: string }
-  | { kind: "__error"; text: string }
+  | { kind: "__running"; running: boolean }
+  // `from` names the read that raised it, so a later success of that read can take it back.
+  | { kind: "__error"; text: string; from?: string }
+  | { kind: "__error_clear"; from: string }
   | { kind: "__user"; text: string; pending: boolean; id?: string }
   | { kind: "__unsent"; id: string }
   | { kind: "__queued"; id: string; itemId: string; queued: "steer" | "followup"; paused?: boolean }
-  | { kind: "__decided"; id: string; verdict?: string; answers?: string[][] }
+  | { kind: "__decided"; id: string; verdict?: string; answers?: string[][]; values?: Record<string, unknown> }
   | { kind: "__forgot"; id: string }
   | { kind: "__runtime_seen"; id: string }
   // The transcript has drawn these cards, so their one entrance is spent.
@@ -213,9 +227,11 @@ export type SessionEvent =
   | { kind: "__entered"; ids: string[] };
 
 function apply(s: SessionState, ev: SessionEvent): SessionState {
+  if (ev.kind === "__extension_snapshot") return ev.surfaces.reduce(foldExtension, s);
   // A line the kernel holds for a retry waits in the queue panel, not here.
   if (ev.kind === "notice" && ev.code === "unapplied_steer" && ev.itemId) s = withoutPendingRow(s, ev.itemId);
-  if (ev.kind === "__error") return { ...s, error: ev.text };
+  if (ev.kind === "__error") return { ...s, error: ev.text, errorFrom: ev.text ? (ev.from ?? "") : "" };
+  if (ev.kind === "__error_clear") return s.error && s.errorFrom === ev.from ? { ...s, error: "", errorFrom: "" } : s;
   if (ev.kind === "__entered") {
     const spent = new Set(ev.ids);
     const left = s.entranceOwed.filter((id) => !spent.has(id));
@@ -235,7 +251,7 @@ function apply(s: SessionState, ev: SessionEvent): SessionState {
       ...s,
       steerQueue: ev.pending ? [...s.steerQueue, ev.text] : s.steerQueue,
       awaitingTurnStart: ev.pending ? s.awaitingTurnStart : [...s.awaitingTurnStart, id],
-      items: [...s.items, { t: "user", id, text: ev.text, pending: ev.pending }],
+      items: [...s.items, { t: "user", id, text: ev.text, pending: ev.pending, at: ev.pending ? undefined : Date.now() }],
     };
   }
   if (ev.kind === "__queued") return nameQueued(s, ev.id, ev.itemId, ev.queued, ev.paused);
@@ -281,18 +297,17 @@ function apply(s: SessionState, ev: SessionEvent): SessionState {
               // This window's own answer, landed. The receipt it caused rides the
               // event stream and can arrive first, sealing the card as answered
               // elsewhere; the answer this window sent is the truer account.
-              ? { ...i, answered: ev.answers ?? [], answeredElsewhere: false, by: undefined, said: undefined }
+              ? { ...i, answered: ev.answers ?? [], surfaceValues: ev.values, answeredElsewhere: false, by: undefined, said: undefined }
               : i,
       ),
     };
   }
-  // The transcript does not contain live extension publications or pending
-  // prompts. Both belong to this pane until it is rebound to another session.
+  // A rebuild re-reads the record while the turn may still be writing it; the
+  // merge goes by identity, and an open prompt or extension is not in the
+  // record at all — both belong to this pane until it is rebound.
   if (ev.kind === "__restore") {
-    // How the restored turns ended is not in the record; a live turn that
-    // vanished mid-flight leaves null, which is a different answer.
-    const terminal: TurnTerminal = ev.items.length ? { kind: "unread" } : s.terminal;
-    return { ...s, executions: ev.executions, terminal, items: [...ev.items, ...s.items.filter((i) => i.t === "extension" || promptOpen(i))], plan: ev.plan ? livePlan(ev.plan) : s.plan };
+    const merged = rebuild(s, ev);
+    return ev.plan ? { ...merged, plan: livePlan(ev.plan) } : merged;
   }
   // The kernel's canonical task list, asked for rather than re-derived: the
   // advances are not todo_write calls, and the refused writes are.
@@ -323,6 +338,10 @@ function apply(s: SessionState, ev: SessionEvent): SessionState {
       },
     };
   }
+  // /status's own answer, because the record cannot end a turn: the kernel
+  // commits a text-only round before it decides whether the turn continues,
+  // so only the kernel saying idle can close one. Equal answers fold to s.
+  if (ev.kind === "__running") return s.running === ev.running ? s : { ...s, running: ev.running };
   // A wait only text or reasoning could end outlived every turn whose first
   // packet was a tool call: the retry line and its clock stayed up for the rest
   // of the turn, over calls that were running fine.
@@ -342,7 +361,13 @@ function apply(s: SessionState, ev: SessionEvent): SessionState {
       // turn in front of you, not a record that one ever finished — without
       // this it would be the latter, and the tick from an hour ago would still
       // be on screen over work that is running now.
-      return nameTurnStart({ ...s, running: true, doing: "运行中", terminal: null, outLive: 0, turnModel: ev.modelRef || s.turnModel, waiting: { ttftSince: Date.now() } }, ev);
+      // A turn still open here is one whose end never arrived; nothing of it
+      // can arrive any more, and sealTurn is the seal its end would have spent.
+      // A second start naming this turn's own message is that open delivered
+      // twice: no seal — calls still run, a prompt is still owed — but naming
+      // still runs, because the row may have been sent between the two.
+      if (s.running && ev.msgIndex !== undefined && ev.msgIndex === s.turnMsgIndex) return nameTurnStart(s, ev);
+      return nameTurnStart({ ...s, running: true, runSince: Date.now(), doing: "运行中", terminal: null, outLive: 0, turnModel: ev.modelRef || s.turnModel, waiting: { ttftSince: Date.now() }, turnMsgIndex: ev.msgIndex ?? s.turnMsgIndex, items: sealTurn(sealSay(s.items, true)) }, ev);
 
     case "reasoning":
       return {
@@ -371,9 +396,9 @@ function apply(s: SessionState, ev: SessionEvent): SessionState {
         : s;
 
     case "tool_progress":
-      if (ev.tool && isSubagentProgress(ev.tool.name)) return { ...s, subagentPhase: notePhase(s.subagentPhase, ev.tool) };
+      if (ev.tool && isSubagentProgress(ev.tool.name)) return { ...s, subagentPhase: notePhase(s.subagentPhase, ev.tool), items: noteRan(s.items, ev.tool) };
       return ev.tool
-        ? { ...s, executions: noteTool(s.executions, ev.tool, false), items: foldTool(s.items, ev.tool, true) }
+        ? { ...s, executions: noteTool(s.executions, ev.tool, false), items: foldProgress(s.items, ev.tool) }
         : s;
 
     case "tool_result": {
@@ -404,7 +429,7 @@ function apply(s: SessionState, ev: SessionEvent): SessionState {
         executions,
         doing: handedBack ? WAITING_MODEL : s.doing,
         waiting: handedBack ? { ...s.waiting, ttftSince: Date.now() } : s.waiting,
-        items: mergeReads(foldTool(s.items, ev.tool, false)),
+        items: mergeReads(foldTool(s.items, capToolOutput(ev.tool), false)),
       };
     }
 
@@ -423,39 +448,17 @@ function apply(s: SessionState, ev: SessionEvent): SessionState {
     // tick instead of moving in place.
     case "extension_surface":
     case "extension_status": {
-      const ext = ev.extension;
-      if (!ext) return s;
-      if (ext.kind === "panel") {
-        const at = s.panels.findIndex((p) => p.pluginId === ext.pluginId && p.surfaceId === ext.surfaceId);
-        if (at < 0) return { ...s, panels: [...s.panels, ext] };
-        const panels = s.panels.slice();
-        panels[at] = ext;
-        return { ...s, panels };
-      }
-      if (ext.kind === "view" && ext.view?.anchor) {
-        return { ...s, takeovers: { ...s.takeovers, [ext.view.anchor]: ext } };
-      }
-      if (ext.kind === "view") {
-        const at = s.views.findIndex((v) => v.pluginId === ext.pluginId && v.surfaceId === ext.surfaceId);
-        if (at < 0) return { ...s, views: [...s.views, ext] };
-        const views = s.views.slice();
-        views[at] = ext;
-        return { ...s, views };
-      }
-      const at = s.items.findIndex(
-        (it) => it.t === "extension" && it.ext.pluginId === ext.pluginId && it.ext.surfaceId === ext.surfaceId,
-      );
-      if (at < 0) return { ...s, items: [...s.items, { t: "extension", id: nextId(), ext }] };
-      const items = s.items.slice();
-      items[at] = { t: "extension", id: items[at].id, ext };
-      return { ...s, items };
+      return ev.extension ? foldExtension(s, ev.extension) : s;
     }
 
     case "approval_request":
       return ev.approval ? prompted(s, "等待批准", { t: "approval", id: nextId(), a: ev.approval }) : s;
 
     case "ask_request":
-      return ev.ask ? prompted(s, "等待你回答", { t: "ask", id: nextId(), ask: ev.ask }) : s;
+      return ev.ask ? askAnnounced(s, ev.ask) : s;
+
+    case "ask_engaged":
+      return ev.ask ? askEngaged(s, ev.ask.id) : s;
 
     case "compaction_started":
       return { ...s, items: [...s.items, { t: "compaction", id: nextId(), c: ev.compaction ?? {}, done: false }] };
@@ -609,7 +612,7 @@ function apply(s: SessionState, ev: SessionEvent): SessionState {
         doing: ev.outcome === "no_progress" ? "已暂停" : ev.cancelled ? "已取消" : ev.err ? "已中断" : "已完成",
         waiting: {},
         plan: livePlan(s.plan),
-        items: withReceipt([...sealTurn(sealSay(s.items, true), ev.outcome === "no_progress" || ev.cancelled ? undefined : ev.err), ...worked(ev.workDurationMs)], ev.receipt),
+        items: withReceipt([...sealTurn(sealSay(s.items, true), ev.outcome === "no_progress" || ev.cancelled ? undefined : ev.err), ...worked(ev.workDurationMs, ev.workStartedAt)], ev.receipt),
       };
 
     default:
@@ -646,7 +649,7 @@ function withReceipt(items: Item[], r?: Receipt): Item[] {
 // eleven. The server strips these before /history now — this is what covers
 // sessions already on disk.
 const CONTROL =
-  /<(reasoning-language|response-language|execution-policy|memory-update|background-jobs|active-goal|autoresearch-runtime|hook-context|available-skills|current-date|project-instructions|capability-route|interrupted-turn-recovery|workspace|scheduled-run|mcp-prompt-failure|refused-calls)[\s\S]*?<\/\1>\s*/g;
+  /<(reasoning-language|turn-narration|response-language|execution-policy|memory-update|background-jobs|active-goal|autoresearch-runtime|hook-context|available-skills|current-date|session-scratch|project-instructions|project-rules|scoped-rules|capability-route|interrupted-turn-recovery|workspace|scheduled-run|mcp-prompt-failure|refused-calls)[\s\S]*?<\/\1>\s*/g;
 const stripControl = (s: string) => s.replace(CONTROL, "").trim();
 
 // A plan that ran to the end is spent: struck through in the rail it reads as
@@ -691,9 +694,11 @@ export function fromHistory(msgs: HistoryMessage[]): { items: Item[]; executions
   // carries no error field, so a rebuilt execution has no outcome — which is
   // the honest answer, not the answer "succeeded".
   const executions: Executions = {};
+  let turnStart: number | undefined;
   for (const m of msgs) {
     if (m.role === "system") continue;
     if (m.role === "user") {
+      if (!m.steer && !m.hostAuthored) turnStart = m.createdAt;
       // An attachment rides in as the "@path" token it was referenced by, so a
       // turn that was nothing but a dropped file still has text here. What is
       // left with none is host chrome, and so is a line the host composed —
@@ -703,7 +708,7 @@ export function fromHistory(msgs: HistoryMessage[]): { items: Item[]; executions
       // after an upgrade as well as for newly written history.
       const legacyHostRepair = m.content.startsWith("The following tools are unavailable in the current workflow phase:");
       const text = m.hostAuthored || legacyHostRepair ? "" : stripControl(m.content);
-      if (text) out.push({ t: "user", id: nextId(), text, msgIndex: m.msgIndex, steer: m.steer, via: m.via, attachments: m.attachments });
+      if (text) out.push({ t: "user", id: nextId(), text, msgIndex: m.msgIndex, steer: m.steer, via: m.via, attachments: m.attachments, at: m.createdAt });
       continue;
     }
     if (m.role === "assistant") {
@@ -735,7 +740,7 @@ export function fromHistory(msgs: HistoryMessage[]): { items: Item[]; executions
           out.push({ t: "say", id: nextId(), text: part.text, reasoning, done: true, model: m.modelRef, thoughtMs: reasoning ? m.thoughtMs : undefined });
           reasoning = undefined;
         }
-        out.push(...worked(m.workDurationMs));
+        out.push(...worked(m.workDurationMs, turnStart));
       }
       for (const c of m.toolCalls ?? []) {
         if (c.id) {
@@ -748,7 +753,7 @@ export function fromHistory(msgs: HistoryMessage[]): { items: Item[]; executions
           tool: {
             id: c.id,
             name: c.name,
-            args: c.arguments,
+            args: c.arguments, argumentNormalization: c.argumentNormalization,
             readOnly: true,
             resolvedName: c.resolvedName,
             capabilityId: c.capabilityId,
@@ -772,12 +777,13 @@ export function fromHistory(msgs: HistoryMessage[]): { items: Item[]; executions
         }
         out[at] = {
           ...prev,
-          tool: {
+          tool: capToolOutput({
             ...prev.tool,
             output: m.content,
+            deliveries: m.deliveries,
             ...(m.outputDiff ? { outputDiff: true } : {}),
             ...(m.toolFailed ? { err: m.content, refusalCode: m.toolRefusalCode } : {}),
-          },
+          }),
         };
       }
     }
@@ -786,7 +792,7 @@ export function fromHistory(msgs: HistoryMessage[]): { items: Item[]; executions
   // conversation reads differently before and after a reopen.
   const merged: Item[] = [];
   for (const it of out) {
-    merged.push(it);
+    merged.push(surfaceHistory(it));
     foldLastRead(merged);
   }
   return { items: merged, executions };

@@ -117,6 +117,10 @@ func TestMarketRefusalsCarryTheirCause(t *testing.T) {
 	}
 	local := unpinned
 	local.Approved = &market.Version{Version: "1", Source: "/etc", ContentHash: "sha256:" + fmt.Sprintf("%064d", 0)}
+	badCommit := market.Detail{
+		Package:  market.Package{Slug: "a/b", Kind: "plugin", Status: "active", LatestVersion: "2.1.11"},
+		Approved: &market.Version{Version: "2.1.11", Source: "https://github.com/o/r/tree/34ba5aaad19f0cb228965c01056b0a86c8ef5dd02"},
+	}
 	cases := []struct {
 		name   string
 		reg    *fakeRegistry
@@ -127,6 +131,8 @@ func TestMarketRefusalsCarryTheirCause(t *testing.T) {
 	}{
 		{"unpinned", &fakeRegistry{detail: unpinned}, "/market/plan", map[string]any{"slug": "a/b"}, http.StatusConflict, "market.unpinned"},
 		{"local source", &fakeRegistry{detail: local}, "/market/plan", map[string]any{"slug": "a/b"}, http.StatusConflict, "market.bad_source"},
+		{"trusted plugin with a mistyped commit", &fakeRegistry{detail: badCommit}, "/market/plan", map[string]any{"slug": "a/b", "trust": true}, http.StatusConflict, "market.invalid_plugin_source"},
+		{"install plugin with a mistyped commit", &fakeRegistry{detail: badCommit}, "/market/install", map[string]any{"slug": "a/b", "version": "2.1.11", "trust": true}, http.StatusConflict, "market.invalid_plugin_source"},
 		{"down", &fakeRegistry{err: market.ErrUnreachable}, "/market/plan", map[string]any{"slug": "a/b"}, http.StatusBadGateway, "market.unreachable"},
 		{"gone", &fakeRegistry{err: market.ErrNotFound}, "/market/plan", map[string]any{"slug": "a/b"}, http.StatusNotFound, "market.not_found"},
 		{"trusted install names no preview", &fakeRegistry{detail: unpinned}, "/market/install", map[string]any{"slug": "a/b", "version": "1", "trust": true}, http.StatusBadRequest, "market.unpreviewed"},

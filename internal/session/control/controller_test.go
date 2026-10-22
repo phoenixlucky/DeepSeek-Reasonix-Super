@@ -145,8 +145,9 @@ func (r cancelingRunner) Run(_ context.Context, _ string) error {
 	return nil
 }
 
-// The gauge must measure what the trigger measures. Reporting the previous
-// turn's billed usage is how a session displayed 8% while it was compacting.
+// The gauge must measure what the trigger measures: the provider's reported
+// prompt size plus what the view gained since, never the turn's billed total
+// (which counts the completion) and never a local estimate that runs low.
 func TestContextSnapshotMeasuresTheTriggerInput(t *testing.T) {
 	prov := &scriptedTurns{turns: [][]provider.Chunk{{
 		{Type: provider.ChunkText, Text: "ok"},
@@ -160,10 +161,10 @@ func TestContextSnapshotMeasuresTheTriggerInput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := c.ContextMaintenanceSnapshot().ProjectedTokens
+	estimate := c.ContextMaintenanceSnapshot().ProjectedTokens
 	used, window := c.ContextSnapshot()
-	if used != want || used == 6888 || window != 1_000_000 {
-		t.Fatalf("ContextSnapshot() = (%d, %d), want (%d, 1000000): the gauge reads the trigger's live input, never the last turn's 6888", used, window, want)
+	if used < 6840 || used >= 6888 || used < estimate || window != 1_000_000 {
+		t.Fatalf("ContextSnapshot() = (%d, %d), want the reported 6840-token prompt plus what it gained (estimate %d), never the billed 6888", used, window, estimate)
 	}
 }
 
@@ -3701,7 +3702,7 @@ func TestGuardianCannotAutoAllowFreshHumanApprovalTools(t *testing.T) {
 		name:    "guardian",
 		streams: [][]provider.Chunk{textTurn(`{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"authorized memory update"}`)},
 	}
-	guardianSess := guardian.NewSession(guardianProv, tool.NewRegistry(), nil, guardian.PolicyPrompt(), "guardian-test", 0, nil, event.Discard)
+	guardianSess := guardian.NewSession(guardianProv, tool.NewRegistry(), nil, guardian.PolicyPrompt(), "guardian-test", 0, nil, event.Discard, nil)
 	exec := agent.New(&recordingProvider{name: "executor"}, tool.NewRegistry(), sessionstore.NewSession("sys"), agent.Options{}, event.Discard)
 
 	approvals := make(chan event.Approval, 1)
@@ -3777,7 +3778,11 @@ func TestLowRiskProjectMemoryCreateSkipsApprovalPrompt(t *testing.T) {
 	if err != nil || !strings.Contains(out, "Saved memory") {
 		t.Fatalf("auto-approved remember execution = %q, %v", out, err)
 	}
-	if got := store.List(); len(got) != 1 || got[0].Name != "release-target" {
+	got, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Name != "release-target" {
 		t.Fatalf("saved memories = %+v", got)
 	}
 }
@@ -3811,7 +3816,7 @@ func TestSessionGrantShortCircuitsGuardianReview(t *testing.T) {
 		name:    "guardian",
 		streams: [][]provider.Chunk{textTurn(`{"risk_level":"high","user_authorization":"unknown","outcome":"deny","rationale":"should never run"}`)},
 	}
-	guardianSess := guardian.NewSession(guardianProv, tool.NewRegistry(), nil, guardian.PolicyPrompt(), "guardian-test", 0, nil, event.Discard)
+	guardianSess := guardian.NewSession(guardianProv, tool.NewRegistry(), nil, guardian.PolicyPrompt(), "guardian-test", 0, nil, event.Discard, nil)
 	exec := agent.New(&recordingProvider{name: "executor"}, tool.NewRegistry(), sessionstore.NewSession("sys"), agent.Options{}, event.Discard)
 	prompts := 0
 	c := New(Options{

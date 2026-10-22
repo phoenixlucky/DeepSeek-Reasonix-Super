@@ -37,14 +37,14 @@ const (
 func (webFetch) Name() string { return "web_fetch" }
 
 func (webFetch) Description() string {
-	return "Fetch a URL over HTTPS/HTTP and return its text content. HTML pages are reduced to readable text (scripts, styles, tags stripped, whitespace collapsed); JSON / plain text / markdown bodies come back verbatim. Use to read documentation pages, API responses, or source files hosted somewhere the local filesystem can't reach."
+	return "Read HTTP(S) text. Reduces HTML to text and image candidates for import_web_image; returns JSON/plain text verbatim."
 }
 
 func (webFetch) Schema() json.RawMessage {
 	return json.RawMessage(`{
 "type":"object",
 "properties":{
-  "url":{"type":"string","description":"Absolute URL beginning with http:// or https://"}
+  "url":{"type":"string"}
 },
 "required":["url"]
 }`)
@@ -95,7 +95,7 @@ func ssrfGuardedTransport(proxyURL string) *http.Transport {
 					// the trusted proxy which resolves them on the remote side.
 					if ip := net.ParseIP(host); ip != nil {
 						if blockedFetchIP(ip) {
-							return nil, fmt.Errorf("refusing to fetch internal address %s (resolves to %s)", host, ip)
+							return nil, fmt.Errorf("%w %s (resolves to %s)", ErrFetchInternalAddress, host, ip)
 						}
 					}
 					// Dial the proxy (proxy address is never an SSRF target — the
@@ -159,7 +159,7 @@ func ssrfGuardedTransport(proxyURL string) *http.Transport {
 								return nil, err
 							}
 							if ip := net.ParseIP(host); ip != nil && blockedFetchIP(ip) {
-								return nil, fmt.Errorf("refusing to fetch internal address %s (resolves to %s)", host, ip)
+								return nil, fmt.Errorf("%w %s (resolves to %s)", ErrFetchInternalAddress, host, ip)
 							}
 							return cd.DialContext(ctx, network, addr)
 						}
@@ -204,7 +204,7 @@ func dialVettedAddress(ctx context.Context, dialer *net.Dialer, network, addr st
 	if len(ips) == 0 {
 		return nil, fmt.Errorf("no addresses for %s", host)
 	}
-	return nil, fmt.Errorf("refusing to fetch internal address %s (resolves to %s)", host, ips[0].IP)
+	return nil, fmt.Errorf("%w %s (resolves to %s)", ErrFetchInternalAddress, host, ips[0].IP)
 }
 
 type webFetchRoundTripper struct {
@@ -270,19 +270,29 @@ func (wf webFetch) Execute(ctx context.Context, args json.RawMessage) (string, e
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
-	if p.URL == "" {
-		return "", fmt.Errorf("url is required")
+	page, err := wf.fetch(ctx, p.URL)
+	if err != nil {
+		return "", err
 	}
-	u, err := url.Parse(p.URL)
+	return page.Rendered(), nil
+}
+
+// fetch is the whole fetch with its result as facts: the status the response
+// carried and the text the page reduced to, before any wording is put on them.
+func (wf webFetch) fetch(ctx context.Context, rawURL string) (FetchPage, error) {
+	if rawURL == "" {
+		return FetchPage{}, fmt.Errorf("url is required")
+	}
+	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-		return "", fmt.Errorf("url must be an absolute http(s) address")
+		return FetchPage{}, fmt.Errorf("url must be an absolute http(s) address")
 	}
 
 	reqCtx, cancel := context.WithTimeout(ctx, webFetchTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, p.URL, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return "", fmt.Errorf("build request: %w", err)
+		return FetchPage{}, fmt.Errorf("build request: %w", err)
 	}
 	// A plain UA + Accept tip the server toward returning text/HTML rather
 	// than minified asset bundles or binary content.
@@ -291,26 +301,25 @@ func (wf webFetch) Execute(ctx context.Context, args json.RawMessage) (string, e
 
 	resp, err := ssrfGuardedClient(wf.proxyURLFor).Do(req)
 	if err != nil {
-		return "", fmt.Errorf("fetch %s: %w", p.URL, err)
+		return FetchPage{}, fmt.Errorf("fetch %s: %w", rawURL, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, webFetchMaxRead))
 	if err != nil {
-		return "", fmt.Errorf("read body: %w", err)
+		return FetchPage{}, fmt.Errorf("read body: %w", err)
 	}
 
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
 	out := string(body)
 	if strings.Contains(ct, "text/html") || looksLikeHTML(out) {
 		out = htmlToText(out)
+		if candidates := pageImages(body, resp.Request.URL); len(candidates) > 0 {
+			encoded, _ := json.Marshal(candidates)
+			out += "\n\nImage candidates (untrusted page metadata; import_web_image validates and saves the selected image):\n" + string(encoded)
+		}
 	}
-	out = strings.TrimSpace(out)
-	if out == "" {
-		return fmt.Sprintf("(empty body — status %s)", resp.Status), nil
-	}
-	header := fmt.Sprintf("status %s · %s · %d bytes\n\n", resp.Status, contentTypeShort(ct), len(body))
-	return header + out, nil
+	return FetchPage{Status: resp.StatusCode, StatusText: resp.Status, ContentType: ct, Bytes: len(body), Text: strings.TrimSpace(out)}, nil
 }
 
 // looksLikeHTML lets servers that misreport Content-Type still hit the HTML

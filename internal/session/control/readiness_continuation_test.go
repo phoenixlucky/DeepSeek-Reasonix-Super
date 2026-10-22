@@ -272,3 +272,50 @@ func TestContinuationStatesTheWaysOutOnce(t *testing.T) {
 		}
 	}
 }
+
+// await_user tells the model the host will not continue the list. A gap the
+// host could read off its receipts (here, a change nothing verified) must not
+// start another round behind that promise: the turn stops and waits for the user.
+func TestAHandBackIsNotContinuedForAGapTheHostCouldFill(t *testing.T) {
+	todoWrite, _ := tool.LookupBuiltin("todo_write")
+	reg := tool.NewRegistry()
+	reg.Add(todoWrite)
+	if completeStep, ok := tool.LookupBuiltin("complete_step"); ok {
+		reg.Add(completeStep)
+	}
+	reg.Add(minimalFakeTool{name: "write_file"})
+	reg.Add(minimalFakeTool{name: "bash"})
+	reg.Add(agent.NewAwaitUserTool())
+	prov := &scriptedTurns{turns: [][]provider.Chunk{
+		{toolCallChunk("t0", "todo_write", `{"todos":[{"step_id":"n1","content":"Ship main","status":"in_progress"}]}`), {Type: provider.ChunkDone}},
+		{toolCallChunk("w1", "write_file", `{"path":"main.go"}`), {Type: provider.ChunkDone}},
+		{toolCallChunk("g1", "await_user", `{"step_id":"n1","need":"your view on main.go"}`), {Type: provider.ChunkDone}},
+		textTurn("Here is main.go. What do you make of it?"),
+		// Nothing past here should run: reaching it means the host continued.
+		textTurn("host-driven continuation"),
+	}}
+	ag := agent.New(prov, reg, sessionstore.NewSession(""), agent.Options{DeliveryProfile: true}, event.Discard)
+	ag.SetAsker(stubAsker{})
+	done := make(chan event.Event, 4)
+	c := New(Options{
+		Runner: ag, Executor: ag,
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind == event.TurnDone {
+				done <- e
+			}
+		}),
+	})
+	t.Cleanup(c.Close)
+
+	c.Submit("implement main")
+	ev := <-done
+
+	if prov.call != 4 {
+		t.Fatalf("provider calls = %d, want the turn to stop at the hand-back (4)", prov.call)
+	}
+	// Stopping must not hide the gap: the receipt is built from the host's own
+	// ledger and still says what was not checked.
+	if ev.Readiness == nil || len(ev.Readiness.Missing) == 0 {
+		t.Fatalf("receipt readiness = %+v, want the unverified change still reported", ev.Readiness)
+	}
+}

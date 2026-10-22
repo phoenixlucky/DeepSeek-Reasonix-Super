@@ -1,6 +1,7 @@
 package writeclaim
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,10 +12,10 @@ import (
 	"reasonix/internal/base/testenv"
 )
 
-func TestNormalizeConcurrencyLimitsDefaults(t *testing.T) {
+func TestNormalizeConcurrencyLimitsZeroIsNoLimit(t *testing.T) {
 	total, writers := NormalizeConcurrencyLimits(0, 0)
-	if total != DefaultMaxSubagentConcurrency || writers != DefaultMaxParallelWriters {
-		t.Fatalf("got %d/%d, want %d/%d", total, writers, DefaultMaxSubagentConcurrency, DefaultMaxParallelWriters)
+	if total != 0 || writers != 0 {
+		t.Fatalf("got %d/%d, want 0/0 (no limit)", total, writers)
 	}
 	total, writers = NormalizeConcurrencyLimits(10, 10)
 	if total != 10 || writers != 10 {
@@ -22,11 +23,36 @@ func TestNormalizeConcurrencyLimitsDefaults(t *testing.T) {
 	}
 	total, writers = NormalizeConcurrencyLimits(4, 10)
 	if total != 4 || writers != 4 {
-		t.Fatalf("writers must not exceed total: got %d/%d", total, writers)
+		t.Fatalf("writers must not exceed a set total: got %d/%d", total, writers)
+	}
+	total, writers = NormalizeConcurrencyLimits(0, 7)
+	if total != 0 || writers != 7 {
+		t.Fatalf("a writer limit with no total limit must stand: got %d/%d", total, writers)
 	}
 	total, writers = NormalizeConcurrencyLimits(100, 50)
-	if total != MaxSubagentConcurrencyLimit || writers != MaxSubagentConcurrencyLimit {
-		t.Fatalf("clamp: got %d/%d", total, writers)
+	if total != 100 || writers != 50 {
+		t.Fatalf("a large limit the user chose must not be clamped: got %d/%d", total, writers)
+	}
+	total, writers = NormalizeConcurrencyLimits(-3, -1)
+	if total != 0 || writers != 0 {
+		t.Fatalf("negative values read as no limit: got %d/%d", total, writers)
+	}
+}
+
+// With no limit set, work that touches different paths all starts at once.
+func TestAnUnlimitedSchedulerStartsEveryDisjointWriterAtOnce(t *testing.T) {
+	root := testenv.TempDir(t)
+	s := NewSubagentScheduler(0, 0)
+	for i := range 40 {
+		set, err := NormalizeWritePaths(root, []string{filepath.Join(root, "p", string(rune('a'+i%26))+string(rune('a'+i/26)))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		release, err := s.Acquire(context.Background(), AcquireRequest{Writer: true, WritePaths: set, Nested: true})
+		if err != nil {
+			t.Fatalf("writer %d was held back with no limit set: %v", i+1, err)
+		}
+		defer release()
 	}
 }
 
@@ -138,5 +164,35 @@ func TestWriteClaimRefusesNetworkPathBeforeAnyLookup(t *testing.T) {
 		if _, err := NormalizeWritePaths(root, []string{p}); err == nil {
 			t.Errorf("NormalizeWritePaths(%q) accepted a network path", p)
 		}
+	}
+}
+
+func TestOptimisticClaimIsScopedToTheWorkspaceButCollidesWithNothing(t *testing.T) {
+	root := t.TempDir()
+	optimistic, err := OptimisticWorkspaceClaim(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	whole, _ := WholeWorkspaceWriteClaim(root)
+	declared, _ := NormalizeWritePaths(root, []string{"a.txt"})
+	if !optimistic.Optimistic || optimistic.Empty() || !optimistic.WholeWorkspace {
+		t.Fatalf("claim = %+v, want a non-empty whole-workspace optimistic claim", optimistic)
+	}
+	for name, other := range map[string]WritePathSet{"whole": whole, "declared": declared, "optimistic": optimistic} {
+		if optimistic.Overlaps(other) || other.Overlaps(optimistic) {
+			t.Errorf("an optimistic claim collided with a %s claim", name)
+		}
+	}
+	if !whole.Overlaps(declared) {
+		t.Error("strict claims must keep colliding")
+	}
+	if !optimistic.AllowsPath(filepath.Join(root, "x", "y.txt")) || optimistic.AllowsPath(filepath.Join(filepath.Dir(root), "elsewhere.txt")) {
+		t.Error("an optimistic claim is scoped to its workspace for audit")
+	}
+	if roots := optimistic.Roots(); len(roots) != 1 {
+		t.Errorf("roots = %v, want the workspace root for bash confinement", roots)
+	}
+	if err := ValidateNonOverlappingWriteClaims([]WritePathSet{optimistic, whole, optimistic}); err != nil {
+		t.Errorf("a fleet of optimistic writers failed preflight: %v", err)
 	}
 }

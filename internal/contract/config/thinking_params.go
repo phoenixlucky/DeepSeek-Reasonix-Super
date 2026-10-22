@@ -25,19 +25,3 @@ func SendsThinkingParams(e *ProviderEntry) bool {
 	}
 	return !strings.EqualFold(strings.TrimSpace(e.ReasoningProtocol), reasoningProtocolNone)
 }
-
-// SetThinkingParams pins or releases the plain-chat request shape. Releasing it
-// clears only the pin: an explicit protocol the user chose stays, so this never
-// silently rewrites a deliberate deepseek/glm/kimi-k3 selection.
-func SetThinkingParams(e *ProviderEntry, send bool) {
-	if e == nil {
-		return
-	}
-	if !send {
-		e.ReasoningProtocol = reasoningProtocolNone
-		return
-	}
-	if strings.EqualFold(strings.TrimSpace(e.ReasoningProtocol), reasoningProtocolNone) {
-		e.ReasoningProtocol = ""
-	}
-}

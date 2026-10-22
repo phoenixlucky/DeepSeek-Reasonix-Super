@@ -6,7 +6,10 @@ import "./testkit";
 import { Account } from "./Account";
 import { AccountRow } from "./AccountRow";
 import { MockPort } from "../port/mock";
-import type { AccountState, AgentPort } from "../port/port";
+import { HttpError, type AccountState, type AgentPort, type DeviceGrant } from "../port/port";
+import { boot, STORAGE } from "../i18n";
+
+const setLocale = (lang: "zh" | "en") => { localStorage.setItem(STORAGE, lang); boot(); };
 
 afterEach(cleanup);
 
@@ -27,6 +30,42 @@ describe("account sign-in", () => {
     await userEvent.click(screen.getByRole("button", { name: "登录" }));
 
     await waitFor(() => expect(port.openExternal).toHaveBeenCalledWith("https://reasonix.io/device/?code=ABCD-EFGH"));
+  });
+});
+
+describe("account sign-in failures", () => {
+  afterEach(() => setLocale("zh"));
+
+  const expiring: DeviceGrant = {
+    deviceCode: "device-secret",
+    userCode: "ABCD-EFGH",
+    verificationUri: "https://reasonix.io/device/",
+    verificationUriComplete: "https://reasonix.io/device/?code=ABCD-EFGH",
+    interval: 1,
+    expiresIn: 0,
+  };
+
+  it("words a refused sign-in from the kernel's code", async () => {
+    const port = new MockPort() as unknown as AgentPort;
+    port.accountLogin = async () => {
+      throw new HttpError(403, "account sign-in is not enabled for this server", {
+        code: "account.signin_disabled",
+        error: "account sign-in is not enabled for this server",
+      });
+    };
+    render(<Account port={port} state={{ signedIn: false }} reload={() => {}} />);
+    await userEvent.click(screen.getByRole("button", { name: "登录" }));
+    expect(await screen.findByText("这台服务器未开放账号登录")).toBeTruthy();
+  });
+
+  it("says an expired request in the window's language", async () => {
+    setLocale("en");
+    const port = new MockPort() as unknown as AgentPort;
+    port.accountLogin = async () => expiring;
+    port.openExternal = vi.fn(async () => {});
+    render(<Account port={port} state={{ signedIn: false }} reload={() => {}} />);
+    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(await screen.findByText("This sign-in request expired. Try again.")).toBeTruthy();
   });
 });
 
@@ -87,7 +126,7 @@ describe("signed-in account with unreachable identity", () => {
     render(<Account port={port} state={{ signedIn: true, error: state.error }} reload={reload} />);
     await userEvent.click(screen.getByRole("button", { name: "退出登录" }));
     await userEvent.click(screen.getByRole("button", { name: "确认退出" }));
-    expect(await screen.findByText("Error: Credential store unavailable")).toBeTruthy();
+    expect(await screen.findByText("Credential store unavailable")).toBeTruthy();
     expect(screen.getByRole("alert").textContent).toContain(state.error);
     expect(reload).not.toHaveBeenCalled();
   });

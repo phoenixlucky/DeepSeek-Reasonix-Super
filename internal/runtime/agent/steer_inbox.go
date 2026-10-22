@@ -13,8 +13,9 @@ import (
 // runtime queued for itself, which the model must not read as the user
 // speaking.
 type steerEntry struct {
-	itemID string
-	load   func() (string, error)
+	display string
+	itemID  string
+	load    func() (string, error)
 	// text is a fallback when load is nil (legacy Steer(string) path).
 	text string
 	host bool
@@ -202,6 +203,10 @@ func (a *Agent) SteerItemFrom(itemID string, load func() (string, error), via *p
 	return a.queueSteer(steerEntry{itemID: itemID, load: load, via: via})
 }
 
+func (a *Agent) SteerDisplayedItemFrom(itemID string, load func() (string, error), display string, via *provider.Via) bool {
+	return a.queueSteer(steerEntry{itemID: itemID, load: load, display: display, via: via})
+}
+
 func (a *Agent) queueSteer(e steerEntry) bool {
 	return a.steer.admit(e)
 }
@@ -268,4 +273,13 @@ func (a *Agent) RecordUnappliedSteer(text string, itemID ...string) {
 
 func (a *Agent) steerQueueLen() int {
 	return a.steer.pending()
+}
+
+func (a *Agent) landSteer(text string, entry steerEntry) {
+	a.sess.conversation.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(sessionstore.MidTurnSteerMessage(text, entry.host)), RawContent: entry.display, Via: entry.via})
+	display := entry.display
+	if display == "" {
+		display = text
+	}
+	a.svc.sink.Emit(event.Event{Kind: event.Steer, Text: display, ItemID: entry.itemID, Via: entry.via, HostAuthored: entry.host})
 }

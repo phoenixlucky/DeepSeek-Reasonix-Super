@@ -170,3 +170,20 @@ func TestReviewGapSubmoduleSplit(t *testing.T) {
 		})
 	}
 }
+
+// gitstatus.History runs `log --all --date-order` with a custom format; a
+// signed tip, pager, external diff or alias in .git/config must not run.
+func TestReviewGapHistoryLogRunsNoRepoProgram(t *testing.T) {
+	f := newRepoFixture(t, "f.txt filter=pwn diff=pwn\n", map[string]string{"f.txt": "one\n"})
+	signCommitHeader(f)
+	p := f.payloadExit()
+	f.appendConfig("config", "[log]\n\tshowSignature = true\n[gpg]\n\tprogram = "+p+"\n"+
+		"[core]\n\tpager = "+p+"\n\tfsmonitor = "+p+"\n\thooksPath = "+filepath.Dir(p)+"\n"+
+		"[diff]\n\texternal = "+p+"\n[diff \"pwn\"]\n\ttextconv = "+p+"\n[filter \"pwn\"]\n\tsmudge = "+p+"\n"+
+		"[alias]\n\tlog = !"+p+"\n")
+	out, err := f.run("log", "--all", "--date-order", "--no-color", "-n", "5", "--format=%H%x00%P%x00%an%x00%at%x00%D%x00%s", "--")
+	if err != nil {
+		t.Fatalf("log: %v: %s", err, out)
+	}
+	f.assertNotExecuted()
+}

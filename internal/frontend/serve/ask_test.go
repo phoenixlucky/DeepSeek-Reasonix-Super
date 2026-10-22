@@ -43,6 +43,7 @@ func (b *blockingAttacher) Probe(context.Context, string) (RemoteProbe, error) {
 // assumed, because the answer settles what a reload is allowed to recover.
 func TestARemoteDialRunsUnderTheRequestThatAskedForIt(t *testing.T) {
 	t.Setenv("REASONIX_HOME", testenv.TempDir(t))
+	saveTestRemoteHosts(t, "gpu-box")
 	link := &blockingAttacher{dialing: make(chan context.Context, 1)}
 	h := NewHub(HubOptions{Remote: link})
 	front := httptest.NewServer(operatorHandler(h))
@@ -309,6 +310,7 @@ func (a *askingAttacher) Probe(context.Context, string) (RemoteProbe, error) {
 // shell drives it.
 func TestAnsweringAQuestionLetsTheDialFinishAndThePaneOpen(t *testing.T) {
 	t.Setenv("REASONIX_HOME", testenv.TempDir(t))
+	saveTestRemoteHosts(t, "gpu-box")
 	far := fakeRemoteKernel(t)
 	asks := NewAskBroker(nil)
 	h := NewHub(HubOptions{

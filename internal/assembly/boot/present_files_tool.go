@@ -1,0 +1,19 @@
+package boot
+
+import (
+	"slices"
+
+	"reasonix/internal/contract/config"
+	"reasonix/internal/contract/tool"
+	"reasonix/internal/tools/builtin"
+)
+
+// addPresentFiles contributes no tool or provider schema until the user opts in.
+func addPresentFiles(reg *tool.Registry, cfg *config.Config, env toolEnvironment, root string) {
+	if !cfg.Tools.PresentFiles || len(cfg.Tools.Enabled) > 0 && !slices.Contains(cfg.Tools.Enabled, "present_files") {
+		return
+	}
+	reg.Add(builtin.Workspace{
+		Dir: root, WriteRoots: env.writeRoots, ReadRoots: env.readRoots, ForbidReadRoots: env.forbidReadRoots,
+	}.PresentFiles())
+}

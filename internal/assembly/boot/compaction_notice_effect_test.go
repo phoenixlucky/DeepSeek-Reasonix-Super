@@ -18,7 +18,7 @@ type failingDigestProvider struct{}
 func (failingDigestProvider) Name() string { return "boot-failing-digest" }
 
 func (failingDigestProvider) Stream(_ context.Context, req provider.Request) (<-chan provider.Chunk, error) {
-	if strings.Contains(req.Messages[0].Content, "compacting the earlier part") {
+	if req.Summary {
 		return nil, errors.New("upstream said no")
 	}
 	ch := make(chan provider.Chunk, 2)

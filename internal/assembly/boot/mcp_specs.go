@@ -12,10 +12,11 @@ import (
 // touched: the configured and host-session specs, the names config has
 // enabled, and the configured servers whose tools load into the schema.
 type mcpSpecPlan struct {
-	configured []plugin.Spec
-	extra      []plugin.Spec
-	enabled    map[string]bool
-	alwaysLoad map[string]bool
+	configured  []plugin.Spec
+	extra       []plugin.Spec
+	enabled     map[string]bool
+	alwaysLoad  map[string]bool
+	autoConnect map[string]bool
 }
 
 // resolveMCPSpecs resolves the enabled servers and normalizes the host-session
@@ -24,9 +25,13 @@ func resolveMCPSpecs(opts Options, cfg *config.Config, root string, specOptions 
 	autoStart := cfg.EnabledPlugins(root, config.DefaultActivationStore())
 	enabled := make(map[string]bool, len(autoStart))
 	alwaysLoad := map[string]bool{}
+	autoConnect := map[string]bool{}
 	for _, e := range autoStart {
 		if name := strings.TrimSpace(e.Name); name != "" {
 			enabled[name] = true
+			if e.AutoStart != nil && *e.AutoStart {
+				autoConnect[name] = true
+			}
 			if cfg.MCPAlwaysLoad(e) {
 				alwaysLoad[name] = true
 			}
@@ -42,6 +47,9 @@ func resolveMCPSpecs(opts Options, cfg *config.Config, root string, specOptions 
 	for i := range extra {
 		if strings.TrimSpace(extra[i].WorkspaceRoot) == "" {
 			extra[i].WorkspaceRoot = root
+		}
+		if len(extra[i].WritableRoots) == 0 {
+			extra[i].WritableRoots = append([]string(nil), specOptions.WritableRoots...)
 		}
 		if extra[i].LaunchManager == nil {
 			extra[i].LaunchManager = specOptions.LaunchManager
@@ -67,5 +75,5 @@ func resolveMCPSpecs(opts Options, cfg *config.Config, root string, specOptions 
 			extra[i].Stderr = opts.Stderr
 		}
 	}
-	return mcpSpecPlan{configured: configured, extra: extra, enabled: enabled, alwaysLoad: alwaysLoad}
+	return mcpSpecPlan{configured: configured, extra: extra, enabled: enabled, alwaysLoad: alwaysLoad, autoConnect: autoConnect}
 }

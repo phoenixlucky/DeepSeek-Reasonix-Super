@@ -196,6 +196,29 @@ func TestAReleaseNoteIsGroupedReferencedAndShort(t *testing.T) {
 	}
 }
 
+func TestReleaseNoteHoldsEachLanguageToTheSameShape(t *testing.T) {
+	ok := strings.Join([]string{
+		"一句话概括本版。", "", "## 新增", "", "- 做了一件事 (#1)", "", "---", "", "<!-- lang:en -->", "",
+		"One-line summary.", "", "## New", "", "- Did one thing (#1)",
+	}, "\n")
+	if got := checkReleaseNote("release-notes/studio/9.9.9.md", strings.Split(ok, "\n")); len(got) != 0 {
+		t.Fatalf("a well-formed bilingual note has findings: %+v", got)
+	}
+	bad := strings.Join([]string{
+		"概括。", "", "## 新增", "", "- 做了一件事 (#1)", "", "<!-- lang:en -->", "",
+		"Summary.", "", "Second paragraph.", "", "## Highlights", "", "- No reference",
+	}, "\n")
+	got := checkReleaseNote("release-notes/studio/9.9.9.md", strings.Split(bad, "\n"))
+	if len(got) != 3 {
+		t.Fatalf("findings = %+v, want a second paragraph, an unknown English group and an unreferenced item", got)
+	}
+	for _, f := range got {
+		if f.Line < 9 {
+			t.Fatalf("a finding in the English part points at line %d, inside the first language", f.Line)
+		}
+	}
+}
+
 func TestClassifyDocSkipsMigrationBackup(t *testing.T) {
 	if _, ok := classifyDoc(".migration-backup/legacy-fact.md"); ok {
 		t.Fatal("a store-owned memory backup is not an authored doc")

@@ -78,6 +78,14 @@ describe("usage is exact on every device", () => {
     expect(screen.getByText(t("左右滚动查看"))).toBeTruthy();
   });
 
+  it("lists the newest day first, so the latest figures are in view without scrolling", async () => {
+    render(<Usage port={makePort()} />);
+
+    const table = await screen.findByRole("table", { name: t("每日明细") });
+    const days = [...table.querySelectorAll<HTMLElement>("tbody tr")].map((row) => row.dataset.day);
+    expect(days).toEqual(["2026-08-16", "2026-08-15"]);
+  });
+
   it("shows the configured provider label and a distinct bar colour", async () => {
     const port = makePort({
       providers: vi.fn().mockResolvedValue([

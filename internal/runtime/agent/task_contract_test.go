@@ -49,7 +49,9 @@ func contractAgent(t *testing.T, prov *scriptedProvider, declared string, store 
 	reg.Add(fakeTool{name: "write_file", readOnly: false, writesPaths: true})
 	reg.Add(fakeTool{name: "bash", readOnly: false})
 	sink := &contractAuditSink{}
-	opts := Options{EvidenceSeal: &EvidenceSeal{Store: store, Stream: "ws"}}
+	opts := Options{EvidenceSeal: &EvidenceSeal{Store: store, Stream: "ws"},
+		CheckTargetAccess: allowTestFileAccess,
+	}
 	if declared != "" {
 		opts.ProjectChecks = []instruction.VerifyCheck{{Command: declared, SourcePath: "REASONIX.md", Line: 3}}
 	}

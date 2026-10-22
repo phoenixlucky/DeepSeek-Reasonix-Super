@@ -32,7 +32,10 @@ func startSessionRuntime(opts Options, cfg *config.Config, root string, sink eve
 	lease := opts.WorkspaceLease
 	if lease == nil {
 		var err error
-		var leaseOptions []workspacelease.Option
+		leaseOptions := []workspacelease.Option{workspacelease.WithMaxWait(cfg.WriteLeaseMaxWait())}
+		if shellConfinedToFolder(opts, cfg) {
+			leaseOptions = append(leaseOptions, workspacelease.WithFolderClaim())
+		}
 		if cfg.WriteLeaseOptimistic() {
 			leaseOptions = append(leaseOptions, workspacelease.WithoutWholeWorkspaceHold())
 		}
@@ -116,5 +119,5 @@ func workspaceLeaseNotice(w workspacelease.Wait) event.Event {
 
 func workspaceLeaseScope(w workspacelease.Wait) *event.WorkspaceLease {
 	return &event.WorkspaceLease{Holder: w.Holder, HolderSessionID: w.HolderSessionID,
-		Paths: w.Paths, RequestedPaths: w.RequestedPaths}
+		Paths: w.Paths, RequestedPaths: w.RequestedPaths, Repository: w.Repository}
 }

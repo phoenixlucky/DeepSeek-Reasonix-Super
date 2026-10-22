@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -69,8 +70,15 @@ const (
 // (so callers can adapt prompts) and the executable to invoke. Fallback is set
 // only when bash was wanted and could not be used.
 type Shell struct {
-	Kind     ShellKind
-	Path     string
+	Kind ShellKind
+	Path string
+	// launcherArgs, NUL-joined so Shell stays comparable, come between Path and
+	// -c for a launcher such as wsl.exe, which needs them to reach a shell at
+	// all. They are the user's own and run by argv.
+	launcherArgs string
+	// Drives says where the Windows drives appear inside a WSL launcher's Linux
+	// side, as the distro itself reports it ("C:\ is /mnt/host/c/").
+	Drives   string
 	Fallback FallbackReason
 }
 
@@ -184,7 +192,7 @@ func warnBashFallback(warn io.Writer, sh Shell) {
 	if sh.SupportsChaining() {
 		keep = "pwsh"
 	}
-	fmt.Fprintf(warn, "warning: [tools.shell] %s; using PowerShell at %q. Commands written for bash that need POSIX tools such as head or grep will fail there. Install Git for Windows or set [tools.shell] path to its bash.exe; set prefer=%q to keep this interpreter and silence this.\n", why, sh.Path, keep)
+	fmt.Fprintf(warn, "warning: [tools.shell] %s; using PowerShell at %s. Commands written for bash that need POSIX tools such as head or grep will fail there. Install Git for Windows or set [tools.shell] path to its bash.exe; set prefer=%q to keep this interpreter and silence this.\n", why, quotedPath(sh.Path), keep)
 }
 
 // available lists the interpreters this host really has, in the order auto
@@ -369,10 +377,14 @@ func probeBash(path string) bool {
 	return probeBashMemo(path, runBashProbe)
 }
 
-// bashProbeTimeout bounds one probe. A cold start behind antivirus scanning can
-// outlast a few seconds, and a probe that gives up too early costs the session its
-// bash for good.
-const bashProbeTimeout = 10 * time.Second
+// bashProbeTimeout bounds one launch and bashProbeAttempts how many a hang gets.
+// A cold Git Bash starts in under a second here, so a launch that is still silent
+// after 5s is stuck rather than slow (MSYS process start can wedge), and a fresh
+// process usually clears it; two launches fit the discovery budget.
+const (
+	bashProbeTimeout  = 5 * time.Second
+	bashProbeAttempts = 2
+)
 
 // probeWaitDelay bounds the wait for a killed probe to actually exit: a process
 // held in the kernel by security software outlives its context otherwise.
@@ -386,7 +398,26 @@ func bashProbeTimedOut(path string) bool {
 	return ok && v == FallbackProbeTimeout
 }
 
-func runBashProbe(path string) bool {
+func runBashProbe(path string) bool { return probeWithRetry(path, launchBashProbe) }
+
+// probeWithRetry relaunches only after a timeout; a command that ran and failed
+// would fail again. The last attempt's reason is what bashProbeFailures keeps.
+func probeWithRetry(path string, attempt func(string) FallbackReason) bool {
+	why := FallbackProbeFailed
+	for range bashProbeAttempts {
+		if why = attempt(path); why != FallbackProbeTimeout {
+			break
+		}
+	}
+	if why == FallbackNone {
+		bashProbeFailures.Delete(path)
+		return true
+	}
+	bashProbeFailures.Store(path, why)
+	return false
+}
+
+func launchBashProbe(path string) FallbackReason {
 	ctx, cancel := context.WithTimeout(context.Background(), bashProbeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, "-c", "true")
@@ -394,11 +425,9 @@ func runBashProbe(path string) bool {
 	cmd.Env = secrets.ProcessEnv()
 	proc.HideWindow(cmd)
 	if cmd.Run() == nil {
-		bashProbeFailures.Delete(path)
-		return true
+		return FallbackNone
 	}
-	bashProbeFailures.Store(path, probeFailureReason(ctx.Err()))
-	return false
+	return probeFailureReason(ctx.Err())
 }
 
 // probeFailureReason is a timeout only when the probe's own deadline expired; a
@@ -690,7 +719,7 @@ func (s Shell) argv(command string) []string {
 	if s.Kind == ShellPowerShell {
 		return []string{path, "-NoProfile", "-NonInteractive", "-Command", powerShellToolScript(normalizeNullRedirects(command, "$null"))}
 	}
-	return []string{path, "-c", normalizeNullRedirects(command, "/dev/null")}
+	return append(append([]string{path}, s.Args()...), "-c", normalizeNullRedirects(command, "/dev/null"))
 }
 
 // SupportsChaining reports whether the shell parses '&&' / '||'. bash does;
@@ -701,4 +730,24 @@ func (s Shell) SupportsChaining() bool {
 	}
 	base := strings.ToLower(pathBase(s.Path))
 	return base == "pwsh" || base == "pwsh.exe"
+}
+
+// quotedPath quotes a path for a one-line notice: control characters stay
+// escaped, while Windows separators read as the path is written.
+func quotedPath(p string) string {
+	return strings.ReplaceAll(strconv.Quote(p), `\\`, `\`)
+}
+
+// Args are the launcher arguments this shell is started with, if any.
+func (s Shell) Args() []string {
+	if s.launcherArgs == "" {
+		return nil
+	}
+	return strings.Split(s.launcherArgs, "\x00")
+}
+
+// WithArgs is s started through the given launcher arguments.
+func (s Shell) WithArgs(args []string) Shell {
+	s.launcherArgs = strings.Join(args, "\x00")
+	return s
 }

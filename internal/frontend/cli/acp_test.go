@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -363,5 +365,31 @@ func TestACPEffortForcedThinkingDescription(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestACPSessionCarriesAdditionalDirsIntoBootAndTheReportedWriteRoots(t *testing.T) {
+	isolateCLIConfigHome(t)
+	project := testenv.TempDir(t)
+	approveWorkspace(t, project)
+	extra := filepath.Join(project, "..", "extra-roots-not-real")
+	factory := &acpFactory{}
+	opts, err := factory.sessionBootOptions(acp.SessionParams{Cwd: project, Sink: event.Discard, AdditionalDirs: []string{extra}})
+	if err != nil || len(opts.AdditionalDirs) != 1 || opts.AdditionalDirs[0] != extra {
+		t.Fatalf("boot options = %+v (%v)", opts.AdditionalDirs, err)
+	}
+	state, err := factory.SessionRuntimeState(context.Background(), acp.SessionRuntimeStateParams{Cwd: project, AdditionalDirs: []string{extra}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(state.Sandbox.WriteRoots, extra) {
+		t.Fatalf("the status hides a root the agent can write: %v", state.Sandbox.WriteRoots)
+	}
+	confined := &acpFactory{workspaceOnly: true}
+	if _, err := confined.sessionBootOptions(acp.SessionParams{Cwd: project, Sink: event.Discard, AdditionalDirs: []string{extra}}); !errors.Is(err, acp.ErrAdditionalDirectoriesDisabled) {
+		t.Fatalf("a cwd-only agent took extra folders: %v", err)
+	}
+	if state, err := confined.SessionRuntimeState(context.Background(), acp.SessionRuntimeStateParams{Cwd: project, AdditionalDirs: []string{extra}}); err != nil || slices.Contains(state.Sandbox.WriteRoots, extra) {
+		t.Fatalf("a cwd-only agent reports %v (%v)", state.Sandbox.WriteRoots, err)
 	}
 }

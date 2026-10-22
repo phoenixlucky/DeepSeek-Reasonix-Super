@@ -30,6 +30,9 @@ func (c *Config) ResolveStartupChatModel() (NewSessionModel, bool) {
 // names no conversation source and is not the model it chose.
 func (c *Config) newSessionModel(ref string, fallback bool) NewSessionModel {
 	m := NewSessionModel{Ref: ref, Fallback: fallback}
+	if ref == UnconfiguredRef {
+		return m
+	}
 	if def := strings.TrimSpace(c.DefaultModel); ref != def && c.passesOverDefault() {
 		m.SkippedDefault = def
 	}

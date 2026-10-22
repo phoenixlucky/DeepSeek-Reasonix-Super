@@ -13,4 +13,11 @@ describe("the worked line", () => {
     expect(box.querySelector(".rc-t")?.textContent).toBe(t("耗时 {t}", { t: "1m 5s" }));
     expect(box.textContent).toContain("1m 5s");
   });
+
+  it("says when the turn began when the kernel knows", () => {
+    const at = new Date(2026, 9, 13, 14, 5).getTime();
+    const box = render(<WorkedLine ms={65_000} startedAt={at} />).container;
+    expect(box.querySelector(".rc-t")?.textContent).toContain("1m 5s");
+    expect(box.querySelector(".rc-t")?.textContent).toContain("14:05");
+  });
 });

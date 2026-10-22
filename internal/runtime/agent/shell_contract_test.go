@@ -302,7 +302,7 @@ func TestBatchDependencyBarrierIgnoresFailedNonMutationMetaTool(t *testing.T) {
 		},
 		{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}},
 	}}
-	a := New(prov, reg, sessionstore.NewSession(""), Options{}, event.Discard)
+	a := New(prov, reg, sessionstore.NewSession(""), Options{CheckTargetAccess: allowTestFileAccess}, event.Discard)
 	if err := a.Run(context.Background(), "track then edit"); err != nil {
 		t.Fatal(err)
 	}

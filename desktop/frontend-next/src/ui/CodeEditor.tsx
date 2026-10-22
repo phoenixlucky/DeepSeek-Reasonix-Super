@@ -65,7 +65,7 @@ const highlight = HighlightStyle.define([
 const theme = (dark: boolean) =>
   EditorView.theme(
     {
-      "&": { height: "100%", color: "var(--text)", backgroundColor: "var(--face-code)", fontSize: "12px" },
+      "&": { height: "100%", color: "var(--text)", backgroundColor: "var(--face-code)", fontSize: "calc(12px * var(--fs-scale, 1))" },
       "&.cm-focused": { outline: "none" },
       ".cm-scroller": { fontFamily: "var(--mono)", lineHeight: "1.65" },
       ".cm-content": { caretColor: "var(--text)", paddingBottom: "80px" },
@@ -82,7 +82,7 @@ const theme = (dark: boolean) =>
       ".cm-panels": { backgroundColor: "var(--raised)", color: "var(--text)" },
       ".cm-panels.cm-panels-top": { borderBottom: "1px solid var(--border)" },
       ".cm-panel input, .cm-panel button, .cm-textfield": {
-        fontFamily: "var(--ui)", fontSize: "11px", color: "var(--text)",
+        fontFamily: "var(--ui)", fontSize: "calc(11px * var(--fs-scale, 1))", color: "var(--text)",
       },
       ".cm-textfield": {
         backgroundColor: "var(--surface)", border: "1px solid var(--border)", borderRadius: "5px", padding: "2px 6px",
@@ -119,11 +119,12 @@ interface Props {
   dark: boolean;
   onChange: (text: string) => void;
   onSave: () => void;
+  readOnly?: boolean;
 }
 
 /** A file, read and edited in one place: highlighted as it is typed, with the
  *  editor's own find (Ctrl+F), go to line (Ctrl+G) and save (Ctrl+S). */
-export default function CodeEditor({ path, value, dark, onChange, onSave }: Props) {
+export default function CodeEditor({ path, value, dark, onChange, onSave, readOnly = false }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const handlers = useRef({ onChange, onSave });
@@ -164,6 +165,9 @@ export default function CodeEditor({ path, value, dark, onChange, onSave }: Prop
           }),
           language.current.of([]),
           look.current.of(theme(dark)),
+          // The parent keys this component by path, and a file never changes between
+          // readable and editable while it is open, so this is read once.
+          ...(readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : []),
         ],
       }),
     });

@@ -134,7 +134,8 @@ func (t *runSkillTool) Execute(ctx context.Context, args json.RawMessage) (strin
 
 func (t *runSkillTool) ResolveProfile(args json.RawMessage) *event.Profile {
 	var p struct {
-		Name string `json:"name"`
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return nil
@@ -147,11 +148,7 @@ func (t *runSkillTool) ResolveProfile(args json.RawMessage) *event.Profile {
 	if !ok || sk.RunAs != RunSubagent {
 		return nil
 	}
-	return t.profileForSkill(sk)
-}
-
-func (t *runSkillTool) profileForSkill(sk Skill) *event.Profile {
-	return profileForSkill(sk, t.profileResolver)
+	return profileForSkill(sk, t.profileResolver, p.Arguments)
 }
 
 // read_only_skill
@@ -235,7 +232,8 @@ func (t *readOnlySkillTool) Execute(ctx context.Context, args json.RawMessage) (
 
 func (t *readOnlySkillTool) ResolveProfile(args json.RawMessage) *event.Profile {
 	var p struct {
-		Name string `json:"name"`
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return nil
@@ -248,13 +246,14 @@ func (t *readOnlySkillTool) ResolveProfile(args json.RawMessage) *event.Profile 
 	if !ok || sk.RunAs != RunSubagent {
 		return nil
 	}
-	return profileForSkill(sk, t.profileResolver)
+	return profileForSkill(sk, t.profileResolver, p.Arguments)
 }
 
-// profileForSkill names the delegation after the skill that runs it. A skill
-// without its own model/effort still delegates, so the profile is returned
-// either way — the name is what a reader needs to audit the step.
-func profileForSkill(sk Skill, resolver ProfileResolver) *event.Profile {
+// profileForSkill names the delegation after the skill that runs it, and labels
+// it with what it was asked. A skill without its own model/effort still
+// delegates, so the profile is returned either way: the name is what a reader
+// needs to audit the step, the label what it is doing.
+func profileForSkill(sk Skill, resolver ProfileResolver, task string) *event.Profile {
 	pr := &event.Profile{}
 	if resolver != nil {
 		if resolved := resolver(sk); resolved != nil {
@@ -264,7 +263,7 @@ func profileForSkill(sk Skill, resolver ProfileResolver) *event.Profile {
 	if pr.Model == "" && pr.Effort == "" {
 		pr.Model, pr.Effort = strings.TrimSpace(sk.Model), strings.TrimSpace(sk.Effort)
 	}
-	pr.Name, pr.Count = sk.Name, 1
+	pr.Name, pr.Count, pr.Label = sk.Name, 1, event.TaskLabel("", task)
 	return pr
 }
 
@@ -386,12 +385,16 @@ func (t *subagentSkillTool) Execute(ctx context.Context, args json.RawMessage) (
 	return tool.GuardSubagentHostDecisionText(out), nil
 }
 
-func (t *subagentSkillTool) ResolveProfile(json.RawMessage) *event.Profile {
+func (t *subagentSkillTool) ResolveProfile(args json.RawMessage) *event.Profile {
 	sk, ok := t.store.Read(t.skillName)
 	if !ok || sk.RunAs != RunSubagent {
 		return nil
 	}
-	return profileForSkill(sk, t.profile)
+	var p struct {
+		Task string `json:"task"`
+	}
+	_ = json.Unmarshal(args, &p)
+	return profileForSkill(sk, t.profile, p.Task)
 }
 
 // BuiltinSubagentTools returns top-level wrapper tools for the built-in subagent

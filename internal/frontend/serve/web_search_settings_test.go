@@ -12,8 +12,8 @@ func TestWebSearchRoleUsesTypedRefusal(t *testing.T) {
 	s.AllowProviderEdit()
 	srv := httptest.NewServer(operatorHandler(s))
 	defer srv.Close()
-	if got, ok := readRoles(t, srv.URL)["web_search"]; !ok || got != "" {
-		t.Fatalf("search role = %q, %v", got, ok)
+	if got := readRoles(t, srv.URL).WebSearch; got != "" {
+		t.Fatalf("search role = %q", got)
 	}
 	resp := postProvider(t, srv.URL, "/roles", `{"role":"web_search","ref":"existing/model-a"}`)
 	defer resp.Body.Close()
@@ -31,7 +31,7 @@ func TestWebSearchRoleUsesTypedRefusal(t *testing.T) {
 	if clear.StatusCode != http.StatusNoContent {
 		t.Fatalf("auto = %d", clear.StatusCode)
 	}
-	if got := readRoles(t, srv.URL)["web_search"]; got != "" {
+	if got := readRoles(t, srv.URL).WebSearch; got != "" {
 		t.Fatalf("saved = %q", got)
 	}
 }

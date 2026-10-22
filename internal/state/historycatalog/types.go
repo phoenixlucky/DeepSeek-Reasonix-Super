@@ -7,14 +7,15 @@ import (
 	"strings"
 	"time"
 
+	"reasonix/internal/base/backgroundwork"
 	"reasonix/internal/contract/config"
 	"reasonix/internal/state/projectiondb"
 )
 
 const (
 	SchemaVersion = 1
-	// 2: user turns are indexed without the host's injected blocks.
-	TokenizerVersion = 2
+	// 4: user turns are indexed without the host's prepended or appended blocks.
+	TokenizerVersion = 4
 	DefaultLimit     = 50
 	MaxLimit         = 200
 )
@@ -33,6 +34,7 @@ type Status struct {
 }
 
 type Options struct {
+	Work              *backgroundwork.Scheduler
 	Path              string
 	InMemory          bool
 	QueueCapacity     int

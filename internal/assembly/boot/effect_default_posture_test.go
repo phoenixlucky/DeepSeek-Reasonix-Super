@@ -158,7 +158,7 @@ func TestEffectDefaultPostureWritesOnlyWhereConfinedAndTrusted(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			wantConfined := tc.bash == "enforce" && sandbox.Available()
+			wantConfined := tc.bash == "enforce" && sandbox.ConfinesByDefault()
 			if got := run.ctrl.WritesConfined(); got != wantConfined {
 				t.Fatalf("WritesConfined = %v, want %v: the claim must come from the backend", got, wantConfined)
 			}
@@ -222,7 +222,7 @@ func TestEffectYoloStillHonoursDenyRules(t *testing.T) {
 // YOLO leaves the sandbox in place: a confined command still cannot write
 // outside the workspace.
 func TestEffectYoloKeepsTheSandbox(t *testing.T) {
-	if !sandbox.Available() {
+	if !sandbox.ConfinesByDefault() {
 		t.Skip("no OS sandbox backend on this host; the Linux/macOS legs hold this")
 	}
 	// Host temp is a write root, so the target sits in this package's own
@@ -251,7 +251,7 @@ func TestEffectYoloKeepsTheSandbox(t *testing.T) {
 // that is because the folder holds no trust decision, the refusal says so: the
 // code the run reports, and the cause and remedy the model reads.
 func TestEffectDefaultHeadlessPostureNamesTheUntrustedFolder(t *testing.T) {
-	if !sandbox.Available() {
+	if !sandbox.ConfinesByDefault() {
 		t.Skip("no OS sandbox backend; the default asks here for a different reason")
 	}
 	run := buildPostureRun(t, "[sandbox]\nbash = \"enforce\"\n", writeCall("w", "notes.md"))

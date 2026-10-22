@@ -16,9 +16,22 @@ import (
 	"reasonix/internal/session/control"
 )
 
+// testWorkspaceLimit is a limit the tests set in the user file; nothing limits the list otherwise.
+const testWorkspaceLimit = 32
+
+func limitWorkspaces(t *testing.T, n int) {
+	t.Helper()
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	cfg.Desktop.MaxWorkspaces = n
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func fullWorkspaceList(t *testing.T) []byte {
 	t.Helper()
-	for i := range workspaceRecentMax {
+	limitWorkspaces(t, testWorkspaceLimit)
+	for i := range testWorkspaceLimit {
 		rememberWorkspace(fmt.Sprintf("/project-%d", i))
 	}
 	data, err := os.ReadFile(workspacesPath())
@@ -103,5 +116,19 @@ func TestWorkspaceRepairsKeepEveryOriginalBackup(t *testing.T) {
 		if !saved[original] {
 			t.Fatalf("lost original %q", original)
 		}
+	}
+}
+
+// With no limit set, which is the default, the list takes as many projects as the
+// user opens.
+func TestTheProjectListHasNoLimitUntilTheUserSetsOne(t *testing.T) {
+	t.Setenv("REASONIX_HOME", testenv.TempDir(t))
+	for i := range testWorkspaceLimit + 10 {
+		if err := addRememberedWorkspace(t.Context(), fmt.Sprintf("/project-%d", i)); err != nil {
+			t.Fatalf("project %d refused with no limit set: %v", i+1, err)
+		}
+	}
+	if got := len(Workspaces()); got != testWorkspaceLimit+10 {
+		t.Fatalf("%d projects remembered, want %d", got, testWorkspaceLimit+10)
 	}
 }

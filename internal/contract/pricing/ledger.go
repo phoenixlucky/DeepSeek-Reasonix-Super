@@ -25,7 +25,11 @@ type LedgerEntry struct {
 	TotalTokens      int `json:"totalTokens"`
 	CacheHitTokens   int `json:"cacheHitTokens"`
 	CacheMissTokens  int `json:"cacheMissTokens"`
-	RequestCount     int `json:"requestCount"`
+	// CacheUnknownTokens is prompt the endpoint reported without saying how much
+	// was cached. It is counted as a miss in CacheMissTokens for pricing and kept
+	// here so a hit rate can leave it out instead of being pulled down by it.
+	CacheUnknownTokens int `json:"cacheUnknownTokens,omitempty"`
+	RequestCount       int `json:"requestCount"`
 }
 
 // LedgerKey builds the stable aggregation key.
@@ -152,6 +156,7 @@ func (l *Ledger) Add(q CostQuote, tokens UsageTokens, occurred time.Time) {
 		ent.CacheMissTokens += tokens.CacheMissTokens
 	} else {
 		ent.CacheMissTokens += tokens.PromptTokens
+		ent.CacheUnknownTokens += tokens.PromptTokens
 	}
 	ent.RequestCount++
 	if occurred.After(ent.OccurredAt) {

@@ -171,7 +171,9 @@ func TestDeliveryProfileEnforcesAcceptanceReviewVerificationAndSignoff(t *testin
 		{{Type: provider.ChunkText, Text: "delivered"}, {Type: provider.ChunkDone}},
 	}}
 
-	a := New(prov, reg, sessionstore.NewSession(""), Options{DeliveryProfile: true}, event.Discard)
+	a := New(prov, reg, sessionstore.NewSession(""), Options{DeliveryProfile: true,
+		CheckTargetAccess: allowTestFileAccess,
+	}, event.Discard)
 	if err := a.Run(context.Background(), "implement main"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -219,7 +221,9 @@ func TestDeliveryProfileRequiresReviewBeforeFinalAnswer(t *testing.T) {
 		{{Type: provider.ChunkText, Text: "done after review and signoff"}, {Type: provider.ChunkDone}},
 	}}
 	sink := &readinessAuditSink{}
-	a := New(prov, reg, sessionstore.NewSession(""), Options{DeliveryProfile: true}, sink)
+	a := New(prov, reg, sessionstore.NewSession(""), Options{DeliveryProfile: true,
+		CheckTargetAccess: allowTestFileAccess,
+	}, sink)
 	ctx := deliveryGoalContext("goal-review", "implement main")
 	// The first final answer fails immediately (no readiness retries); the
 	// scoped follow-up adds the missing review and renews the sign-off.
@@ -372,7 +376,9 @@ func TestDeliveryProfileRequiresActiveTodoForLateMutation(t *testing.T) {
 		{toolCallChunk("signoff-2", "complete_step", `{"step":"Apply review fix","result":"done","evidence":[{"kind":"verification","summary":"tests pass","command":"go test ./..."}]}`), {Type: provider.ChunkDone}},
 		{{Type: provider.ChunkText, Text: "delivered"}, {Type: provider.ChunkDone}},
 	}}
-	a := New(prov, reg, sessionstore.NewSession(""), Options{DeliveryProfile: true}, event.Discard)
+	a := New(prov, reg, sessionstore.NewSession(""), Options{DeliveryProfile: true,
+		CheckTargetAccess: allowTestFileAccess,
+	}, event.Discard)
 	if err := a.Run(context.Background(), "implement main and incorporate review fixes"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -423,6 +429,8 @@ func TestEvidenceFlowEnforcesProjectChecksAfterWrite(t *testing.T) {
 
 	a := New(prov, reg, sessionstore.NewSession(""), Options{
 		ProjectChecks: []instruction.VerifyCheck{{Command: "go test ./...", SourcePath: "AGENTS.md", Line: 3}},
+
+		CheckTargetAccess: allowTestFileAccess,
 	}, event.Discard)
 	if err := a.Run(context.Background(), "edit and verify"); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -528,6 +536,8 @@ func TestFinalReadinessBlocksUntilProjectCheckRunsAfterWriter(t *testing.T) {
 	}}
 	a := New(prov, reg, sessionstore.NewSession(""), Options{
 		ProjectChecks: []instruction.VerifyCheck{{Command: "go test ./...", SourcePath: "AGENTS.md", Line: 3}},
+
+		CheckTargetAccess: allowTestFileAccess,
 	}, event.Discard)
 	ctx := deliveryGoalContext("goal-checks", "edit and finish")
 
@@ -566,6 +576,8 @@ func TestFinalReadinessAuditRecordsBlockAndRecovery(t *testing.T) {
 	sink := &readinessAuditSink{}
 	a := New(prov, reg, sessionstore.NewSession(""), Options{
 		ProjectChecks: []instruction.VerifyCheck{{Command: "go test ./...", SourcePath: "AGENTS.md", Line: 3}},
+
+		CheckTargetAccess: allowTestFileAccess,
 	}, sink)
 	ctx := deliveryGoalContext("goal-audit", "edit and finish")
 
@@ -607,6 +619,8 @@ func TestFinalReadinessRejectsProjectCheckBeforeWriter(t *testing.T) {
 	}}
 	a := New(prov, reg, sessionstore.NewSession(""), Options{
 		ProjectChecks: []instruction.VerifyCheck{{Command: "go test ./...", SourcePath: "AGENTS.md", Line: 3}},
+
+		CheckTargetAccess: allowTestFileAccess,
 	}, event.Discard)
 	ctx := deliveryGoalContext("goal-before-writer", "verify before edit, then finish")
 
@@ -654,7 +668,7 @@ func TestFinalReadinessRequiresCompleteStepAfterWriterWhenTodoSeen(t *testing.T)
 		},
 		{{Type: provider.ChunkText, Text: "signed off done"}, {Type: provider.ChunkDone}},
 	}}
-	a := New(prov, reg, sessionstore.NewSession(""), Options{}, event.Discard)
+	a := New(prov, reg, sessionstore.NewSession(""), Options{CheckTargetAccess: allowTestFileAccess}, event.Discard)
 	ctx := deliveryGoalContext("goal-signoff", "edit with todo and finish")
 
 	// The premature final answer fails immediately; the scoped follow-up signs
@@ -745,7 +759,7 @@ func TestFinalReadinessAuditRecordsTerminalError(t *testing.T) {
 		{{Type: provider.ChunkText, Text: "premature 3"}, {Type: provider.ChunkDone}},
 	}}
 	sink := &readinessAuditSink{}
-	a := New(prov, reg, sessionstore.NewSession(""), Options{}, sink)
+	a := New(prov, reg, sessionstore.NewSession(""), Options{CheckTargetAccess: allowTestFileAccess}, sink)
 
 	err := a.Run(context.Background(), "edit with todo and never sign off")
 	if err == nil {

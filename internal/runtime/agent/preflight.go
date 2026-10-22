@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"reasonix/internal/contract/event"
 	"reasonix/internal/contract/provider"
 )
 
@@ -68,12 +69,37 @@ func (a *contextWindow) visibleByFullScan() []provider.Message {
 	a.sess.win.compactionMu.Lock()
 	st := a.sess.win.compactionState
 	a.sess.win.compactionMu.Unlock()
-	if projectionValid(st, msgs, a.currentPromptCacheKey(), snap.fingerprint) {
+	key := a.currentPromptCacheKey()
+	if projectionValid(st, msgs, key, snap.fingerprint) {
 		if visible := modelVisibleFromProjection(st.Projection, msgs); len(visible) > 0 {
 			return visible
 		}
 	}
+	a.announceWidenedView(st, key)
 	return msgs
+}
+
+// announceWidenedView says why a fold that was installed stopped being used: the
+// request that widens the view to the whole history is the one that carries the
+// reason, once per cause. A session that never had a fold has nothing to say.
+func (a *contextWindow) announceWidenedView(st sessionstore.CompactionState, key string) {
+	if len(st.Projection.Messages) == 0 {
+		return
+	}
+	drop := ProjectionDropHistory
+	if !projectionLineageOK(st, key) {
+		drop = ProjectionDropLineage
+	}
+	a.sess.win.compactionMu.Lock()
+	already := a.sess.win.checkpointState == string(drop)
+	a.sess.win.checkpointState = string(drop)
+	a.sess.win.compactionMu.Unlock()
+	if already {
+		return
+	}
+	if code, text, ok := FoldNotReusedNotice(drop); ok {
+		a.svc.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Code: code, Text: text})
+	}
 }
 
 // ProjectionVersion is the installed fold's version. A caller comparing folds
@@ -210,6 +236,9 @@ func (a *contextWindow) loadProjectionSidecar(sessionPath string) {
 	if (key != "" && !keyOK) || !hasMaintenanceSignal {
 		a.sess.win.compactionState = sessionstore.CompactionState{}
 		a.sess.win.checkpointState = "none"
+		if key != "" && !keyOK && len(st.Projection.Messages) > 0 {
+			a.sess.win.checkpointState = string(ProjectionDropLineage)
+		}
 		a.sess.win.compactionMu.Unlock()
 		return
 	}
@@ -229,12 +258,15 @@ func (a *contextWindow) loadProjectionSidecar(sessionPath string) {
 		fingerprint = a.prefixHasher(rewriteVersion)
 	}
 	valid := len(st.Projection.Messages) > 0 && projectionValid(st, msgs, key, fingerprint)
-	if !valid && len(st.Projection.Messages) > 0 {
+	dropped := !valid && len(st.Projection.Messages) > 0
+	if dropped {
 		// Keep blocked receipts / telemetry; drop unusable projection body.
 		st.Projection = sessionstore.ContextProjection{}
 	}
 	a.sess.win.compactionState = st
-	if valid {
+	if dropped {
+		a.sess.win.checkpointState = string(ProjectionDropHistory)
+	} else if valid {
 		a.sess.win.checkpointState = "restored"
 		if needsNormalization {
 			if err := a.persistCompactionStateLocked(); err != nil {
@@ -245,6 +277,50 @@ func (a *contextWindow) loadProjectionSidecar(sessionPath string) {
 		a.sess.win.checkpointState = "none"
 	}
 	a.sess.win.compactionMu.Unlock()
+}
+
+// ProjectionDrop names why a saved fold was not reused when its session was
+// bound. The host is the only party that saw which it was.
+type ProjectionDrop string
+
+const (
+	ProjectionDropNone ProjectionDrop = ""
+	// ProjectionDropHistory: the fold's lineage matched but the history behind it changed.
+	ProjectionDropHistory ProjectionDrop = "dropped_history"
+	// ProjectionDropLineage: another model or workspace made it and the history does not match either.
+	ProjectionDropLineage ProjectionDrop = "dropped_lineage"
+)
+
+// FoldNotReusedNotice is what the person is told when a saved fold is not used
+// and the whole history goes to the model instead; both the session bind and a
+// later request say it in these words.
+func FoldNotReusedNotice(d ProjectionDrop) (code, text string, ok bool) {
+	switch d {
+	case ProjectionDropHistory:
+		return event.NoticeCodeFoldNotReusedHistory, "A saved compaction of this conversation was not reused: the history it summarised has changed since. The full history is sent instead.", true
+	case ProjectionDropLineage:
+		return event.NoticeCodeFoldNotReusedLineage, "A saved compaction of this conversation was made under another model or workspace and does not match its history. The full history is sent instead.", true
+	}
+	return "", "", false
+}
+
+// ProjectionDropped reports why the fold saved beside the bound session was
+// not reused, or ProjectionDropNone when there was none or it was.
+func (a *Agent) ProjectionDropped() ProjectionDrop {
+	if a == nil {
+		return ProjectionDropNone
+	}
+	return a.window().projectionDropped()
+}
+
+func (a *contextWindow) projectionDropped() ProjectionDrop {
+	a.sess.win.compactionMu.Lock()
+	defer a.sess.win.compactionMu.Unlock()
+	switch d := ProjectionDrop(a.sess.win.checkpointState); d {
+	case ProjectionDropHistory, ProjectionDropLineage:
+		return d
+	}
+	return ProjectionDropNone
 }
 
 // lineageKeyCompatible reports whether a stored PromptCacheKey still belongs to
@@ -376,7 +452,10 @@ func (a *contextWindow) persistCompactionStateLocked() error {
 	if a.sess.path == "" {
 		return nil
 	}
-	return sessionstore.SaveCompactionState(a.sess.path, a.sess.win.compactionState)
+	// The sidecar is the durable record of a fold, so it is published under the
+	// session's write authority: a controller whose transcript save would be
+	// refused must not install a fold either.
+	return a.sess.conversation.SaveCompactionState(a.sess.path, a.sess.win.compactionState)
 }
 
 // promptCacheKey builds a stable lineage key for session + model identity.

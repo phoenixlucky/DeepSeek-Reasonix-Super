@@ -471,7 +471,15 @@ func TestBlankDescriptionFlatClaudeMarkdownIsSkillLike(t *testing.T) {
 			}
 
 			stderr.Reset()
-			sk, ok := st.Read(tc.name)
+			if _, ok := st.Read(tc.name); !ok {
+				t.Fatal("blank description marker should still make flat Claude markdown skill-like")
+			}
+			if got := stderr.String(); got != "" {
+				t.Fatalf("a store that already warned wrote the same warning again on Read: %q", got)
+			}
+
+			stderr.Reset()
+			sk, ok := New(Options{HomeDir: home, DisableBuiltins: true, Stderr: &stderr}).Read(tc.name)
 			if !ok {
 				t.Fatal("blank description marker should still make flat Claude markdown skill-like")
 			}

@@ -60,6 +60,9 @@ it("dismisses a queued draft with Escape without stopping the active turn", asyn
   expect(composer).not.toBeNull();
   composer.focus();
   await userEvent.keyboard("{Escape}");
+  expect(cancel).not.toHaveBeenCalled();
+  expect(document.querySelector(".stophint")!.textContent).toBe("再按一次 Esc 停止当前任务");
+  await userEvent.keyboard("{Escape}");
   expect(cancel).toHaveBeenCalledTimes(1);
 });
 

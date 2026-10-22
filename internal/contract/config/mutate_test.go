@@ -633,3 +633,75 @@ func TestConfigEditLockRegistryDirIsUnderUserHome(t *testing.T) {
 		t.Fatalf("lock dir %q is in shared /tmp", dir)
 	}
 }
+
+// A self-contained runtime writes nothing outside its home: the lock for a
+// config file inside an isolated Reasonix home lives in that home.
+func TestIsolatedHomeKeepsItsConfigEditLocksInsideIt(t *testing.T) {
+	home := testenv.TempDir(t)
+	t.Setenv("REASONIX_HOME", home)
+	lock, err := configFileEditLockPath(UserConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pathWithin(filepath.Join(home, "locks"), lock) && !pathWithin(filepath.Join(resolvedHome, "locks"), lock) {
+		t.Fatalf("lock = %q, want it under %q", lock, filepath.Join(home, "locks"))
+	}
+	osLocks, err := configEditLockRegistryDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pathWithin(osLocks, lock) {
+		t.Fatalf("an isolated home still locked under the OS account home: %q", lock)
+	}
+}
+
+// Only what the isolated home holds moves: a file elsewhere (a project's
+// reasonix.toml) keeps its lock where every other launch will look for it.
+func TestIsolatedHomeLeavesOtherFilesLockedUnderTheAccountHome(t *testing.T) {
+	t.Setenv("REASONIX_HOME", testenv.TempDir(t))
+	elsewhere := filepath.Join(testenv.TempDir(t), "reasonix.toml")
+	lock, err := configFileEditLockPath(elsewhere)
+	if err != nil {
+		t.Fatal(err)
+	}
+	osLocks, err := configEditLockRegistryDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pathWithin(osLocks, lock) {
+		t.Fatalf("lock = %q, want it under %q", lock, osLocks)
+	}
+}
+
+func TestLockUserConfigEditsInAnIsolatedHomeCreatesItsLockDirThere(t *testing.T) {
+	home := testenv.TempDir(t)
+	t.Setenv("REASONIX_HOME", home)
+	unlock := LockUserConfigEdits()
+	defer unlock()
+	if err := currentUserConfigEditLockError(); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(home, "locks"))
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("no lock directory under the isolated home: %v %v", entries, err)
+	}
+}
+
+func TestPathWithin(t *testing.T) {
+	base := filepath.Join(string(filepath.Separator), "a", "b")
+	for path, want := range map[string]bool{
+		filepath.Join(base, "c", "d"): true,
+		base:                          true,
+		filepath.Join(string(filepath.Separator), "a", "x"): false,
+		filepath.Join(base + "x"):                           false,
+		filepath.Join(base, "..", "b2"):                     false,
+	} {
+		if got := pathWithin(base, path); got != want {
+			t.Errorf("pathWithin(%q, %q) = %v, want %v", base, path, got, want)
+		}
+	}
+}

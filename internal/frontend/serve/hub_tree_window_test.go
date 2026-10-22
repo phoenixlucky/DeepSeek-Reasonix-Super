@@ -257,3 +257,31 @@ func TestParseTreeWindowClampsEveryBound(t *testing.T) {
 		t.Fatalf("limit %d limits %v; want %d, a clamped, b still 0", window.limit, window.limits, maxTreeWindow)
 	}
 }
+
+func TestTreeRowsCarryTheActivityTimeTheListSortsBy(t *testing.T) {
+	t.Setenv("REASONIX_HOME", testenv.TempDir(t))
+	root := testenv.TempDir(t)
+	h := NewHub(HubOptions{})
+	hubRuntime(t, h, root)
+	srv := httptest.NewServer(operatorHandler(h))
+	defer srv.Close()
+	seedAged(t, root, 3)
+
+	listed, err := sessionstore.ListSessions(SessionDirFor(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int64{}
+	for _, si := range listed {
+		want[si.Path] = si.LastActivityAt.UnixMilli()
+	}
+	rows := treeFor(t, srv, "").Sessions
+	if len(rows) != 3 {
+		t.Fatalf("%d rows, want 3", len(rows))
+	}
+	for _, row := range rows {
+		if row.LastActiveAt == 0 || row.LastActiveAt != want[row.Path] {
+			t.Fatalf("%s lastActiveAt = %d, want the list's own %d", row.Name, row.LastActiveAt, want[row.Path])
+		}
+	}
+}

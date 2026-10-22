@@ -3,11 +3,17 @@ package serve
 import (
 	"fmt"
 	"io/fs"
+	"mime"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
+
+// The platform tables may not know .webmanifest, and a manifest served as
+// text/plain is one the browser may refuse to install from.
+func init() { _ = mime.AddExtensionType(".webmanifest", "application/manifest+json") }
 
 // FindPage resolves the built page a host serves. An explicit directory holding
 // none is a launch that would open on nothing, so it fails here rather than at
@@ -24,8 +30,10 @@ func FindPage(dir string) (fs.FS, error) {
 	if err != nil {
 		return nil, err
 	}
+	if page := pageBeside(exe); page != nil {
+		return page, nil
+	}
 	for _, candidate := range []string{
-		filepath.Join(filepath.Dir(exe), "frontend-next", "dist"),
 		filepath.Join("..", "frontend-next", "dist"),
 		filepath.Join("desktop", "frontend-next", "dist"),
 	} {
@@ -36,9 +44,33 @@ func FindPage(dir string) (fs.FS, error) {
 	return nil, nil
 }
 
+// pageBeside looks next to the executable as invoked, then next to where a link
+// to it points: a package manager that links the binary onto the PATH leaves the
+// page beside the real file.
+func pageBeside(exe string) fs.FS {
+	dirs := []string{filepath.Dir(exe)}
+	if real, err := filepath.EvalSymlinks(exe); err == nil && filepath.Dir(real) != dirs[0] {
+		dirs = append(dirs, filepath.Dir(real))
+	}
+	for _, dir := range dirs {
+		if candidate := filepath.Join(dir, "frontend-next", "dist"); hasIndex(candidate) {
+			return os.DirFS(candidate)
+		}
+	}
+	return nil
+}
+
 func hasIndex(dir string) bool {
 	st, err := os.Stat(filepath.Join(dir, "index.html"))
 	return err == nil && !st.IsDir()
+}
+
+// pageContentTypes is the type of every kind of file the built page ships.
+var pageContentTypes = map[string]string{
+	".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8",
+	".css": "text/css; charset=utf-8", ".json": "application/json", ".map": "application/json", ".svg": "image/svg+xml",
+	".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".ico": "image/x-icon",
+	".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf", ".otf": "font/otf", ".wasm": "application/wasm", ".webmanifest": "application/manifest+json", ".txt": "text/plain; charset=utf-8",
 }
 
 // withPage serves the files the built page brought with it and leaves every
@@ -58,6 +90,11 @@ func withPage(kernel http.Handler, page fs.FS) http.Handler {
 			return
 		}
 		if st, err := fs.Stat(page, name); err == nil && !st.IsDir() {
+			// On Windows the library reads types from the registry, where another
+			// program's entry can turn the SVG logo into a broken image.
+			if kind, ok := pageContentTypes[strings.ToLower(path.Ext(name))]; ok {
+				w.Header().Set("Content-Type", kind)
+			}
 			files.ServeHTTP(w, r)
 			return
 		}

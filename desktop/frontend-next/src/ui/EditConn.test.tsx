@@ -132,7 +132,7 @@ it("preserves configured models that a refreshed catalog no longer returns", asy
   await userEvent.click(screen.getByRole("button", { name: "从服务商读取可用模型" }));
 
   expect(await screen.findByText("deepseek-new")).toBeTruthy();
-  const preserved = screen.getByText("deepseek-hidden").closest(".mline") as HTMLElement;
+  const preserved = within(document.querySelector(".mlist") as HTMLElement).getByText("deepseek-hidden").closest(".mline") as HTMLElement;
   expect(within(preserved).getByText("本次未返回")).toBeTruthy();
   expect(document.querySelector(".mdiff")?.textContent).toContain("有 1 个已配置模型本次未返回，已为你保留。");
 });
@@ -315,7 +315,7 @@ it("offers no model listing read for a protocol that declares none, header or in
 
   expect(screen.queryByRole("button", { name: "从服务商读取可用模型" })).toBeNull();
   expect(screen.queryByRole("button", { name: "没找到？从服务商读取可用模型" })).toBeNull();
-  expect(screen.getByText("system-one")).toBeTruthy();
+  expect(within(document.querySelector(".mlist") as HTMLElement).getByText("system-one")).toBeTruthy();
 });
 
 it("still checks, adds and saves a model on a source with no listing", async () => {

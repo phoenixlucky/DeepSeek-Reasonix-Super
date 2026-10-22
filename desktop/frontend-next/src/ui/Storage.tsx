@@ -4,6 +4,7 @@ import { bytes } from "../i18n/format";
 import type { AgentPort } from "../port/port";
 import type { HubPort, LegacyImport } from "../port/hub";
 import { LegacySkips } from "./LegacySkips";
+import { NativeSessionImport } from "./NativeSessionImport";
 import type { StoragePlan, StorageRoot, StorageState } from "../port/storage";
 
 // Three questions in the order a person asks them: how much is there, where is
@@ -52,6 +53,8 @@ export function Storage({ port, hub, workspace, onRecovered }: { port: AgentPort
   const [recovering, setRecovering] = useState(false);
   const [recovery, setRecovery] = useState<LegacyImport | null>(null);
   const [recoveryError, setRecoveryError] = useState("");
+  const [typing, setTyping] = useState(false);
+  const [typed, setTyped] = useState("");
 
   const [stalled, setStalled] = useState<ReadonlySet<string>>(new Set());
   const generation = useRef(0);
@@ -142,21 +145,34 @@ export function Storage({ port, hub, workspace, onRecovered }: { port: AgentPort
     [port, read],
   );
 
+  const importFrom = useCallback(
+    async (source: string) => {
+      setRecovering(true);
+      try {
+        const result = await hub.importLegacySessions(source, workspace);
+        setRecovery(result);
+        setTyping(false);
+        onRecovered();
+      } catch {
+        setRecoveryError(t("未能扫描这个文件夹。请确认它是旧版 Reasonix 的数据目录。"));
+      } finally {
+        setRecovering(false);
+      }
+    },
+    [hub, onRecovered, workspace],
+  );
+
   const recoverLegacy = useCallback(async () => {
     setRecoveryError("");
     const source = await hub.pickFolder();
-    if (!source) return;
-    setRecovering(true);
-    try {
-      const result = await hub.importLegacySessions(source, workspace);
-      setRecovery(result);
-      onRecovered();
-    } catch {
-      setRecoveryError(t("未能扫描这个文件夹。请确认它是旧版 Reasonix 的数据目录。"));
-    } finally {
-      setRecovering(false);
+    // null is a panel that could not be shown, "" one the person closed.
+    if (source === null) {
+      setTyping(true);
+      return;
     }
-  }, [hub, onRecovered, workspace]);
+    if (!source) return;
+    await importFrom(source);
+  }, [hub, importFrom]);
 
   if (error) return <div className="empty">{error}</div>;
   if (!state) return <div className="empty">{t("正在统计…")}</div>;
@@ -166,6 +182,7 @@ export function Storage({ port, hub, workspace, onRecovered }: { port: AgentPort
 
   return (
     <div className="storage">
+      <NativeSessionImport hub={hub} workspace={workspace} onImported={onRecovered} />
       <section className="grp">
         <h3 className="lbl">{t("找回旧版会话")}</h3>
         <div className="item">
@@ -188,6 +205,34 @@ export function Storage({ port, hub, workspace, onRecovered }: { port: AgentPort
             {t(recovering ? "正在扫描…" : "选择旧版数据目录…")}
           </button>
         </div>
+        {typing && (
+          <form
+            className="item"
+            data-action="session.import-legacy"
+            data-value="path"
+            onSubmit={(ev) => {
+              ev.preventDefault();
+              if (typed.trim()) void importFrom(typed.trim());
+            }}
+          >
+            <div className="l">
+              <span className="hint">{t("无法打开文件夹选择器。请输入旧版数据文件夹的路径（里面有 sessions、projects 或 desktop-sessions-v5）。")}</span>
+              <input
+                value={typed}
+                spellCheck={false}
+                dir="ltr"
+                placeholder="/home/you/.reasonix"
+                aria-label={t("旧版数据目录路径")}
+                data-action="session.import-legacy"
+                data-value="path"
+                onChange={(ev) => setTyped(ev.target.value)}
+              />
+            </div>
+            <button className="btn" type="submit" data-action="session.import-legacy" data-value="path" disabled={recovering || !typed.trim()}>
+              {t("导入此文件夹")}
+            </button>
+          </form>
+        )}
         {recovery && <LegacySkips skipped={recovery.skipped ?? []} />}
       </section>
 

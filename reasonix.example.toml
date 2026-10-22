@@ -72,6 +72,13 @@ compact_ratio       = 0.85  # sole auto trigger; presets 0.70 (active) / 0.80 (s
 # max_parallel_writers = 3       # concurrent writers with non-overlapping write_paths
 # output_style = "explanatory"   # persona/tone folded into the prompt: explanatory | learning | concise,
 #                                  or a custom .reasonix/output-styles/<name>.md ; empty = default
+# [agent.persona]                  # the agent's identity, as opposed to output_style's tone.
+#                                  # prefix leads the system prompt, suffix follows the built-in guidance;
+#                                  # include_runtime_context = false drops the probed environment section and
+#                                  # the offline note. User-level only; applies on the next session build.
+# prefix = "You are the staff engineer who owns this change end to end."
+# suffix = "Close with the risk you did not verify."
+# include_runtime_context = true
 # embedded_diff_detection = true   # mark a shell result whose whole output is a unified diff (e.g. `git diff`)
 #                                  so the transcript renders it as a diff instead of flat text; default false
 
@@ -169,6 +176,7 @@ enabled = []   # empty = all built-in tools
 bash_timeout_seconds = 120   # foreground safety cap; set 0 for no tool-local cap
 protect_changed_files = true   # refuse a whole-file write over a change made since the agent last read or wrote the file
 browser_tools = true   # built-in browser tools; the browser starts on first use
+# mcp_resources = true  # user file only; a read_mcp_resource tool for resources a connected MCP server lists; asks first; default off
 mcp_startup_timeout_seconds = 30   # background initialize + tools/list safety cap; per-server overrides may raise it
 mcp_call_timeout_seconds = 300   # default MCP call safety cap; per-plugin/tool overrides may raise it
 

@@ -28,9 +28,11 @@ type Info struct {
 	Key string // storage key: RepoPrefix or PathPrefix
 	// RepoDir is the repository's shared Git directory, identical across linked
 	// worktrees, or "" outside a repository. GitDir is this tree's own.
-	RepoDir string
-	GitDir  string
-	Branch  string // checked-out branch, or "" when detached or unreadable
+	RepoDir      string
+	GitDir       string
+	CheckoutRoot string // directory containing this checkout's .git marker
+	Prefix       string // selected workspace relative to CheckoutRoot
+	Branch       string // checked-out branch, or "" when detached or unreadable
 	// Trees counts the working trees sharing RepoDir, the main one included. It
 	// is 1 outside a repository.
 	Trees int
@@ -46,6 +48,8 @@ func Describe(root string) Info {
 	for dir := base; ; {
 		if common, own, ok := gitDirsAt(filepath.Join(dir, ".git")); ok {
 			info.RepoDir, info.GitDir = common, own
+			info.CheckoutRoot = dir
+			info.Prefix, _ = filepath.Rel(dir, base)
 			info.Key = RepoPrefix + digest(common)
 			info.Branch = branchAt(own)
 			info.Trees = countTrees(common)

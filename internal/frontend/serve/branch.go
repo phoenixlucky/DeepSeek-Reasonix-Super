@@ -20,7 +20,11 @@ type workspaceBranchesView struct {
 // marked. Repo is false for a workspace that is not version-controlled, as for
 // /changes and /workspace/git.
 func (s *Server) workspaceBranches(w http.ResponseWriter, r *http.Request) {
-	list, ok, err := gitstatus.Branches(r.Context(), workspaceRepo(s.ctl()))
+	repo, named := s.requestRepo(w, r)
+	if !named {
+		return
+	}
+	list, ok, err := gitstatus.Branches(r.Context(), repo)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

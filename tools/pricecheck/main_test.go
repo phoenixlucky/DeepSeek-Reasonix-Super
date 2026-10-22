@@ -44,6 +44,14 @@ func TestReadersTakeTheRatesThePagesState(t *testing.T) {
 			},
 		},
 		{
+			name: "deepseek in yuan, off-peak rows only", path: "testdata/deepseek-cny.html",
+			models: []string{"deepseek-flash", "deepseek-v4-pro"}, read: readDeepSeekCNY,
+			want: []published{
+				{Model: "deepseek-flash", Rate: card(0.02, 1, 4)},
+				{Model: "deepseek-v4-pro", Rate: card(0.15, 4.5, 13.5)},
+			},
+		},
+		{
 			name: "longcat states the discounted column last", path: "testdata/longcat-usd.html",
 			models: []string{"LongCat-2.0"}, read: readLongCat,
 			want: []published{{Model: "LongCat-2.0", Rate: card(0.006, 0.30, 1.20)}},
@@ -96,6 +104,9 @@ func TestUnreadablePagesAreErrorsAndNotZeroes(t *testing.T) {
 		{"deepseek without a model row", `<table><tr><td>Price</td><td>$1</td></tr></table>`, readDeepSeek},
 		{"deepseek naming other models", `<table><tr><td>deepseek-flash</td></tr>
 			<tr><td>cache hit</td><td>off-peak</td><td>$1</td></tr></table>`, readDeepSeek},
+		{"deepseek yuan page without a model row", `<table><tr><td>价格</td><td>1元</td></tr></table>`, readDeepSeekCNY},
+		{"deepseek yuan page naming other models", `<table><tr><td>deepseek-flash</td></tr>
+			<tr><td>输入（缓存命中）</td><td>空闲时段</td><td>1元</td></tr></table>`, readDeepSeekCNY},
 		{"longcat with a renamed row", `<table><tr><td>Input</td><td>$1</td></tr>
 			<tr><td>Output</td><td>$2</td></tr></table>`, readLongCat},
 		{"longcat with no amount", `<table><tr><td>Cached Input</td><td>free</td></tr>

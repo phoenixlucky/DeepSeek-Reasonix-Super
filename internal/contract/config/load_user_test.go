@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -112,5 +113,78 @@ func TestLoadWarnsWhenProjectSetsShellEnv(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(cfg.LoadWarnings(), "\n"), "tools.shell") {
 		t.Fatalf("no warning that the project shell env was ignored: %v", cfg.LoadWarnings())
+	}
+}
+
+// Launcher arguments decide what program the agent's commands are handed to, so
+// a repository can neither set them nor change the ones the user wrote.
+func TestProjectConfigCannotSetOrChangeShellArgs(t *testing.T) {
+	home := testenv.TempDir(t)
+	t.Setenv("REASONIX_HOME", home)
+	writeProjectDefaultTestConfig(t, home, "config.toml", "[tools.shell]\nprefer = \"bash\"\npath = \"/usr/bin/user-wsl\"\nargs = [\"-d\", \"mine\", \"--\", \"/bin/bash\"]\n")
+
+	project := testenv.TempDir(t)
+	writeProjectDefaultTestConfig(t, project, "reasonix.toml", "[tools.shell]\nargs = [\"-d\", \"evil\", \"--\", \"/bin/sh\"]\n")
+	t.Chdir(project)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"-d", "mine", "--", "/bin/bash"}; !slices.Equal(cfg.Tools.Shell.Args, want) {
+		t.Fatalf("args = %q, want the user's %q", cfg.Tools.Shell.Args, want)
+	}
+	if !strings.Contains(strings.Join(cfg.LoadWarnings(), "\n"), "[tools.shell] args") {
+		t.Fatalf("no warning that the project args were ignored: %v", cfg.LoadWarnings())
+	}
+}
+
+func TestProjectConfigWithoutShellArgsLeavesTheUsersAlone(t *testing.T) {
+	home := testenv.TempDir(t)
+	t.Setenv("REASONIX_HOME", home)
+	writeProjectDefaultTestConfig(t, home, "config.toml", "[tools.shell]\nargs = [\"-d\", \"mine\"]\n")
+	project := testenv.TempDir(t)
+	writeProjectDefaultTestConfig(t, project, "reasonix.toml", "[agent]\nsystem_prompt = \"x\"\n")
+	t.Chdir(project)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(cfg.Tools.Shell.Args, []string{"-d", "mine"}) {
+		t.Fatalf("args = %q", cfg.Tools.Shell.Args)
+	}
+}
+
+func TestShellArgsRoundTripThroughTheUserConfig(t *testing.T) {
+	t.Setenv("REASONIX_HOME", testenv.TempDir(t))
+	unlock := LockUserConfigEdits()
+	defer unlock()
+	orig := Default()
+	if err := orig.SetShell("bash", "/usr/bin/user-wsl", "-d", `we"ird name`, "--", "/bin/bash"); err != nil {
+		t.Fatal(err)
+	}
+	if err := orig.SaveTo(UserConfigPath()); err != nil {
+		t.Fatal(err)
+	}
+	got := LoadForEdit(UserConfigPath())
+	if want := []string{"-d", `we"ird name`, "--", "/bin/bash"}; !slices.Equal(got.Tools.Shell.Args, want) {
+		t.Fatalf("args = %q, want %q", got.Tools.Shell.Args, want)
+	}
+	if err := got.SetShell("auto", ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tools.Shell.Args) != 0 {
+		t.Fatalf("choosing auto kept the arguments: %q", got.Tools.Shell.Args)
+	}
+}
+
+func TestAProjectScopedRenderNeverWritesShellArgs(t *testing.T) {
+	c := Default()
+	if err := c.SetShell("bash", "/usr/bin/user-wsl", "-d", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if out := RenderTOMLForScope(c, RenderScopeProject); strings.Contains(out, "args") && strings.Contains(out, `"-d"`) {
+		t.Fatalf("a project file would carry launcher arguments:\n%s", out)
 	}
 }

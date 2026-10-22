@@ -25,9 +25,10 @@ func init() { tool.RegisterBuiltin(notebookEdit{}) }
 // ConfineWriters. workDir, when non-empty, is the directory a relative path
 // resolves against (see resolveIn).
 type notebookEdit struct {
-	roots   []string
-	guard   SessionDataGuard
-	managed ManagedConfigPaths
+	readPolicy editReadPolicy
+	roots      []string
+	guard      SessionDataGuard
+	managed    ManagedConfigPaths
 	// sessionTemp, when non-nil, adds the session's own temporary directory
 	// to the writable surface — the same directory bash writes through $TMPDIR.
 	sessionTemp *sessiontemp.Manager
@@ -91,7 +92,7 @@ func (n notebookEdit) Execute(ctx context.Context, raw json.RawMessage) (string,
 	if err := confineWrite(ctx, n.roots, n.guard, n.managed, n.sessionTemp, a.Path); err != nil {
 		return "", err
 	}
-	src, err := readEditSource(ctx, n.overlay, a.Path)
+	src, err := n.readPolicy.source(ctx, n.overlay, a.Path)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", a.Path, err)
 	}
@@ -128,7 +129,7 @@ func (n notebookEdit) Preview(ctx context.Context, raw json.RawMessage) (diff.Ch
 	if err := refuseNetworkPath(a.Path, n.roots); err != nil {
 		return diff.Change{}, err
 	}
-	src, err := readEditSource(ctx, n.overlay, a.Path)
+	src, err := n.readPolicy.source(ctx, n.overlay, a.Path)
 	if err != nil {
 		return diff.Change{}, fmt.Errorf("read %s: %w", a.Path, err)
 	}

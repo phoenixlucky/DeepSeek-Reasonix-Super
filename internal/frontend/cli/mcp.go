@@ -37,6 +37,10 @@ func mcpCommand(args []string) int {
 	case "list", "ls":
 		return mcpList()
 	case "add":
+		if len(args) > 1 && (args[1] == "-h" || args[1] == "--help") {
+			mcpUsage()
+			return 0
+		}
 		return mcpAddCLI(args[1:])
 	case "get":
 		return mcpGetCLI(args[1:])
@@ -512,7 +516,7 @@ Usage:
   reasonix mcp disable <name>
   reasonix mcp retry <name>
   reasonix mcp trust <name> [--digest <hex>]    accept tool definitions held back as changed
-  reasonix mcp auth <name>                          remote OAuth (opens browser)
+  reasonix mcp auth <name> [--upgrade]              remote OAuth (opens browser); --upgrade grants the access a server asked for
   reasonix mcp update <name>
   reasonix mcp browse [query] [--limit N] [--json]
   reasonix mcp import

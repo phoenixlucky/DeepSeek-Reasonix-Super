@@ -48,7 +48,7 @@ func (p pathBoundCapabilityProxy) ResolveCall(ctx context.Context, args json.Raw
 		return resolved, nil
 	}
 	if resolved.Target == nil || !resolved.ReadOnly || tool.HasMCPDestructiveHint(resolved.Target) {
-		return tool.ResolvedCall{}, fmt.Errorf("use_capability target %q is not proven read-only; explicit write_paths sub-agents cannot execute unscoped MCP writers", resolved.TargetName)
+		return tool.ResolvedCall{}, fmt.Errorf("use_capability target %q is not proven read-only, and a sub-agent with explicit write_paths may only run read-only, non-destructive targets (bash never qualifies). Do not retry it: use the file tools inside your write_paths, or finish and report what needs a writer or a shell", resolved.TargetName)
 	}
 	return resolved, nil
 }
@@ -104,7 +104,7 @@ func (w pathBoundWriter) Execute(ctx context.Context, args json.RawMessage) (str
 	for _, p := range paths {
 		// Inside what was declared: the scheduler proved non-overlap before
 		// anything started, and there is nothing left to ask or to reserve.
-		if declared.AllowsPath(p) {
+		if declared.AllowsPath(p) && !declared.Optimistic {
 			continue
 		}
 		if !w.grant.Allows(p) {
@@ -116,7 +116,7 @@ func (w pathBoundWriter) Execute(ctx context.Context, args json.RawMessage) (str
 		// grant says this run may be here, never that another may not.
 		release, err := w.sched.ReserveWrite(writeclaim.WritePathSet{Paths: []string{p}})
 		if err != nil {
-			return "", fmt.Errorf("%w: %s", writeclaim.ErrWritePathBusy, p)
+			return "", fmt.Errorf("%w: %s", err, p)
 		}
 		held = append(held, release)
 	}
@@ -128,6 +128,13 @@ func (w pathBoundWriter) WritePaths(args json.RawMessage) ([]string, error) {
 		return writer.WritePaths(args)
 	}
 	return extractWritePathsFromArgs(w.inner.Name(), w.workDir, args)
+}
+
+func (w pathBoundWriter) ReadPaths(ctx context.Context, args json.RawMessage) ([]string, error) {
+	if reader, ok := w.inner.(tool.ReadPathResolver); ok {
+		return reader.ReadPaths(ctx, args)
+	}
+	return w.WritePaths(args)
 }
 
 // askToWiden puts one path to the user and records the answer. With no gate
@@ -188,6 +195,7 @@ func BindWritePaths(reg *tool.Registry, grant *writeclaim.WriteGrant, gate Gate,
 		return bound, nil
 	}
 	roots := claims.Roots()
+	optimistic := claims.Optimistic
 	for _, name := range reg.Names() {
 		tl, ok := reg.Get(name)
 		if !ok {
@@ -204,6 +212,13 @@ func BindWritePaths(reg *tool.Registry, grant *writeclaim.WriteGrant, gate Gate,
 				continue
 			}
 			bound.Add(rebound)
+			continue
+		}
+		if optimistic && !pathBoundWriterNames[name] {
+			// An optimistic run is the user's choice to trade the fence for
+			// concurrency: MCP, custom and capability writers stay available and
+			// are observed after the fact, never reserved.
+			bound.Add(tl)
 			continue
 		}
 		if name == "use_capability" {
@@ -284,4 +299,11 @@ func parentResolvedWriteReservation(workDir string, paths []string) (writeclaim.
 		return writeclaim.WholeWorkspaceWriteClaim(workDir)
 	}
 	return set, nil
+}
+
+func (w pathBoundWriter) FormatReadRefusal(err error) error {
+	if formatter, ok := w.inner.(tool.ReadRefusalFormatter); ok {
+		return formatter.FormatReadRefusal(err)
+	}
+	return err
 }

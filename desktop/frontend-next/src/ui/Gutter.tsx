@@ -12,15 +12,17 @@ export interface Span {
   // zero, the remembered width must not.
   css: string;
   col: string;
+  // The element the column variable lives on, when it is not the app.
+  owner?: string;
 }
 
 // 拖出来的宽度是读者对自己这块屏幕的判断，不是布局的默认值 —— 所以它归本地
 // 存，不进内核配置：换台机器、换块屏幕，判断本来就不同。
-export const RAIL: Span = { min: 232, max: 440, def: 264, key: "rx-rail-w", css: "--rail-open", col: "--rail-w" };
+export const RAIL: Span = { min: 232, max: 440, def: 316, key: "rx-rail-w", css: "--rail-open", col: "--rail-w" };
 export const SIDE: Span = { min: 244, max: 540, def: 316, key: "rx-side-w", css: "--side-open", col: "--side-w" };
 // The workbench beside the conversation. Wider than the rail because what sits
 // in it is a page someone is reading, not a list of names.
-export const DOCK: Span = { min: 320, max: 1600, def: 560, key: "rx-dock-w", css: "--dock-open", col: "--dock-w" };
+export const DOCK: Span = { min: 320, max: 1600, def: 560, key: "rx-dock-w", css: "--dock-open", col: "--dock-w", owner: ".pane" };
 
 const STANDARD_DOCK_MAX = 880;
 export const dockMax = (room: number) => Math.min(DOCK.max, Math.max(STANDARD_DOCK_MAX, room / 2));
@@ -67,7 +69,8 @@ export function Gutter({ edge, span, width, max = span.max, label, open, onWidth
 
   const begin = (bar: HTMLDivElement, pointerId: number, x0: number) => {
     const app = bar.closest(".app") as HTMLElement | null;
-    if (!app) return;
+    const host = (span.owner ? bar.closest(span.owner) : app) as HTMLElement | null;
+    if (!app || !host) return;
 
     const wasShut = !open;
     let now = open ? width : span.min;
@@ -82,7 +85,7 @@ export function Gutter({ edge, span, width, max = span.max, label, open, onWidth
     // 东西，而这棵树上还挂着一条正在流的转录。写的是列宽那个变量而不是记住的
     // 那个 —— 关到一半时两者必须能分开。
     const paint = () => {
-      app.style.setProperty(span.col, `${shut ? 0 : now}px`);
+      host.style.setProperty(span.col, `${shut ? 0 : now}px`);
       bar.style.setProperty("--over", `${over}px`);
       raf = requestAnimationFrame(paint);
     };
@@ -120,13 +123,13 @@ export function Gutter({ edge, span, width, max = span.max, label, open, onWidth
       // 最后一次 move 之后未必还有一帧，栏会停在比松手位置差几像素的地方。这
       // 几像素得在补间恢复之前就落定，否则它们会被慢慢走完 —— 松手时的一记回
       // 弹。读一次布局，就是让这个值先以「不补间」的身份定下来。
-      app.style.setProperty(span.col, `${shut ? 0 : now}px`);
-      void app.offsetWidth;
+      host.style.setProperty(span.col, `${shut ? 0 : now}px`);
+      void host.offsetWidth;
       delete app.dataset.drag;
       // Held one frame longer than the release: the stylesheet only produces
       // this same width once React has landed the open/closed attribute, and
       // clearing early flashes the column it had before the drag.
-      requestAnimationFrame(() => app.style.removeProperty(span.col));
+      requestAnimationFrame(() => host.style.removeProperty(span.col));
       if (shut === open) onOpen(!shut);
       if (!shut) onWidth(now);
     };

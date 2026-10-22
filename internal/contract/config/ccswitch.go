@@ -1,16 +1,18 @@
 package config
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 
+	_ "modernc.org/sqlite"
+
 	fileencoding "reasonix/internal/base/fileutil/encoding"
-	"reasonix/internal/base/secrets"
 )
 
 const ccSwitchDir = ".cc-switch"
@@ -127,50 +129,49 @@ func loadCCSwitchMCPDB(path string) ([]PluginEntry, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, err
 	}
-	sqlite, err := exec.LookPath("sqlite3")
+	db, err := sql.Open("sqlite", ccSwitchReadOnlyDSN(path))
 	if err != nil {
-		return nil, fmt.Errorf("cc-switch import: sqlite3 not found to read %s", path)
+		return nil, fmt.Errorf("cc-switch import: open %s: %w", path, err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	var reasonixColumnCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('mcp_servers') WHERE name = 'enabled_reasonix'`).Scan(&reasonixColumnCount); err != nil {
+		return nil, fmt.Errorf("cc-switch import: inspect %s: %w", path, err)
 	}
 	query := `SELECT id, name, server_config FROM mcp_servers WHERE enabled_codex = 1 ORDER BY name, id`
-	hasReasonix, err := ccSwitchDBHasReasonixColumn(sqlite, path)
-	if err != nil {
-		return nil, err
-	}
-	if hasReasonix {
+	switch reasonixColumnCount {
+	case 0:
+	case 1:
 		query = `SELECT id, name, server_config FROM mcp_servers WHERE enabled_reasonix = 1 ORDER BY name, id`
+	default:
+		return nil, fmt.Errorf("cc-switch import: inspect %s: unexpected enabled_reasonix column count %d", path, reasonixColumnCount)
 	}
-	cmd := exec.Command(sqlite, "-readonly", "-json", path, query)
-	cmd.Env = secrets.ProcessEnv()
-	out, err := cmd.Output()
+	rows, err := db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("cc-switch import: read %s: %w", path, err)
 	}
-	if strings.TrimSpace(string(out)) == "" {
-		return nil, nil
+	defer rows.Close()
+	var selected []ccSwitchMCPRow
+	for rows.Next() {
+		var row ccSwitchMCPRow
+		if err := rows.Scan(&row.ID, &row.Name, &row.ServerConfig); err != nil {
+			return nil, fmt.Errorf("cc-switch import: read %s: %w", path, err)
+		}
+		selected = append(selected, row)
 	}
-	var rows []ccSwitchMCPRow
-	if err := json.Unmarshal(out, &rows); err != nil {
-		return nil, fmt.Errorf("cc-switch import: parse sqlite output: %w", err)
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("cc-switch import: read %s: %w", path, err)
 	}
-	return ccSwitchRowsToPlugins(rows)
+	return ccSwitchRowsToPlugins(selected)
 }
 
-func ccSwitchDBHasReasonixColumn(sqlite, path string) (bool, error) {
-	const query = `SELECT COUNT(*) FROM pragma_table_info('mcp_servers') WHERE name = 'enabled_reasonix'`
-	cmd := exec.Command(sqlite, "-readonly", path, query)
-	cmd.Env = secrets.ProcessEnv()
-	out, err := cmd.Output()
-	if err != nil {
-		return false, fmt.Errorf("cc-switch import: inspect %s: %w", path, err)
+func ccSwitchReadOnlyDSN(path string) string {
+	slash := strings.ReplaceAll(path, "\\", "/")
+	if len(slash) >= 2 && slash[1] == ':' {
+		slash = "/" + slash
 	}
-	switch strings.TrimSpace(string(out)) {
-	case "0":
-		return false, nil
-	case "1":
-		return true, nil
-	default:
-		return false, fmt.Errorf("cc-switch import: inspect %s: unexpected enabled_reasonix column count %q", path, strings.TrimSpace(string(out)))
-	}
+	return (&url.URL{Scheme: "file", Path: slash}).String() + "?mode=ro&_pragma=busy_timeout%28150%29"
 }
 
 func ccSwitchRowsToPlugins(rows []ccSwitchMCPRow) ([]PluginEntry, error) {

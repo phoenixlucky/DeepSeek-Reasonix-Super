@@ -197,7 +197,31 @@ func (m *model) telemetry() []string {
 	if cost := quoteText(s.SessionCostQuote); cost != "" {
 		out = append(out, footerMetric(i18n.M.ChatStatusCostLabel, footerValue(cost)))
 	}
+	if goal := goalGroup(s); goal != "" {
+		out = append(out, goal)
+	}
 	return out
+}
+
+// goalGroup is a goal's state and what it has used, drawn while there is a goal.
+// A goal that is not running also names why, by the kernel's own code.
+func goalGroup(s Status) string {
+	if s.Goal == "" || s.GoalRuntime == nil {
+		return ""
+	}
+	r := s.GoalRuntime
+	state := map[string]string{
+		"running": i18n.M.ChatStatusGoalRunning, "complete": i18n.M.ChatStatusGoalComplete,
+		"blocked": i18n.M.ChatStatusGoalBlocked, "stopped": i18n.M.ChatStatusGoalStopped,
+	}[s.GoalStatus]
+	if state == "" {
+		state = s.GoalStatus
+	}
+	body := fmt.Sprintf(i18n.M.ChatStatusGoalFmt, state, r.TurnsUsed, shortTokens(r.TokensUsed), i18n.Elapsed(time.Duration(r.WorkDurationMs)*time.Millisecond))
+	if r.StopCause != "" && s.GoalStatus != "running" {
+		body += " · " + r.StopCause
+	}
+	return footerMetric(i18n.M.ChatStatusGoalLabel, footerValue(body))
 }
 
 func cacheStatus(s Status) (string, float64, bool) {

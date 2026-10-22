@@ -20,6 +20,10 @@ const (
 	SkipPermission        SkipReason = "permission"
 	SkipCorrupt           SkipReason = "corrupt"
 	SkipCopyFailed        SkipReason = "copy_failed"
+	// SkipNoProject is a conversation that records no folder it was made in and has
+	// no registry entry: it is left in the source rather than filed under a project
+	// it never belonged to.
+	SkipNoProject SkipReason = "no_project"
 )
 
 // SkippedSession names one source entry an import left untouched. Path is the

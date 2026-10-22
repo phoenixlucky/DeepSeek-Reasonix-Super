@@ -131,6 +131,24 @@ message. Host-added provider context is not fed back into the query. The selecte
 facts are appended to that user turn as a bounded, low-authority suffix; they do
 not mutate the system prompt or tool schema.
 
+The search runs over the snapshot the session loaded; this session's own
+memory writes refresh it. Edits made outside the session are handled as follows:
+
+- Before each recall, the facts the previous turn handed the model — its recall
+  hits, plus any fact an update note carried — are re-read from their own files,
+  one file each, and compared by content.
+- A recall that returns no hits keeps the previous set: those facts are still the
+  ones the model holds, so they are still the ones re-checked.
+- Content that no longer matches, or a file that is gone, reloads the snapshot,
+  so the model reads the edit. Size and modification time decide nothing: a
+  rewrite can preserve both.
+- A fact whose own file no longer parses to the very body the turn delivered —
+  the file changed between the snapshot load and its first recall — is checked by
+  its identity instead of its bytes, so the next turn still sees the edit. A fact
+  whose file is not where its name says is checked the same way.
+- A fact edited into relevance without ever having been a hit stays invisible
+  until the session reloads: recall does no full scan.
+
 Recall is conservative:
 
 - generic turns such as "continue" do not trigger recall;
@@ -237,6 +255,26 @@ path escapes, refuses ID/name collisions, and never overwrites an active file:
 Recovered content also becomes a new monotonic revision. Restore and recovery
 apply to the current session through a one-turn tail note, then join the stable
 prefix naturally on the next session.
+
+A missing memory directory is treated as empty. Permission denial and other
+directory I/O errors are reported instead of returning partial lists or
+calculating a revision from incomplete history.
+
+Recovery stops before creating
+a snapshot or an active fact when history cannot be read. Session loading keeps
+the read failure, omits incomplete pinned guidance, and reports recall as
+unavailable on relevant turns.
+
+These conditions require a permission change,
+sandbox denial, or storage fault; they do not establish data deletion.
+
+缺失的记忆目录按空目录处理；权限拒绝和其他目录 I/O 错误会明确报错，
+不会返回不完整的列表，也不会根据不完整的历史计算版本号。
+
+历史读取失败时，
+归档恢复会在创建快照或活动记忆前停止。会话加载保留读取错误，省略不完整的
+固定记忆，并在相关回合说明召回不可用。触发条件是权限变化、沙箱拒绝或存储
+故障；这些现象本身不能证明数据已被删除。
 
 ## Zero-configuration suggestions
 

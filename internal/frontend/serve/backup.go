@@ -25,6 +25,7 @@ func (s *Server) registerBackupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /backups/{id}", s.deleteBackup)
 	mux.HandleFunc("POST /backups/{id}/preview", s.previewBackup)
 	mux.HandleFunc("POST /backups/apply", s.applyBackup)
+	s.registerBackupFileRoutes(mux)
 }
 
 // backupSession is the gate every backup route shares: the host must allow
@@ -168,6 +169,10 @@ func (s *Server) applyBackup(w http.ResponseWriter, r *http.Request) {
 	if _, _, ok := s.backupSession(w, r); !ok {
 		return
 	}
+	s.applyBackupPlan(w, r)
+}
+
+func (s *Server) applyBackupPlan(w http.ResponseWriter, r *http.Request) {
 	var req configbackup.ApplyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		badBody(w)

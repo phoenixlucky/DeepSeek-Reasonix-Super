@@ -255,7 +255,8 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 	fs := flag.NewFlagSet(opts.command, flag.ContinueOnError)
 	model := fs.String("model", "", "provider name (default: config default_model)")
 	profileFlag := fs.String("profile", "", "deprecated: use --preset (economy|balanced|delivery)")
-	presetFlag := fs.String("preset", "balanced", "agent execution setting: light | balanced | delivery")
+	presetFlag := fs.String("preset", "balanced", presetFlagUsage())
+	agentComposition := fs.String("agent-composition", "", "Agent composition ID (builtin:, user: or project:)")
 	maxSteps := fs.Int("max-steps", 0, "one-off max tool-call rounds (0 = automatic)")
 	addr := fs.String("addr", "127.0.0.1:8787", "listen address")
 	resume := fs.String("resume", "", "resume a saved session file")
@@ -277,6 +278,10 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 	tokenFile := fs.String("token-file", "", "read the auth=token pre-shared token from this file (overrides --token; keeps the secret out of argv)")
 	pidFile := fs.String("pid-file", "", "write the server process id to this file")
 	page := fs.String("page", "", "directory holding a built Studio page, served under /_studio/ (default: look beside the binary)")
+	// The project this server works in. Every other verb takes it from the
+	// shared run flags; serve did not, and without it the only way to name a
+	// project was the process working directory.
+	dir := fs.String("dir", "", "change to this directory first (project root); config, sandbox and file tools resolve from here")
 	broker := registerBrokerFlags(fs)
 	openBrowser := fs.Bool("open", opts.openBrowser, "open the Web UI in the default browser")
 	noOpen := fs.Bool("no-open", false, "do not open the Web UI in the default browser")
@@ -299,9 +304,13 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 			return 2
 		}
 	}
+	workspaceRoot, code := enterProjectDir(*dir)
+	if code != 0 {
+		return code
+	}
 	profileRaw := strings.TrimSpace(*profileFlag)
 	if profileRaw != "" {
-		fmt.Fprintln(os.Stderr, "warning: --profile is deprecated; use --preset light|balanced|delivery")
+		warnProfileDeprecated()
 	} else {
 		profileRaw = strings.TrimSpace(*presetFlag)
 	}
@@ -329,34 +338,11 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 	})
 
 	// Build serve config, merging CLI flags over config file.
-	serveCfg := serveConfigWithCommandDefaults(opts.command, authExplicit, cfg.Serve)
-	// Both commands default to a freshly generated token; an explicit --auth
-	// always wins, and serve also honours a configured auth_mode.
-	if *auth != "" {
-		serveCfg.AuthMode = *auth
-	}
-	if *token != "" {
-		serveCfg.Token = *token
-	}
-	if *tokenFile != "" {
-		tok, err := readServeTokenFile(*tokenFile)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
-			return 1
-		}
-		serveCfg.Token = tok
-		secrets.RegisterHostSecretPath(*tokenFile)
-	}
-	if *behindProxy {
-		serveCfg.BehindProxy = true
-	}
-	mode, err := serve.NormalizeAuthMode(serveCfg.AuthMode)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
-		return 1
-	}
-	serveCfg.AuthMode = mode
-	if code := applyServePassword(&serveCfg, *password); code != 0 {
+	serveCfg, code := serveConfigFromFlags(opts.command, authExplicit, cfg.Serve, serveFlagValues{
+		auth: *auth, token: *token, tokenFile: *tokenFile,
+		password: *password, behindProxy: *behindProxy,
+	})
+	if code != 0 {
 		return code
 	}
 
@@ -396,7 +382,12 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 	// rebuilds this controller in place before the normal web UI is exposed.
 	paneSink := reporter.Wrap(bc)
 	ctrl, err := setupProfileWithOverrides(ctx, *model, *maxSteps, false, paneSink, profile, cliBuildOverrides{
-		Version: opts.version, OnSessionRecovered: cliSessionRecoveredHandler(leases),
+		AgentComposition: freshCompositionName(*agentComposition, resumeSession), Composition: resumedComposition(resumeSession),
+		NativeSurfaces: true,
+		// The project named on the command line, empty when there was none: boot
+		// then falls back to the working directory exactly as before.
+		WorkspaceRoot: workspaceRoot,
+		Version:       opts.version, OnSessionRecovered: cliSessionRecoveredHandler(leases),
 		ProviderResolver: providerResolver,
 	})
 	if err != nil {
@@ -406,7 +397,6 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 	defer ctrl.Close()
 	SetTaskJobKiller(ctrlKillerAdapter{ctrl})
 
-	// Auto-save target: reuse the resumed file, else a fresh one — same as chat.
 	if *resume != "" {
 		_ = ctrl.Resume(resumeSession, *resume)
 	} else if *sessionID != "" {
@@ -427,7 +417,7 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 
 	// A hub, so this frontend drives several sessions at once the way the studio
 	// window does. The session this command was started for is the first pane.
-	hub := serve.NewHub(serve.HubOptions{Serve: serveCfg, DecorateSink: reporter.Wrap, ProviderResolver: providerResolver, Page: pageOrWarn(*page)})
+	hub := serve.NewHub(serve.HubOptions{Serve: serveCfg, NativeSurfaces: true, DecorateSink: reporter.Wrap, ProviderResolver: providerResolver, Page: pageOrWarn(*page)})
 	adoptFirstPane(hub, ctrl, bc, paneSink, serveCfg, leases)
 	return runServeFrontend(ctrl, hub, serveCfg, serveFrontendOptions{
 		command: opts.command, address: *addr,
@@ -455,6 +445,52 @@ func applyServePassword(serveCfg *config.ServeConfig, password string) int {
 		return 1
 	}
 	return 0
+}
+
+// serveFlagValues are the serve flags whose effect lands on the serve config
+// rather than on the frontend.
+type serveFlagValues struct {
+	auth        string
+	token       string
+	tokenFile   string
+	password    string
+	behindProxy bool
+}
+
+// serveConfigFromFlags merges the serve flags over the config file. Both
+// commands default to a freshly generated token, an explicit --auth wins, and
+// serve also honours a configured auth_mode. A token read from a file replaces
+// --token and is registered as a host secret so it stays out of argv.
+func serveConfigFromFlags(command string, authExplicit bool, base config.ServeConfig, flags serveFlagValues) (config.ServeConfig, int) {
+	serveCfg := serveConfigWithCommandDefaults(command, authExplicit, base)
+	if flags.auth != "" {
+		serveCfg.AuthMode = flags.auth
+	}
+	if flags.token != "" {
+		serveCfg.Token = flags.token
+	}
+	if flags.tokenFile != "" {
+		tok, err := readServeTokenFile(flags.tokenFile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+			return serveCfg, 1
+		}
+		serveCfg.Token = tok
+		secrets.RegisterHostSecretPath(flags.tokenFile)
+	}
+	if flags.behindProxy {
+		serveCfg.BehindProxy = true
+	}
+	mode, err := serve.NormalizeAuthMode(serveCfg.AuthMode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		return serveCfg, 1
+	}
+	serveCfg.AuthMode = mode
+	if code := applyServePassword(&serveCfg, flags.password); code != 0 {
+		return serveCfg, code
+	}
+	return serveCfg, 0
 }
 
 // pageOrWarn resolves the built Studio page this serve mounts under

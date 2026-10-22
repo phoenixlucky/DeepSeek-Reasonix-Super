@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"reasonix/internal/runtime/taskcontract"
 	"reasonix/internal/safety/evidence"
@@ -75,6 +76,12 @@ const (
 	GapInconclusiveVerification
 	GapUnverifiedChange
 	GapUnreviewedChange
+	// GapModEffectsUnobserved: a Claude Code mod was live, and nothing the host
+	// watches bounds what it wrote.
+	GapModEffectsUnobserved
+	// GapWorkspaceClaimYielded: the session gave up its write claim to wait on a
+	// person, and another session was granted an overlapping one meanwhile.
+	GapWorkspaceClaimYielded
 )
 
 func (k GapKind) String() string {
@@ -95,6 +102,10 @@ func (k GapKind) String() string {
 		return "unverified_change"
 	case GapUnreviewedChange:
 		return "unreviewed_change"
+	case GapModEffectsUnobserved:
+		return "mod_effects_unobserved"
+	case GapWorkspaceClaimYielded:
+		return "workspace_claim_yielded"
 	default:
 		return "unknown"
 	}
@@ -444,7 +455,11 @@ func unreadCheckDetail(command string) string {
 		return ""
 	}
 	if len(command) > unreadCheckLimit {
-		command = command[:unreadCheckLimit] + "…"
+		cut := unreadCheckLimit
+		for cut > 0 && !utf8.RuneStart(command[cut]) {
+			cut--
+		}
+		command = command[:cut] + "…"
 	}
 	return command
 }

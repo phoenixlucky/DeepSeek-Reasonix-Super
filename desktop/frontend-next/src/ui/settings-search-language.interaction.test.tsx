@@ -36,7 +36,7 @@ function draw() {
   return { calls, onClose, find: () => screen.getByRole<HTMLInputElement>("textbox", { name: t("搜索设置") }) };
 }
 
-it.each(["market", "plugins", "mcp", "skills", "ext-runtime", "hooks"])(
+it.each(["market", "plugins", "mcp", "skills", "ext-runtime", "hooks", "composition-picker"])(
   "finds the unmounted %s block by its displayed English title and lands on it",
   async (anchor) => {
     language("en");
@@ -71,7 +71,7 @@ it("finds extension blocks by the displayed section name without mounting them",
   const reads = [...calls];
   await userEvent.type(find(), "Extension");
   const hits = screen.getAllByRole<HTMLButtonElement>("option");
-  expect(hits.map((hit) => hit.dataset.target)).toEqual(SETTINGS.filter((entry) => entry.section === "ext").map((entry) => entry.anchor));
+  expect(hits.map((hit) => hit.dataset.target)).toEqual(SETTINGS.filter((entry) => entry.section === "ext" && !entry.hidden).map((entry) => entry.anchor));
   expect(hits.every((hit) => hit.querySelector(".where")?.textContent === "Extension")).toBe(true);
   expect(calls).toEqual(reads);
   expect(block("plugins")).toBeNull();

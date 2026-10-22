@@ -26,12 +26,11 @@ func (a *contextWindow) keptForProjection(m provider.Message) provider.Message {
 	return m
 }
 
-// supersedeStandingState drops each standing-state block a later retained turn
-// repeats. A block is superseded only by a newer one carrying the same tag AND
-// the same attributes: a short reminder must never displace the fuller
-// statement it points at, or the fold leaves the model following a dangling
-// reference. Newest-first, so the survivor is the newest of each variant.
-func supersedeStandingState(kept []provider.Message) []provider.Message {
+// supersedeStandingState drops each standing-state block a later turn — kept or
+// in the verbatim tail — repeats. Only a newer block with the same tag AND the
+// same attributes supersedes: a short reminder must never displace the fuller
+// statement it points at. Newest-first, so the newest of each variant survives.
+func supersedeStandingState(kept, tail []provider.Message) []provider.Message {
 	seen := make(map[string]bool)
 	drop := func(tag, opening string) bool {
 		if !sessionstore.SupersededUserBlock[tag] || seen[opening] {
@@ -39,6 +38,11 @@ func supersedeStandingState(kept []provider.Message) []provider.Message {
 		}
 		seen[opening] = true
 		return false
+	}
+	for _, m := range tail {
+		if carriesStandingState(m) {
+			filterLeadingBlocks(m.Content, drop)
+		}
 	}
 	for i, m := range slices.Backward(kept) {
 		if !carriesStandingState(m) {
@@ -124,11 +128,66 @@ func leadingTransientBlock(s string) (tag, opening string, end int, ok bool) {
 // rather than remembering it once sent: a fold, a rewind, or a resumed session
 // all change the answer without telling anyone.
 func (a *Agent) SeesStandingBlock(opening string) bool {
-	if a == nil || opening == "" {
+	return a.seesVisible(opening)
+}
+
+// SeesProjection reports whether the model-visible history still carries text
+// verbatim. Delivery of a once-only fact is asked this way rather than
+// remembered at the hand-off: a turn refused before the provider, a cancelled
+// turn whose prefixes were stripped, a fold, a rewind and a session rotation
+// all change the answer by themselves.
+func (a *Agent) SeesProjection(text string) bool {
+	return a.seesVisible(text)
+}
+
+// NewestStandingBlock returns the most recent host-injected block with tag in
+// the model-visible history, verbatim, and whether one is there. A host that
+// restates a block asks this rather than remembering the last bytes it sent:
+// the newest block of a tag is what the model currently holds, so an older copy
+// of the same bytes is not delivery when a newer one superseded them.
+func (a *Agent) NewestStandingBlock(tag string) (string, bool) {
+	if a == nil || tag == "" {
+		return "", false
+	}
+	for _, m := range slices.Backward(a.window().modelVisibleMessages()) {
+		if !carriesStandingState(m) {
+			continue
+		}
+		if block, ok := lastLeadingBlock(m.Content, tag); ok {
+			return block, true
+		}
+	}
+	return "", false
+}
+
+// lastLeadingBlock returns the last block with tag in content's leading chain,
+// trimmed to the bytes the host rendered. Walking the chain rather than
+// matching anywhere keeps a tag the user typed in their own prose out of it.
+func lastLeadingBlock(content, tag string) (string, bool) {
+	rest := content
+	var block string
+	for {
+		got, _, end, ok := leadingTransientBlock(rest)
+		if !ok {
+			break
+		}
+		if got == tag {
+			block = strings.TrimRight(rest[:end], " \t\r\n")
+		}
+		rest = rest[end:]
+	}
+	return block, block != ""
+}
+
+// seesVisible is the one scan both questions share: only a user record the
+// model reads counts, so LocalOnly output and compaction summaries never answer
+// for state nobody sent it.
+func (a *Agent) seesVisible(text string) bool {
+	if a == nil || text == "" {
 		return false
 	}
 	for _, m := range a.window().modelVisibleMessages() {
-		if carriesStandingState(m) && strings.Contains(m.Content, opening) {
+		if carriesStandingState(m) && strings.Contains(m.Content, text) {
 			return true
 		}
 	}

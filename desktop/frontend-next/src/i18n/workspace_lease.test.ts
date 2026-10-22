@@ -22,4 +22,18 @@ describe("write claim attribution", () => {
       expect(say({ code: "workspace.write_conflict" }, "")).not.toBe("");
     });
   }
+
+  for (const language of ["zh", "en"]) {
+    it(`says a repository folded the folders into one write domain, with the way out, in ${language}`, () => {
+      localStorage.setItem(STORAGE, language);
+      boot();
+      const folded = { contended: 0, heldMs: 0, idleMs: 0, holder: "A", holderSessionId: "s", paths: ["d:/home/ws"], requestedPaths: ["d:/home/ws"], repository: "d:/home/ws" };
+      const detail = workspaceLeaseDetail(folded);
+      expect(detail).toContain("d:/home/ws");
+      expect(detail).toContain(language === "en" ? "same Git repository" : "同一个 Git 仓库");
+      expect(detail).toContain("write_lease");
+      expect(workspaceLeaseDetail({ ...folded, repository: undefined })).not.toContain("write_lease");
+      expect(workspaceLeaseDetail(folded, false)).not.toContain("write_lease");
+    });
+  }
 });

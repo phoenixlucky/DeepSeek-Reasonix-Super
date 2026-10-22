@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"reasonix/internal/model/catalog"
 	"regexp"
@@ -15,6 +16,7 @@ import (
 	"reasonix/internal/base/netclient"
 	"reasonix/internal/contract/config"
 	"reasonix/internal/contract/provider"
+	"reasonix/internal/model/billing"
 	"reasonix/internal/safety/endpointclient"
 	"reasonix/internal/safety/redirectguard"
 )
@@ -47,9 +49,6 @@ func (s *Server) registerProviderRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /providers/remove", s.removeProvider)
 	mux.HandleFunc("POST /providers/edit", s.editProvider)
 	mux.HandleFunc("POST /providers/display-name", s.renameProvider)
-	mux.HandleFunc("POST /providers/websearch", s.setProviderWebSearch)
-	mux.HandleFunc("POST /providers/thinking", s.setProviderThinking)
-	mux.HandleFunc("POST /providers/continuation", s.setProviderContinuation)
 	s.registerProviderCheckRoutes(mux)
 }
 
@@ -84,6 +83,12 @@ type providerView struct {
 	// has no format for it, so the answer differs per protocol on one account.
 	CanWebSearch bool `json:"canWebSearch"`
 	WebSearch    bool `json:"webSearch"`
+	// BalanceFormat is declared; ImpliedBalanceFormat is what the saved address's
+	// host implies (empty for a relay); BalanceFormats is the closed set.
+	BalanceURL           string   `json:"balanceUrl"`
+	BalanceFormat        string   `json:"balanceFormat"`
+	ImpliedBalanceFormat string   `json:"impliedBalanceFormat"`
+	BalanceFormats       []string `json:"balanceFormats"`
 	// CanListModels is false where the protocol declares no model listing, so
 	// the editor does not offer to read one.
 	CanListModels bool `json:"canListModels"`
@@ -137,6 +142,17 @@ type providerView struct {
 	// ones it inherits when it declares none.
 	ModelLimits     map[string]modelLimitsView `json:"modelLimits,omitempty"`
 	InheritedLimits map[string]modelLimitsView `json:"inheritedLimits,omitempty"`
+	// Per chat model: the price per million tokens it declares for itself.
+	ModelPrices map[string]modelPriceView `json:"modelPrices,omitempty"`
+	// BillingMode is payg or subscription_equivalent: whether the figures shown
+	// are what is billed or an API-priced estimate of a plan.
+	BillingMode string `json:"billingMode"`
+	// OfficialPricing marks a vendor's own endpoint, whose table can say whether
+	// a stored price is one it shipped.
+	OfficialPricing bool `json:"officialPricing,omitempty"`
+	// LastCheck is how the latest plain check of this saved entry ended; absent
+	// when none ran in this process or the entry changed since.
+	LastCheck *providerLastCheck `json:"lastCheck,omitempty"`
 }
 
 func (s *Server) providers(w http.ResponseWriter, _ *http.Request) {
@@ -151,42 +167,50 @@ func (s *Server) providers(w http.ResponseWriter, _ *http.Request) {
 		p := &cfg.Providers[i]
 		settable := visionSettableOf(cfg, p)
 		out = append(out, providerView{
-			Name:               p.Name,
-			DisplayName:        strings.TrimSpace(p.DisplayName),
-			Kind:               strings.ToLower(strings.TrimSpace(p.Kind)),
-			BaseURL:            p.BaseURL,
-			Models:             nonNilStrings(p.ChatModelList()),
-			ModelAliases:       p.ModelAliases,
-			VisionModels:       nonNilStrings(visionModelsOf(cfg, p)),
-			CanSetVision:       len(settable) > 0 || config.CanConfigureVision(p),
-			VisionSettable:     nonNilStrings(settable),
-			CanWebSearch:       config.HasServerWebSearchCapability(p),
-			WebSearch:          config.EffectiveWebSearch(p),
-			CanListModels:      config.CanListModels(p),
-			CanSetThinking:     config.CanConfigureThinkingParams(p),
-			SendsThinking:      config.SendsThinkingParams(p),
-			EffortField:        config.EffortFieldForEntry(p),
-			CanSetContinuation: config.CanConfigureContinuation(p),
-			Continuation:       string(config.ContinuationOf(p)),
-			Default:            p.DefaultModel(),
-			HasKey:             p.APIKey() != "",
-			KeyEnv:             p.APIKeyEnv,
-			InUse:              p.Name == current,
-			Preset:             strings.TrimSpace(p.PresetID) != "",
-			ReasoningProtocol:  strings.ToLower(strings.TrimSpace(p.ReasoningProtocol)),
-			SupportedEfforts:   config.StoredEffortLevels(p.SupportedEfforts),
-			DefaultEffort:      strings.ToLower(strings.TrimSpace(p.DefaultEffort)),
-			ModelEfforts:       modelEffortsOf(p),
-			InheritedEfforts:   inheritedEffortsOf(p),
-			ModelProtocols:     modelProtocolsOf(p),
-			ModelLimits:        modelLimitsOf(p),
-			InheritedLimits:    inheritedLimitsOf(p),
-			ContextWindow:      p.ContextWindow,
-			MaxOutputTokens:    p.MaxOutputTokens,
-			IdleTimeoutSeconds: p.IdleTimeoutSeconds,
-			IdleTimeoutDefault: int(provider.StreamIdleTimeout / time.Second),
-			Headers:            p.Headers,
-			ExtraBody:          p.ExtraBody,
+			LastCheck:            lastCheckOf(p),
+			Name:                 p.Name,
+			DisplayName:          strings.TrimSpace(p.DisplayName),
+			Kind:                 strings.ToLower(strings.TrimSpace(p.Kind)),
+			BaseURL:              p.BaseURL,
+			Models:               nonNilStrings(p.ChatModelList()),
+			ModelAliases:         p.ModelAliases,
+			VisionModels:         nonNilStrings(visionModelsOf(cfg, p)),
+			CanSetVision:         len(settable) > 0 || config.CanConfigureVision(p),
+			VisionSettable:       nonNilStrings(settable),
+			CanWebSearch:         config.HasServerWebSearchCapability(p),
+			WebSearch:            config.EffectiveWebSearch(p),
+			CanListModels:        config.CanListModels(p),
+			CanSetThinking:       config.CanConfigureThinkingParams(p),
+			SendsThinking:        config.SendsThinkingParams(p),
+			EffortField:          config.EffortFieldForEntry(p),
+			CanSetContinuation:   config.CanConfigureContinuation(p),
+			Continuation:         string(config.ContinuationOf(p)),
+			Default:              p.DefaultModel(),
+			HasKey:               p.APIKey() != "",
+			KeyEnv:               p.APIKeyEnv,
+			InUse:                p.Name == current,
+			Preset:               strings.TrimSpace(p.PresetID) != "",
+			ReasoningProtocol:    strings.ToLower(strings.TrimSpace(p.ReasoningProtocol)),
+			SupportedEfforts:     config.StoredEffortLevels(p.SupportedEfforts),
+			DefaultEffort:        strings.ToLower(strings.TrimSpace(p.DefaultEffort)),
+			ModelEfforts:         modelEffortsOf(p),
+			InheritedEfforts:     inheritedEffortsOf(p),
+			ModelProtocols:       modelProtocolsOf(p),
+			ModelLimits:          modelLimitsOf(p),
+			InheritedLimits:      inheritedLimitsOf(p),
+			ModelPrices:          modelPricesOf(p),
+			BillingMode:          p.ProviderBillingMode(),
+			OfficialPricing:      officialPricingOf(p),
+			ContextWindow:        p.ContextWindow,
+			MaxOutputTokens:      p.MaxOutputTokens,
+			IdleTimeoutSeconds:   p.IdleTimeoutSeconds,
+			IdleTimeoutDefault:   int(provider.StreamIdleTimeout / time.Second),
+			Headers:              p.Headers,
+			ExtraBody:            p.ExtraBody,
+			BalanceURL:           strings.TrimSpace(p.BalanceURL),
+			BalanceFormat:        strings.TrimSpace(p.BalanceFormat),
+			ImpliedBalanceFormat: string(billing.ImpliedFormat(p.BalanceURL)),
+			BalanceFormats:       balanceFormatNames(),
 		})
 	}
 	writeJSON(w, out)
@@ -351,9 +375,12 @@ func (s *Server) saveProvider(w http.ResponseWriter, r *http.Request) {
 	if !storeProviderEntries(w, known, []config.ProviderEntry{entry}, body.APIKey, body.Replace) {
 		return
 	}
-	// No rebuild: the model list and every switch read config from disk, so the
-	// new provider is selectable on the next call without disturbing the
-	// conversation that is running.
+	// No rebuild: switches read config from disk. A runtime that started with
+	// no provider holds a stand-in, so it moves to the new one now.
+	if err := s.leaveNoProvider(r.Context(), entry); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, map[string]any{"name": entry.Name, "models": nonNilStrings(entry.ModelList())})
 }
 
@@ -398,13 +425,21 @@ func (s *Server) removeProvider(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	// With nothing left there is no model to move to; the window finds the
-	// empty config and asks for a connection, as it does on a first launch.
-	if target := removalSuccessor(cfg); inUse && target != "" {
+	if err := config.ForgetProviderKeys(config.UserConfigPath(), name); err != nil {
+		slog.Warn("serve: could not drop the record of a removed connection's keys", "provider", name, "err", err)
+	}
+	// With nothing left the runtime moves to the stand-in, which is what makes
+	// the window ask for a connection now, as it does on a first launch.
+	if inUse {
+		target := removalSuccessor(cfg)
+		if target == "" {
+			target = config.UnconfiguredRef
+		}
 		if err := s.switchModel(r.Context(), target); err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
+		s.refreshProviderSetup(currentModelRef(s.ctl()))
 	}
 	if len(removal.Moved) == 0 && len(removal.Cleared) == 0 {
 		w.WriteHeader(http.StatusNoContent)
@@ -581,4 +616,26 @@ func writeProbeFailure(w http.ResponseWriter, err error, apiKey string) {
 		probe.Params = map[string]any{"from": left.From, "target": left.To}
 	}
 	refuse(w, status, code, message, probe.Params)
+}
+
+// firstModelRef is the ref a freshly saved provider is selected by: its default
+// model, or its first when none is marked.
+func firstModelRef(e config.ProviderEntry) string {
+	models := e.ModelList()
+	if len(models) == 0 {
+		return ""
+	}
+	model := models[0]
+	if d := strings.TrimSpace(e.Default); d != "" && slices.Contains(models, d) {
+		model = d
+	}
+	return e.Name + "/" + model
+}
+
+func balanceFormatNames() []string {
+	var out []string
+	for _, f := range billing.Formats() {
+		out = append(out, string(f))
+	}
+	return out
 }

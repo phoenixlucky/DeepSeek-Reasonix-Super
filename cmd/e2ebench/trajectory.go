@@ -20,9 +20,9 @@ type trajectorySummary struct {
 	SpanMs  int64  `json:"span_ms"`
 	ToolMs  int64  `json:"tool_ms"`
 	ModelMs int64  `json:"model_ms"` // SpanMs − tool wall clock, floored at zero
-	// Round decomposition: a round's gap runs from the turn start (or the
-	// batch's last tool_result) to the next top-level tool_dispatch; the
-	// final segment to the last record is the answer round.
+	// ModelRounds counts executor round trips: one per batch of top-level calls
+	// plus the answer segment. Calls a subagent or a running tool (run_script)
+	// makes are not top-level and cut no round; retries in a gap add none.
 	ModelRounds     int   `json:"model_rounds"`
 	ModelGapTotalMs int64 `json:"model_gap_total_ms"`
 	ModelGapP95Ms   int64 `json:"model_gap_p95_ms"`
@@ -105,6 +105,9 @@ type trajectorySummary struct {
 	PromptTokensSeen  int64 `json:"prompt_tokens_seen,omitempty"`  // Σ prompt tokens (schema share denominator)
 	PrefixResets      int   `json:"prefix_resets,omitempty"`       // usage events with prefixChanged
 	ConnectCalls      int   `json:"connect_calls,omitempty"`       // connect_tool_source dispatches
+	// NestedCalls counts results of calls a running tool made through the
+	// agent's invoker; they are outside TopLevelCalls and every round figure.
+	NestedCalls int `json:"nested_calls,omitempty"`
 
 	// Cold/warm evidence: the first top-level request's cache split. A cold
 	// session pays the whole prefix as miss; a warmed one starts near-hit.
@@ -421,9 +424,21 @@ func (t *trajScan) record(rec trajectoryRecord) {
 		}
 		t.compFrom = 0
 	}
-	if rec.Event.Tool == nil || rec.Event.Tool.ParentID != "" {
-		// Subagent calls overlap the parent's wall clock; counting them
-		// would double-book the span and split the parent's rounds.
+	t.recordTool(rec)
+}
+
+// recordTool books a top-level tool event to its round and batch.
+func (t *trajScan) recordTool(rec trajectoryRecord) {
+	tl := rec.Event.Tool
+	if tl == nil {
+		return
+	}
+	if t.nesting.child(rec.Event.Kind, tl.ID, tl.ParentID) {
+		// Nested calls overlap their caller's wall clock; counting them would
+		// double-book the span and split the caller's round.
+		if tl.ParentID == "" && rec.Event.Kind == "tool_result" {
+			t.s.NestedCalls++
+		}
 		return
 	}
 	switch rec.Event.Kind {
@@ -434,9 +449,10 @@ func (t *trajScan) record(rec trajectoryRecord) {
 	}
 }
 
-// closeGap ends one model round; recovery-tainted rounds are booked apart so
-// clean latency stays comparable across providers with different flake rates.
-// The gap is queued until its batch closes and can classify the round.
+// closeGap ends one model round: the gap from the turn start or the last
+// top-level tool_result to the next top-level tool_dispatch. Recovery-tainted
+// rounds are booked apart so clean latency stays comparable across providers
+// with different flake rates. The gap is queued until its batch classifies it.
 func (t *trajScan) closeGap(gap int64) {
 	t.gaps = append(t.gaps, gap)
 	t.pendingGaps = append(t.pendingGaps, gapInfo{

@@ -91,6 +91,16 @@ Reasonix 是一个开源的 AI 编程助手。程序跑在你的电脑上；AI �
 
 四种用法背后是同一套程序。下面的内容写给进阶用户和贡献者。
 
+## 在 DeepSeek Harness 里使用
+
+DeepSeek Harness（`dsh`）可以通过 ACP 把任务交给 Reasonix 作为子智能体去做。本仓库为此发布了一个插件索引：
+
+1. 在运行 `dsh` 的机器上先运行 `reasonix setup`。在 DSH 网页界面打开“自定义插件市场”（插件，更多），再到 Discover 页添加这个索引：`https://raw.githubusercontent.com/esengine/DeepSeek-Reasonix/studio/integrations/dsh-plugin/market-index.json`
+2. 从中安装“Reasonix subagent”。
+3. 打开这个插件的页面，把它的开关打开。关着的时候模型没有 `reasonix` 工具，可能改在自己的 shell 里直接运行 `reasonix -p`，看起来像委派，其实不是。
+
+配置细节、权限策略和限制见 [在 DeepSeek Harness 中使用 Reasonix](./docs/DSH.md)。
+
 ## 版本
 
 Reasonix 分为两条版本线，调整的原因见[版本路线公告](https://github.com/esengine/DeepSeek-Reasonix/discussions/10748)。
@@ -139,7 +149,7 @@ Reasonix 分为两条版本线，调整的原因见[版本路线公告](https://
 | --- | --- | --- |
 | macOS | `.dmg` 或 `.zip` | Apple Silicon（`arm64`）/ Intel（`amd64`） |
 | Windows | 安装器 `-installer.exe` 或便携 `.zip` | x64 |
-| Linux | `.deb` | x64 |
+| Linux | `.deb`、`.rpm` 或 `.AppImage`（只提供下载） | x64（`amd64`）/ ARM64（`arm64`，aarch64） |
 
 每个安装包都附带 `.minisig` 签名，发布页另有 `SHA256SUMS`。安装后 Studio 会在
 应用内自行更新。
@@ -221,12 +231,13 @@ CLI 进阶用法和详细配置见 **[CLI 命令参考](./docs/CLI.zh-CN.md)**�
 
 - **开始使用：** [指南](./docs/GUIDE.zh-CN.md) ·
   [CLI 命令参考](./docs/CLI.zh-CN.md) · [配置路径](./docs/CONFIG_PATHS.md) ·
-  [ACP 编辑器接入](./docs/ACP.md)
+  [ACP 编辑器接入](./docs/ACP.md) · [在 DeepSeek Harness 中使用](./docs/DSH.md)
 - **功能与排障：** [子智能体 Profile](./docs/SUBAGENT_PROFILES.md) ·
   [Context Engine v2](./docs/SESSION_MEMORY_RETRIEVAL.md) ·
   [能力诊断](./docs/CAPABILITY_DIAGNOSTICS.md) ·
   [恢复与安全模式](./docs/RECOVERY.md) ·
   [Checkpoints 与 rewind](./docs/CHECKPOINTS.md)
+- **Agent 预设：** [会话级组合](./docs/AGENT_COMPOSITIONS.zh.md)
 - **工程与迁移：** [规格](./docs/SPEC.md) ·
   [任务合约与暂停策略](./docs/TASK_CONTRACT.md) ·
   [工具合约](./docs/TOOL_CONTRACT.md) ·
@@ -259,10 +270,10 @@ CLI 进阶用法和详细配置见 **[CLI 命令参考](./docs/CLI.zh-CN.md)**�
 | Contributor | Contributor | Contributor | Contributor |
 | --- | --- | --- | --- |
 | [**SivanCola**](https://github.com/SivanCola) | [**KHG420**](https://github.com/KHG420) | [**ttmouse**](https://github.com/ttmouse) | [**lifu963**](https://github.com/lifu963) |
-| [**HUQIANTAO**](https://github.com/HUQIANTAO) | [**Harbor404**](https://github.com/Harbor404) | [**GTC2080**](https://github.com/GTC2080) | [**mchenziyi**](https://github.com/mchenziyi) |
-| [**Li-Charles-One**](https://github.com/Li-Charles-One) | [**light-front-theory**](https://github.com/light-front-theory) | [**XTLine**](https://github.com/XTLine) | [**eghrhegpe**](https://github.com/eghrhegpe) |
-| [**noreply**](https://github.com/noreply) | [**chuiwenwei**](https://github.com/chuiwenwei) | [**xxoingr**](https://github.com/xxoingr) | [**Bernardxu123**](https://github.com/Bernardxu123) |
-| [**HaoyueQin**](https://github.com/HaoyueQin) | [**BuGlessRB**](https://github.com/BuGlessRB) | [**CVEngineer66**](https://github.com/CVEngineer66) | [**JesonChou**](https://github.com/JesonChou) |
+| [**XTLine**](https://github.com/XTLine) | [**HUQIANTAO**](https://github.com/HUQIANTAO) | [**chuiwenwei**](https://github.com/chuiwenwei) | [**Harbor404**](https://github.com/Harbor404) |
+| [**GTC2080**](https://github.com/GTC2080) | [**mchenziyi**](https://github.com/mchenziyi) | [**Li-Charles-One**](https://github.com/Li-Charles-One) | [**light-front-theory**](https://github.com/light-front-theory) |
+| [**xxoingr**](https://github.com/xxoingr) | [**eghrhegpe**](https://github.com/eghrhegpe) | [**noreply**](https://github.com/noreply) | [**par73e**](https://github.com/par73e) |
+| [**Bernardxu123**](https://github.com/Bernardxu123) | [**Guan0923**](https://github.com/Guan0923) | [**HaoyueQin**](https://github.com/HaoyueQin) | [**BuGlessRB**](https://github.com/BuGlessRB) |
 <!-- reasonix-top-contributors:end -->
 
 特别感谢 [**Bernardxu123**](https://github.com/Bernardxu123) 设计的项目 logo和开场视频。

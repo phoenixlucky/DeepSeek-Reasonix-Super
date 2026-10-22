@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -55,6 +56,9 @@ type Wait struct {
 	HolderSessionID string
 	Paths           []string
 	RequestedPaths  []string
+	// Repository is the git repository root that folded this session's folder
+	// into the shared writer domain; empty when the domain is the folder itself.
+	Repository string
 }
 
 // WaitNotice receives both ends of a reported wait. It must return quickly and
@@ -73,6 +77,15 @@ func WithoutWholeWorkspaceHold() Option {
 	return func(o *Owner) { o.undeclaredFree = true }
 }
 
+// WithFolderClaim makes a writer that declared no extent claim the folder the
+// session was opened on, not the repository that folds it into a larger domain.
+// It is for a session whose shell an OS sandbox confines to that folder; without
+// the confinement nothing stops the write landing beside it, so the whole
+// domain stays claimed.
+func WithFolderClaim() Option {
+	return func(o *Owner) { o.folderClaim = true }
+}
+
 // Owner is one Delivery session's re-entrant workspace lease. One Owner may be
 // shared by the root agent and all of its subagents. Different sessions must
 // use different Owners, even when they share a workspace.
@@ -83,8 +96,10 @@ type Owner struct {
 	// holder names this session to a session waiting on it. Read when the
 	// lease is taken, so a rename mid-hold shows on the next hold.
 	holder func() string
-	// undeclaredFree is set at construction and never changes.
+	// undeclaredFree, folderClaim and maxWait are set at construction and never change.
 	undeclaredFree bool
+	folderClaim    bool
+	maxWait        time.Duration
 
 	mu            sync.Mutex
 	activeRuns    int
@@ -120,6 +135,8 @@ func (o *Owner) State() State {
 
 type localLock struct {
 	token chan struct{}
+	// logFailures counts claims granted here whose log entry could not be written.
+	logFailures atomic.Uint64
 }
 
 var localRegistry = struct {
@@ -131,7 +148,7 @@ var localRegistry = struct {
 // shared by Reasonix processes for cross-process protection; it is kept outside
 // the workspace so acquiring a lease never dirties user files.
 func New(workspaceRoot, lockDir string, onWait WaitNotice, opts ...Option) (*Owner, error) {
-	canonical, err := CanonicalWorkspace(workspaceRoot)
+	selected, canonical, err := canonicalWorkspaceParts(workspaceRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -160,6 +177,10 @@ func New(workspaceRoot, lockDir string, onWait WaitNotice, opts ...Option) (*Own
 		local:    local,
 		scope:    pathLeaseState{root: canonical, identity: rand.Text()},
 	}
+	if selected != canonical {
+		o.scope.repository = canonical
+		o.scope.folder = selected
+	}
 	for _, opt := range opts {
 		opt(o)
 	}
@@ -170,25 +191,34 @@ func New(workspaceRoot, lockDir string, onWait WaitNotice, opts ...Option) (*Own
 // resolves symlinks when possible and folds case on Windows, where paths are
 // case-insensitive by default.
 func CanonicalWorkspace(root string) (string, error) {
+	_, domain, err := canonicalWorkspaceParts(root)
+	return domain, err
+}
+
+// canonicalWorkspaceParts returns the folder as selected and the writer domain it
+// belongs to; they differ exactly when a git repository above the folder folds it in.
+func canonicalWorkspaceParts(root string) (selected, domain string, err error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
-		return "", errors.New("workspace root is empty")
+		return "", "", errors.New("workspace root is empty")
 	}
 	abs, err := filepath.Abs(root)
 	if err != nil {
-		return "", fmt.Errorf("resolve workspace root: %w", err)
+		return "", "", fmt.Errorf("resolve workspace root: %w", err)
 	}
 	abs = filepath.Clean(abs)
 	if resolved, resolveErr := fileutil.ResolveExistingPath(abs); resolveErr == nil {
 		abs = filepath.Clean(resolved)
 	} else if !os.IsNotExist(resolveErr) {
-		return "", fmt.Errorf("canonicalize workspace root: %w", resolveErr)
+		return "", "", fmt.Errorf("canonicalize workspace root: %w", resolveErr)
 	}
-	abs = nearestGitWorktreeRoot(abs)
-	if runtime.GOOS == "windows" {
-		abs = strings.ToLower(filepath.ToSlash(abs))
+	fold := func(p string) string {
+		if runtime.GOOS == "windows" {
+			return strings.ToLower(filepath.ToSlash(p))
+		}
+		return p
 	}
-	return abs, nil
+	return fold(abs), fold(nearestGitWorktreeRoot(abs)), nil
 }
 
 // nearestGitWorktreeRoot folds a repository root and any selected directory
@@ -277,24 +307,28 @@ func (o *Owner) AcquirePaths(ctx context.Context, paths []string) error {
 	return err
 }
 
-func (o *Owner) acquire(ctx context.Context, paths []string, hold bool) (func(), error) {
+// acquire returns the call's hold when hold is set and the claim is not waived.
+func (o *Owner) acquire(ctx context.Context, paths []string, hold bool) (*callHold, error) {
 	if o == nil {
-		return func() {}, nil
+		return nil, nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if o.undeclaredFree && len(paths) == 0 {
-		return func() {}, nil
+		return nil, nil
 	}
 	claim := o.normalizePaths(paths)
+	if len(paths) == 0 && o.folderClaim && o.scope.folder != "" {
+		claim = []string{o.scope.folder}
+	}
 	for {
 		o.mu.Lock()
 		o.askedLocked(time.Now())
 		if o.acquired && coversPaths(o.scope.paths, claim) {
-			end := o.holdLocked(hold)
+			h := o.holdLocked(hold, paths)
 			o.mu.Unlock()
-			return end, nil
+			return h, nil
 		}
 		if o.acquiring {
 			done := o.acquireDone
@@ -319,7 +353,7 @@ func (o *Owner) acquire(ctx context.Context, paths []string, hold bool) (func(),
 		o.mu.Lock()
 		o.acquiring = false
 		o.waiting = false
-		end := func() {}
+		var h *callHold
 		if err == nil {
 			o.acquired = true
 			o.scope.paths = claim
@@ -327,7 +361,7 @@ func (o *Owner) acquire(ctx context.Context, paths []string, hold bool) (func(),
 				o.acquiredAt = time.Now()
 				o.releaseSystem = release
 			}
-			end = o.holdLocked(hold)
+			h = o.holdLocked(hold, paths)
 		}
 		close(done)
 		releaseIfIdle := o.releaseIfIdleLocked()
@@ -335,7 +369,7 @@ func (o *Owner) acquire(ctx context.Context, paths []string, hold bool) (func(),
 		if releaseIfIdle != nil {
 			releaseIfIdle()
 		}
-		return end, err
+		return h, err
 	}
 }
 
@@ -421,7 +455,7 @@ func (w *waitClock) close(outcome WaitOutcome) {
 }
 
 func (w *waitClock) notice(outcome WaitOutcome, elapsed time.Duration) Wait {
-	n := Wait{Outcome: outcome, Elapsed: elapsed, Holder: w.holder, RequestedPaths: w.requested}
+	n := Wait{Outcome: outcome, Elapsed: elapsed, Holder: w.holder, RequestedPaths: w.requested, Repository: w.owner.scope.repository}
 	if c := w.conflict; c != nil {
 		n.Holder, n.HolderSessionID, n.Paths = c.Holder, c.SessionID, c.Paths
 	}

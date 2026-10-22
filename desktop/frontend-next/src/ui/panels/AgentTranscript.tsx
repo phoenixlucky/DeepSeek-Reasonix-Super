@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { seconds } from "../../i18n/format";
 import { t } from "../../i18n";
-import { delegateStatus, delegateStatusLabel, nestLabel } from "../delegation";
+import { delegateStatus, delegateStatusLabel, nestLabel, ranLabel } from "../delegation";
 import { useEscape } from "../dismiss";
 import { listenAction } from "../listen";
 import { NestedCall } from "../cards/ToolCard";
@@ -33,6 +33,7 @@ export function AgentTranscript({ task, onClose }: { task: Task; onClose: () => 
       <div className="agent-tx" ref={box} tabIndex={-1} role="dialog" aria-modal="true" aria-label={t("子代理完整记录：{name}", { name: agentName(task) })} data-status={running ? "running" : "done"}>
         <div className="agent-tx-hd">
           <span className="who">{nestLabel(tool.profile?.name?.trim(), tool.profile?.count, children.length)}</span>
+          {ranLabel(tool.profile) && <span className="ran" title={ranLabel(tool.profile)}>{ranLabel(tool.profile)}</span>}
           <span className="rt">{[status, tool.durationMs ? seconds(tool.durationMs) : ""].filter(Boolean).join(" · ")}</span>
           <button type="button" className="agent-tx-x" data-action="agent.close" aria-label={t("关闭")} onClick={onClose}>
             <StudioIcon name="close" />

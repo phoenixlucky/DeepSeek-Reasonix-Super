@@ -17,6 +17,7 @@ function draw(saveRemoteHost = vi.fn(async (_entry: RemoteHostEdit): Promise<Rem
   const hub = {
     remoteHosts: async () => [host],
     remoteCandidates: async () => [],
+    wslDistros: async () => ({ available: false, distros: [] }),
     saveRemoteHost,
   } as unknown as HubPort;
   render(<Remotes hub={hub} onError={() => {}} />);

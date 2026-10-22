@@ -7,8 +7,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reasonix/internal/state/sessionstore"
@@ -106,6 +108,9 @@ func runSessionCommand(args []string, out io.Writer) int {
 	if !options.json {
 		return writeMachineError(out, command, "invalid_argument", "--json is required")
 	}
+	if code, message := checkMachineDir(options.dir, options.projectRoot); code != "" {
+		return writeMachineError(out, command, code, message)
+	}
 	options.dir = resolveMachineSessionDir(options.dir, options.projectRoot)
 	identityKey, err := loadMachineIdentityKey()
 	if err != nil {
@@ -140,6 +145,24 @@ func runSessionCommand(args []string, out io.Writer) int {
 		})
 	}
 	return writeMachineError(out, command, "session_not_found", "session was not found")
+}
+
+// checkMachineDir refuses an explicit --dir that is not a directory: an absent
+// store reads as an empty one, so a mistyped path would answer "no sessions".
+func checkMachineDir(dir, projectRoot string) (string, string) {
+	if dir == "" || projectRoot != "" {
+		return "", ""
+	}
+	info, err := os.Stat(dir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "invalid_argument", "--dir does not exist"
+	case err != nil:
+		return "session_dir_unavailable", "session directory is unavailable"
+	case !info.IsDir():
+		return "invalid_argument", "--dir is not a directory"
+	}
+	return "", ""
 }
 
 func resolveMachineSessionDir(sessionDir, projectRoot string) string {

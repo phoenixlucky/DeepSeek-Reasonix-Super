@@ -1,5 +1,6 @@
 import { download } from "./download";
-import type { PluginExport, PluginInstallRequest, PluginPackage, PluginPlan, ScopeLayer, SkillCatalog, SkillEntry } from "./port";
+import { mockModPlan } from "./mock_mods";
+import { HttpError, type PluginExport, type PluginInstallRequest, type PluginPackage, type PluginPlan, type ScopeLayer, type SkillCatalog, type SkillEntry, type SkillUpdatePlan } from "./port";
 import { MockMarket } from "./mock_market";
 
 // The extension half of the fixture: skills, and the packages that bring them.
@@ -10,7 +11,7 @@ export class MockExtensions extends MockMarket {
   private skillList: SkillEntry[] = [
     {
       name: "review", slashName: "review", description: "复核这一轮改动，给出严重度分级",
-      scope: "project", path: ".reasonix/skills/review/SKILL.md", subagent: true, enabled: true,
+      scope: "project", path: ".reasonix/skills/review/SKILL.md", removes: ".reasonix/skills/review", removesFolder: true, subagent: true, enabled: true,
     },
     { name: "init", slashName: "init", description: "为这个仓库生成一份项目说明", scope: "builtin", enabled: true },
     {
@@ -21,11 +22,12 @@ export class MockExtensions extends MockMarket {
     // row the old list could not show at all.
     {
       name: "release-notes", description: "从提交历史起草发布说明",
-      scope: "global", path: "~/.reasonix/skills/release-notes/SKILL.md", enabled: false,
+      scope: "global", path: "~/.reasonix/skills/release-notes/SKILL.md", removes: "~/.reasonix/skills/release-notes", removesFolder: true, enabled: false,
+      license: "Apache-2.0", compatibility: "需要 git，并能访问网络", metadata: { author: "example-org", version: "1.0" },
     },
     {
       name: "deploy-runbook", slashName: "deploy-runbook", description: "只在你点名时跑的部署清单",
-      scope: "project", path: ".reasonix/skills/deploy-runbook/SKILL.md", manual: true, enabled: true,
+      scope: "project", path: ".reasonix/skills/deploy-runbook.md", removes: ".reasonix/skills/deploy-runbook.md", manual: true, enabled: true,
     },
   ];
 
@@ -71,6 +73,20 @@ export class MockExtensions extends MockMarket {
   // real store keys them by repository, which a browser fixture cannot do.
   protected localSkills = new Set<string>();
 
+  async planSkillUpdate(name: string): Promise<SkillUpdatePlan> {
+    return { name, source: "/home/demo/skills/" + name, state: "source_changed", changes: [], overwritesLocal: false, planId: "demo" };
+  }
+  async applySkillUpdate(): Promise<void> {}
+
+  async removeSkill(name: string, scope: string, path: string): Promise<void> {
+    const at = this.skillList.findIndex((x) => x.name === name);
+    if (at < 0) throw new HttpError(404, "no skill named " + name, { code: "request.not_found" });
+    const sk = this.skillList[at];
+    if (sk.scope === "builtin" || sk.plugin || !sk.path) throw new HttpError(409, "not removable", { code: "skill.not_removable" });
+    if (sk.scope !== scope || sk.path !== path) throw new HttpError(409, "changed", { code: "skill.changed" });
+    this.skillList.splice(at, 1);
+  }
+
   async setSkillEnabled(name: string, enabled: boolean, scope: ScopeLayer = "project") {
     const sk = this.skillList.find((x) => x.name === name);
     if (!sk) return;
@@ -96,6 +112,7 @@ export class MockExtensions extends MockMarket {
   // a hook and connects a server is what the confirmation page exists for.
   async planPlugin(req: PluginInstallRequest): Promise<PluginPlan> {
     const source = req.source;
+    if (/\bmod\b/i.test(source)) return mockModPlan(source);
     return {
       ok: true, status: "planned", applied: false, source, planId: "high:sha256:mock",
       actions: [
@@ -168,4 +185,13 @@ export class MockExtensions extends MockMarket {
     download(name, content);
     return null;
   }
+
+  private sides = 0;
+  async openSide() {
+    return "side-" + ++this.sides;
+  }
+  async askSide(_id: string, question: string, quotes: string[]) {
+    return `（演示）${quotes.length ? `引用了 ${quotes.length} 段；` : ""}这是对「${question}」的只读回答。`;
+  }
+  async closeSide() {}
 }

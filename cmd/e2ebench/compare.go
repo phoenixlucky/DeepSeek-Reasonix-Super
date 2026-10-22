@@ -41,19 +41,21 @@ func requestsBySourceLine(bySource map[string]sourceUsage) string {
 	return "**Requests by source:** " + strings.Join(parts, " · ") + "\n\n"
 }
 
-// armStats is one arm's aggregate over a -json report, using the same
-// accounting conventions as renderBody: spend totals cover accounted runs
-// (failures included) and per-solved figures divide by accounted solves.
+// armStats is one arm's aggregate over a -json report: spend totals and
+// per-solved figures cover accounted runs (failures included), while wall
+// rates (Solved/hour, wall/task) cover every run.
 type armStats struct {
 	Ran, Pass1, Solved, AccountedSolved int
 	Steps, Tools, Rounds, PlannerCalls  int
 	Tokens, Hit, Miss                   int
 	Cost                                float64
-	WallMs                              int64
-	FirstHit, FirstMiss                 int64
-	Damaged, WithCorrect                int
-	TTCS, TTFT                          []int64
-	ByClass                             map[string]classStats
+	// WallMs is all-run wall (a killed run's wall was still spent);
+	// AccountedWallMs is the accounted subset the per-solved wall cost divides.
+	WallMs, AccountedWallMs int64
+	FirstHit, FirstMiss     int64
+	Damaged, WithCorrect    int
+	TTCS, TTFT              []int64
+	ByClass                 map[string]classStats
 	// Fanout covers every run in the arm, no-solution tasks included: work the
 	// agent delegated is work it paid for whether or not the task was solvable.
 	Fanout fanoutMetrics
@@ -107,6 +109,7 @@ func aggregateArm(results []result) armStats {
 		}
 		c.WallMs += r.WallMs
 		s.ByClass[label] = c
+		s.WallMs += r.WallMs
 		if r.Unaccounted {
 			continue
 		}
@@ -119,7 +122,7 @@ func aggregateArm(results []result) armStats {
 		s.Hit += r.CacheHitTokens
 		s.Miss += r.CacheMissTokens
 		s.Cost += r.Cost
-		s.WallMs += r.WallMs
+		s.AccountedWallMs += r.WallMs
 		s.PlannerCalls += r.UsageBySource["planner"].Calls
 		if r.Trajectory != nil {
 			s.Rounds += r.Trajectory.ModelRounds
@@ -309,7 +312,7 @@ func compareReports(pathA, pathB string) (string, error) {
 	fmt.Fprintf(&b, "| Model rounds / solved | %s | %s |\n", perSolved(float64(a.Rounds), a.AccountedSolved), perSolved(float64(bStats.Rounds), bStats.AccountedSolved))
 	fmt.Fprintf(&b, "| Tool calls / solved | %s | %s |\n", perSolved(float64(a.Tools), a.AccountedSolved), perSolved(float64(bStats.Tools), bStats.AccountedSolved))
 	fmt.Fprintf(&b, "| Tokens / solved | %s | %s |\n", perSolved(float64(a.Tokens), a.AccountedSolved), perSolved(float64(bStats.Tokens), bStats.AccountedSolved))
-	fmt.Fprintf(&b, "| Wall seconds / solved | %s | %s |\n", perSolved(float64(a.WallMs)/1000, a.AccountedSolved), perSolved(float64(bStats.WallMs)/1000, bStats.AccountedSolved))
+	fmt.Fprintf(&b, "| Wall seconds / solved | %s | %s |\n", perSolved(float64(a.AccountedWallMs)/1000, a.AccountedSolved), perSolved(float64(bStats.AccountedWallMs)/1000, bStats.AccountedSolved))
 	fmt.Fprintf(&b, "| Cost / solved | %s | %s |\n", perSolved(a.Cost, a.AccountedSolved), perSolved(bStats.Cost, bStats.AccountedSolved))
 	b.WriteString(marginalUtilitySection(a, bStats))
 	b.WriteString(memoryUtilitySection(pathA, pathB))

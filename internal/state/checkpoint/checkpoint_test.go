@@ -542,3 +542,20 @@ func TestLazyDirectoryCreation(t *testing.T) {
 		t.Fatalf("turn file should now exist: %v", err)
 	}
 }
+
+func TestWriteOutsideTheWorkspaceIsACoverageGapNotAFailure(t *testing.T) {
+	root := testenv.TempDir(t)
+	outside := filepath.Join(testenv.TempDir(t), "scratch.py")
+	write(t, outside, "x")
+	s := New(filepath.Join(testenv.TempDir(t), "sess.ckpt"), root)
+	s.Begin(0, "a", 0)
+
+	if err := s.CaptureAfter(outside, CaptureAfterOpts{Seq: 1, Source: CaptureAfterMutation}); err != nil {
+		t.Fatalf("a write outside the workspace is not a recording failure: %v", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.cur.CoverageGaps) != 1 || s.cur.CoverageGaps[0].Reason != GapOutsideWorkspace {
+		t.Fatalf("the outside write must stay on record as a coverage gap: %+v", s.cur.CoverageGaps)
+	}
+}

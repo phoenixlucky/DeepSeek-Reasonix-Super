@@ -12,10 +12,15 @@ import (
 type displayPrefs struct {
 	currencyGroup *DisplayCurrencyGroup
 	quoteContext  *event.QuoteContext
+	// walletCurrency is the wallet's currency last announced while the user
+	// left the display currency automatic; empty once they choose one.
+	walletCurrency string
 	// Preferences a frontend sets mid-session; empty means follow the language
 	// policy of the current user turn.
 	responseLanguage  string
 	reasoningLanguage string
+	// turnNarration is brief or detailed; see config.TurnNarration.
+	turnNarration string
 	// embeddedDiffDetection is resolved once at build from the config the
 	// session was built with; a frontend rebuilding a transcript reads it
 	// rather than reloading config. See Options.EmbeddedDiffDetection.
@@ -27,6 +32,7 @@ func displayPrefsFrom(opts Options) displayPrefs {
 		quoteContext:          opts.QuoteContext,
 		responseLanguage:      config.NormalizeLanguage(opts.ResponseLanguage),
 		reasoningLanguage:     config.NormalizeReasoningLanguage(opts.ReasoningLanguage),
+		turnNarration:         config.NormalizeTurnNarration(opts.TurnNarration),
 		embeddedDiffDetection: opts.EmbeddedDiffDetection,
 	}
 }

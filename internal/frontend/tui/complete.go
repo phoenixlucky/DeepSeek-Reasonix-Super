@@ -129,7 +129,7 @@ func (m *model) localCommands(line string) []CompletionItem {
 	cmds := []CompletionItem{{Label: "/resume", Insert: "/resume", Hint: i18n.M.CmdResume}}
 	for _, c := range []struct{ name, hint string }{
 		{"/queue", i18n.M.CmdQueue}, {"/steer", i18n.M.CmdSteer}, {"/takeover", i18n.M.CmdTakeover},
-		{"/status", i18n.M.CmdStatus}, {"/export", i18n.M.CmdExport}, {"/copy", i18n.M.CmdCopy},
+		{"/status", i18n.M.CmdStatus}, {"/export", i18n.M.CmdExport}, {"/copy", i18n.M.CmdCopy}, {"/btw", i18n.M.CmdBtw},
 	} {
 		cmds = append(cmds, CompletionItem{Label: c.name, Insert: c.name, Hint: c.hint})
 	}
@@ -143,6 +143,9 @@ func (m *model) localCommands(line string) []CompletionItem {
 		CompletionItem{Label: "/verbose", Insert: "/verbose", Hint: i18n.M.CmdVerbose},
 		CompletionItem{Label: "/diff-fold", Insert: "/diff-fold", Hint: i18n.M.CmdDiffFold},
 		CompletionItem{Label: "/theme", Insert: "/theme ", Hint: i18n.M.CmdTheme, Descend: true})
+	if slices.Contains(m.opts.QuitCommands, "/quit") {
+		cmds = append(cmds, CompletionItem{Label: "/quit", Insert: "/quit", Hint: i18n.M.CmdQuit})
+	}
 	if m.scr != nil {
 		cmds = append(cmds, CompletionItem{Label: "/mouse", Insert: "/mouse", Hint: i18n.M.CmdMouse})
 	}

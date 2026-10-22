@@ -81,20 +81,38 @@ func TestWriteLeaseModeShapesTheSessionsLease(t *testing.T) {
 // A declared path the host cannot resolve is not an undeclared writer: it keeps
 // holding the workspace under optimistic, exactly as under strict.
 func TestAnUnresolvableDeclaredPathStillHoldsTheWorkspaceUnderOptimistic(t *testing.T) {
-	home := robustTempDir(t)
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("AppData", filepath.Join(home, "AppData"))
-	root := robustTempDir(t)
+	root := leaseHome(t)
+	holder := leaseSession(t, root, "strict")
+	if err := holder.AcquirePaths(context.Background(), []string{filepath.Join(root, "a.txt")}); err != nil {
+		t.Fatal(err)
+	}
+	optimistic := leaseSession(t, root, "optimistic")
+	if !waits(t, func(ctx context.Context) error { return optimistic.AcquirePaths(ctx, []string{"  "}) }) {
+		t.Error("a declared path the host could not resolve was treated as no claim at all")
+	}
+}
 
+// A declared path that resolves outside the workspace, such as one in an extra
+// writable folder, claims only itself and never the whole workspace.
+func TestADeclaredPathOutsideTheWorkspaceDoesNotHoldItUnderOptimistic(t *testing.T) {
+	root := leaseHome(t)
 	holder := leaseSession(t, root, "strict")
 	if err := holder.AcquirePaths(context.Background(), []string{filepath.Join(root, "a.txt")}); err != nil {
 		t.Fatal(err)
 	}
 	optimistic := leaseSession(t, root, "optimistic")
 	outside := filepath.Join(robustTempDir(t), "elsewhere.txt")
-	if !waits(t, func(ctx context.Context) error { return optimistic.AcquirePaths(ctx, []string{outside}) }) {
-		t.Error("a declared path outside the workspace was treated as no claim at all")
+	if waits(t, func(ctx context.Context) error { return optimistic.AcquirePaths(ctx, []string{outside}) }) {
+		t.Error("a declared path outside the workspace waited behind a file inside it")
 	}
+}
+
+func leaseHome(t *testing.T) string {
+	t.Helper()
+	home := robustTempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
+	return robustTempDir(t)
 }

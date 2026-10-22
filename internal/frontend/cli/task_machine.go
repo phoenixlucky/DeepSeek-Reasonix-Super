@@ -58,6 +58,9 @@ func runTaskCommand(args []string, out io.Writer) int {
 	if !options.json {
 		return writeMachineError(out, command, "invalid_argument", "--json is required")
 	}
+	if code, message := checkMachineDir(options.dir, options.projectRoot); code != "" {
+		return writeMachineError(out, command, code, message)
+	}
 	options.dir = resolveMachineSessionDir(options.dir, options.projectRoot)
 	identityKey, err := loadMachineIdentityKey()
 	if err != nil {

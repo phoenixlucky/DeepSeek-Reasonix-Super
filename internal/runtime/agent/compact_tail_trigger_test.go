@@ -86,8 +86,13 @@ func TestTailBudgetYieldsToLowTrigger(t *testing.T) {
 			if mock.peak <= a.window().compactTrigger() {
 				t.Fatalf("peak prompt %d never reached trigger %d; the case proves nothing", mock.peak, a.window().compactTrigger())
 			}
-			if started == 0 {
-				t.Fatalf("context passed the trigger (peak %d > %d) but nothing folded", mock.peak, a.window().compactTrigger())
+			// A fold that cannot get under the trigger is refused before its summary
+			// is paid for, so acting on the crossing is a card or a recorded refusal.
+			a.sess.win.compactionMu.Lock()
+			receipt := a.sess.win.compactionState.LastReceipt
+			a.sess.win.compactionMu.Unlock()
+			if started == 0 && receipt == nil {
+				t.Fatalf("context passed the trigger (peak %d > %d) but maintenance did nothing", mock.peak, a.window().compactTrigger())
 			}
 		})
 	}

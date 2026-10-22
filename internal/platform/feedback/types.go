@@ -49,6 +49,7 @@ const (
 	StatusFixed      Status = "fixed"
 	StatusWontFix    Status = "wontfix"
 	StatusDuplicate  Status = "duplicate"
+	StatusWithdrawn  Status = "withdrawn"
 )
 
 // Limits are the ceilings the worker enforces, held here so a frontend states
@@ -81,10 +82,15 @@ type Env struct {
 	Locale       string `json:"locale"`
 	Channel      string `json:"channel"`
 	ProviderKind string `json:"providerKind"`
+	// Memory is one row per process type the report may name.
+	Memory []ProcessMemory `json:"memory,omitempty"`
 }
 
 // EnvContext is what only the caller knows about itself.
 type EnvContext struct {
+	// Shell is what the window's shell reported about its own processes. Only
+	// the fixed process types are kept and the numbers are clamped.
+	Shell        []ProcessMemory
 	Surface      Surface
 	Locale       string
 	ProviderKind string
@@ -182,6 +188,8 @@ type Item struct {
 	// UnreadReplies counts maintainer replies newer than the last one this
 	// machine marked seen; it is computed on read, never stored.
 	UnreadReplies int `json:"unreadReplies"`
+	// OtherInstall marks a report another install of the same account filed.
+	OtherInstall bool `json:"otherInstall,omitempty"`
 }
 
 // TrustState is why an install is admitted at the limits it is. Only active and
@@ -253,4 +261,13 @@ type Mine struct {
 	HasNew  bool   `json:"hasNew"`
 	// Profile is null when the service stated none; offline, the last confirmed.
 	Profile *Profile `json:"profile"`
+	// Promotion is a level the service now states that this machine has not told
+	// the person about; it stays until AckPromotion and is never made offline.
+	Promotion *Promotion `json:"promotion,omitempty"`
+}
+
+// Promotion is the move from the last level this machine knew to the one now stated.
+type Promotion struct {
+	From int `json:"from"`
+	To   int `json:"to"`
 }

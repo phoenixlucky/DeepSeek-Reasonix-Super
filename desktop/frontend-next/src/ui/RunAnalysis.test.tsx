@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import "./testkit";
 import type { TrajRow } from "../state/trajectory";
 import { RunAnalysis } from "./RunAnalysis";
 
+beforeEach(() => { vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1000); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 const rows: TrajRow[] = [
@@ -104,21 +105,29 @@ describe("RunAnalysis", () => {
     expect(signal.getAttribute("aria-expanded")).toBe("true");
   });
 
-  it("keeps every signal inspectable, including simultaneous and late records", () => {
+  it("folds simultaneous signals into one counted marker and keeps every one inspectable", () => {
     const moments: TrajRow[] = Array.from({ length: 12 }, (_, seq) => ({
       seq, at: 0, kind: "checkpoint", payload: [{ t: `signal ${seq}` }], subs: [],
     }));
     const { container } = render(<RunAnalysis rows={moments} onSave={onSave} />);
-    const buttons = [...container.querySelectorAll<HTMLButtonElement>("[data-action='analysis.signal']")];
-    expect(buttons).toHaveLength(12);
-    expect(new Set(buttons.map((b) => b.style.top)).size).toBe(12);
-    for (const [index, button] of buttons.entries()) {
-      expect(button.getAttribute("aria-label")).toContain(`signal ${index}`);
-      fireEvent.click(button);
+    const rail = container.querySelector<HTMLElement>(".run-signal-line")!;
+    const marker = rail.querySelector<HTMLButtonElement>("[data-action='analysis.signal']")!;
+    expect(rail.querySelectorAll("[data-action='analysis.signal']")).toHaveLength(1);
+    expect(marker.textContent).toBe("12");
+    expect(marker.getAttribute("aria-label")).toContain("12 个信号");
+    expect(container.querySelector(".run-signal-group")).toBeNull();
+    fireEvent.click(marker);
+    const items = [...container.querySelectorAll<HTMLButtonElement>(".run-signal-group [data-action='analysis.signal']")];
+    expect(items).toHaveLength(12);
+    for (const [index, item] of items.entries()) {
+      fireEvent.click(item);
+      expect(item.getAttribute("aria-expanded")).toBe("true");
       expect(container.querySelector(".run-inspect p")?.textContent).toBe(`signal ${index}`);
     }
-    fireEvent.click(buttons[11]);
+    fireEvent.click(items[11]);
     expect(container.querySelector(".run-inspect")).toBeNull();
+    fireEvent.click(marker);
+    expect(container.querySelector(".run-signal-group")).toBeNull();
   });
 
   it("handles a single zero-time signal and newly arriving records without resetting zoom", () => {
@@ -129,10 +138,11 @@ describe("RunAnalysis", () => {
     expect((screen.getByRole("slider") as HTMLInputElement).value).toBe("16");
     expect(container.querySelector("[data-target='1']")?.getAttribute("style")).not.toMatch(/NaN|Infinity/);
     expect(container.querySelectorAll("[data-action='analysis.signal']")).toHaveLength(2);
+    expect(container.querySelector(".run-signal-line")!.textContent).not.toMatch(/\d/);
   });
 
 
-  it("reflows crowded lanes as the measured timeline widens without changing timestamps", () => {
+  it("splits a counted marker as the measured timeline widens, without moving any timestamp", () => {
     let measure = () => {};
     let width = 100;
     vi.stubGlobal("ResizeObserver", class {
@@ -145,24 +155,24 @@ describe("RunAnalysis", () => {
       seq, at, kind: "checkpoint", payload: [{ t: `signal ${seq}` }], subs: [],
     }));
     const { container } = render(<RunAnalysis rows={moments} onSave={onSave} />);
-    const signals = [...container.querySelectorAll<HTMLButtonElement>("[data-action='analysis.signal']")];
-    expect(signals[0].style.top).not.toBe(signals[1].style.top);
-    const positions = signals.map((signal) => signal.style.left);
+    const markers = () => [...container.querySelectorAll<HTMLButtonElement>("[data-action='analysis.signal']")];
+    expect(markers().map((m) => m.textContent)).toEqual(["2", ""]);
+    const first = markers()[0].style.left;
     act(() => { width = 3000; measure(); });
-    expect(signals[0].style.top).toBe(signals[1].style.top);
-    expect(signals.map((signal) => signal.style.left)).toEqual(positions);
+    expect(markers()).toHaveLength(3);
+    expect(markers()[0].style.left).toBe(first);
   });
 
-
-  it("keeps hit targets apart when interface zoom scales the rail's visual width", () => {
+  it("merges marks closer than one hit target, so no two markers sit within it", () => {
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(100);
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 180 } as DOMRect);
     const moments: TrajRow[] = [0, 13, 100].map((at, seq) => ({
       seq, at, kind: "checkpoint", payload: [{ t: `signal ${seq}` }], subs: [],
     }));
     const { container } = render(<RunAnalysis rows={moments} onSave={onSave} />);
-    const signals = [...container.querySelectorAll<HTMLButtonElement>("[data-action='analysis.signal']")];
-    expect(signals[0].style.top).not.toBe(signals[1].style.top);
+    const markers = [...container.querySelectorAll<HTMLButtonElement>("[data-action='analysis.signal']")];
+    expect(markers.map((m) => m.textContent)).toEqual(["2", ""]);
+    const [a, b] = markers.map((m) => parseFloat(m.style.left));
+    expect((b - a) * 100).toBeGreaterThanOrEqual(22);
   });
 
   it.each([1, 16])("keeps activity duration percentages exact at %s× zoom and after reset", (zoom) => {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { t } from "../i18n";
 import type { HubPort } from "../port/hub";
-import type { RemoteHost, RemoteHostEdit, RemoteProbe } from "../port/remote";
+import type { RemoteHost, RemoteHostEdit, RemoteProbe, WSLDistros } from "../port/remote";
 import { say } from "../i18n/kernel";
 import { toggleHiddenHost, useHiddenHosts } from "../state/remotehide";
 import { RemoteDirs } from "./RemoteDirs";
@@ -34,6 +34,8 @@ export function workspacesOf(host: RemoteHost | null): string[] {
 function draftOf(host: RemoteHost | null): RemoteHostEdit {
   return {
     name: host?.name ?? "",
+    kind: host?.kind ?? "",
+    distro: host?.distro ?? "",
     host: host?.host ?? "",
     port: host?.port ?? 0,
     user: host?.user ?? "",
@@ -52,6 +54,9 @@ function draftOf(host: RemoteHost | null): RemoteHostEdit {
 export function Remotes({ hub, onError }: Props) {
   const [hosts, setHosts] = useState<RemoteHost[]>([]);
   const [candidates, setCandidates] = useState<string[]>([]);
+  // The distributions on this machine, or nothing to choose from: a machine
+  // with no WSL never shows the choice, so the form it has always had is unchanged.
+  const [wsl, setWSL] = useState<WSLDistros | null>(null);
   const [draft, setDraft] = useState<RemoteHostEdit | null>(null);
   // The folder being typed, kept out of the draft: it is not part of the row
   // until it is added, and a save must not smuggle a half-typed path in.
@@ -72,9 +77,10 @@ export function Remotes({ hub, onError }: Props) {
 
   const reload = useCallback(async () => {
     try {
-      const [book, aliases] = await Promise.all([hub.remoteHosts(), hub.remoteCandidates().catch(() => [])]);
+      const [book, aliases, distros] = await Promise.all([hub.remoteHosts(), hub.remoteCandidates().catch(() => []), hub.wslDistros().catch(() => null)]);
       setHosts(book ?? []);
       setCandidates(aliases);
+      setWSL(distros?.available ? distros : null);
     } catch (e) {
       onError(e);
     }
@@ -121,6 +127,8 @@ export function Remotes({ hub, onError }: Props) {
     if (!(draft.workspaces ?? []).includes(path)) setDirs([...(draft.workspaces ?? []), path]);
     setDir("");
   };
+
+  const isWSL = draft?.kind === "wsl";
 
   const field = (key: keyof RemoteHostEdit, label: string, placeholder?: string) => (
     <label className="rmtf">
@@ -188,6 +196,7 @@ export function Remotes({ hub, onError }: Props) {
             {workspacesOf(host).length > 1 ? (
               <span className="tag">{t("还有 {n} 个项目", { n: workspacesOf(host).length - 1 })}</span>
             ) : null}
+            {host.kind === "wsl" ? <span className="tag">{t("WSL 发行版")}</span> : null}
             {host.useSSHConfig ? <span className="tag">{t("跟随 ssh_config")}</span> : null}
             {host.forwards ? <span className="tag">{t("{n} 条转发", { n: host.forwards })}</span> : null}
             {host.panes ? <span className="tag">{t("{n} 个面板", { n: host.panes })}</span> : null}
@@ -243,18 +252,59 @@ export function Remotes({ hub, onError }: Props) {
       {draft ? (
         <div className="rmtform">
           {field("name", t("名称"), "gpu-box")}
-          {field("host", t("地址"), "10.0.0.4")}
-          {field("user", t("用户"), "ada")}
-          <label className="rmtf">
-            <span>{t("端口")}</span>
-            <input
-              value={draft.port ? String(draft.port) : ""}
-              placeholder="22"
-              inputMode="numeric"
-              onChange={(ev) => setDraft((d) => (d ? { ...d, port: Number(ev.target.value.replace(/\D/g, "")) || 0 } : d))}
-            />
-          </label>
-          {field("proxyJump", t("跳板机"), "bastion.example.com")}
+          {/* A saved machine keeps the way it is reached: the two kinds share no
+              field, so turning one into the other is a new machine, not an edit. */}
+          {wsl && !editing ? (
+            <div className="rmtf" role="radiogroup" aria-label={t("连接类型")}>
+              <span>{t("连接类型")}</span>
+              <div className="rmtkinds">
+                {(["", "wsl"] as const).map((k) => (
+                  <button
+                    key={k || "ssh"}
+                    role="radio"
+                    aria-checked={(draft.kind ?? "") === k}
+                    data-action="remotes.kind"
+                    data-value={k || "ssh"}
+                    onClick={() => setDraft((d) => (d ? { ...d, kind: k, distro: k ? d.distro || wsl.distros.find((x) => x.version === 2)?.name || "" : "" } : d))}
+                  >
+                    {k ? t("WSL 发行版") : t("SSH 主机")}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {isWSL ? (
+            <label className="rmtf">
+              <span>{t("发行版")}</span>
+              <select data-action-change="remotes.distro" value={draft.distro ?? ""} disabled={!!editing} onChange={(ev) => setDraft((d) => (d ? { ...d, distro: ev.target.value } : d))}>
+                {editing && !(wsl?.distros ?? []).some((x) => x.name === draft.distro) ? <option value={draft.distro}>{draft.distro}</option> : null}
+                {(wsl?.distros ?? []).map((x) => (
+                  <option key={x.name} value={x.name} disabled={x.version !== 2}>
+                    {x.version === 2 ? x.name : t("{name}（WSL 1，不支持）", { name: x.name })}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          {!isWSL && field("host", t("地址"), "10.0.0.4")}
+          {!isWSL && field("user", t("用户"), "ada")}
+          {!isWSL && (
+              <label className="rmtf">
+                <span>{t("端口")}</span>
+                <input
+                  value={draft.port ? String(draft.port) : ""}
+                  placeholder="22"
+                  inputMode="numeric"
+                  onChange={(ev) => setDraft((d) => (d ? { ...d, port: Number(ev.target.value.replace(/\D/g, "")) || 0 } : d))}
+                />
+              </label>
+          )}
+          {!isWSL && field("proxyJump", t("跳板机"), "bastion.example.com")}
+          {isWSL ? (
+            <p className="rmthint">
+              {t("内核运行在 Studio 保持的一个会话里：关闭 Studio 后它会随发行版一起停止，对话保存在磁盘上，下次连接时继续。模型凭据使用发行版自己的配置。")}
+            </p>
+          ) : null}
           {/* Same shape the sandbox's writable list uses: one row per thing,
               then what you can do to it. The head carries the default badge
               rather than a separate field, because it is the same folder. */}
@@ -300,16 +350,16 @@ export function Remotes({ hub, onError }: Props) {
               ) : null}
             </div>
           </div>
-          {field("identityFile", t("私钥文件"), "~/.ssh/id_ed25519")}
+          {!isWSL && field("identityFile", t("私钥文件"), "~/.ssh/id_ed25519")}
           {/* What an empty form actually does is the kernel's to say. Leaving
               these blank is not "no authentication", and a reader who has to
               guess between agent, default keys and a password prompt is one
               who finds out on the first connect. */}
-          <p className="rmthint">{t("留空时按这个顺序尝试：先 ssh-agent 持有的密钥，再 ~/.ssh 下的默认密钥；只有填了下面的环境变量或该机器要求交互时，才会走密码。")}</p>
+          {!isWSL && <p className="rmthint">{t("留空时按这个顺序尝试：先 ssh-agent 持有的密钥，再 ~/.ssh 下的默认密钥；只有填了下面的环境变量或该机器要求交互时，才会走密码。")}</p>}
           {/* Named, not carried: this is the variable to read, never the secret
               itself, so nothing typed here is a password on its way anywhere. */}
-          {field("passphraseEnv", t("私钥口令的环境变量名"), "GPU_BOX_PASSPHRASE")}
-          {field("passwordEnv", t("登录密码的环境变量名"), "GPU_BOX_PASSWORD")}
+          {!isWSL && field("passphraseEnv", t("私钥口令的环境变量名"), "GPU_BOX_PASSPHRASE")}
+          {!isWSL && field("passwordEnv", t("登录密码的环境变量名"), "GPU_BOX_PASSWORD")}
           {/* The kernel names this setting when an install fails, so it has to
               be here: an error saying "install it with npm instead" beside a
               setting nobody can reach says nothing. */}
@@ -329,25 +379,29 @@ export function Remotes({ hub, onError }: Props) {
           {/* Which machine's key the far-side kernel answers to. This one's by
               default, tunnelled back, so the other machine needs no key of its
               own and no route to the model API. */}
-          <label className="rmtf">
-            <span>{t("模型凭据")}</span>
-            <select
-              value={draft.provider || "local"}
-              title={t("远端会话使用哪台机器上配置的 Provider 与 Key")}
-              onChange={(ev) => setDraft((d) => (d ? { ...d, provider: ev.target.value } : d))}
-            >
-              <option value="local">{t("使用本机配置，经隧道转发")}</option>
-              <option value="remote">{t("使用该机器自身的配置")}</option>
-            </select>
-          </label>
-          <label className="rmtf rmtck">
-            <input
-              type="checkbox"
-              checked={!!draft.useSSHConfig}
-              onChange={(ev) => setDraft((d) => (d ? { ...d, useSSHConfig: ev.target.checked } : d))}
-            />
-            <span>{t("留空的项将从 ~/.ssh/config 读取")}</span>
-          </label>
+          {!isWSL && (
+            <label className="rmtf">
+              <span>{t("模型凭据")}</span>
+              <select
+                value={draft.provider || "local"}
+                title={t("远端会话使用哪台机器上配置的 Provider 与 Key")}
+                onChange={(ev) => setDraft((d) => (d ? { ...d, provider: ev.target.value } : d))}
+              >
+                <option value="local">{t("使用本机配置，经隧道转发")}</option>
+                <option value="remote">{t("使用该机器自身的配置")}</option>
+              </select>
+            </label>
+          )}
+          {!isWSL && (
+            <label className="rmtf rmtck">
+              <input
+                type="checkbox"
+                checked={!!draft.useSSHConfig}
+                onChange={(ev) => setDraft((d) => (d ? { ...d, useSSHConfig: ev.target.checked } : d))}
+              />
+              <span>{t("留空的项将从 ~/.ssh/config 读取")}</span>
+            </label>
+          )}
           <div className="rmtact">
             <button
               onClick={() => {
@@ -358,7 +412,7 @@ export function Remotes({ hub, onError }: Props) {
             >
               {t("取消")}
             </button>
-            <button data-go="" data-action={editing ? "remotes.save" : "remotes.add"} disabled={!draft.name.trim() || !!busy} onClick={() => void save(draft)}>
+            <button data-go="" data-action={editing ? "remotes.save" : "remotes.add"} disabled={!draft.name.trim() || !!busy || (isWSL && !draft.distro)} onClick={() => void save(draft)}>
               {editing ? t("保存") : t("添加")}
             </button>
           </div>

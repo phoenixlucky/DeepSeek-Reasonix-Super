@@ -50,3 +50,15 @@ func TestAnOptimisticWriteLeaseSurvivesASave(t *testing.T) {
 		t.Fatalf("the strict default was written as an active key:\n%s", out)
 	}
 }
+
+func TestSetWriteLeaseRoundTripsThroughTheSameReader(t *testing.T) {
+	cfg := Default()
+	cfg.SetWriteLease(true)
+	if !cfg.WriteLeaseOptimistic() || cfg.Agent.WriteLease != "optimistic" {
+		t.Fatalf("after SetWriteLease(true): %q", cfg.Agent.WriteLease)
+	}
+	cfg.SetWriteLease(false)
+	if cfg.WriteLeaseOptimistic() || cfg.Agent.WriteLease != "strict" {
+		t.Fatalf("after SetWriteLease(false): %q", cfg.Agent.WriteLease)
+	}
+}

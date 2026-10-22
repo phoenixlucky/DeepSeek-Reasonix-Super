@@ -25,6 +25,7 @@ func splitAtCorrect(path string, cutoffUnixMs int64) boundarySplit {
 	}
 	defer f.Close()
 	inModel := true
+	var nesting callNesting
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 1<<20), 16<<20)
 	for sc.Scan() {
@@ -32,7 +33,7 @@ func splitAtCorrect(path string, cutoffUnixMs int64) boundarySplit {
 		if err := json.Unmarshal(sc.Bytes(), &rec); err != nil {
 			continue
 		}
-		if rec.Event == nil || rec.Event.Tool == nil || rec.Event.Tool.ParentID != "" {
+		if rec.Event == nil || rec.Event.Tool == nil || nesting.child(rec.Event.Kind, rec.Event.Tool.ID, rec.Event.Tool.ParentID) {
 			continue
 		}
 		after := rec.TS > cutoffUnixMs
@@ -80,6 +81,7 @@ func roundEnds(path string) []int64 {
 	var ends []int64
 	var lastResult int64
 	inModel := true
+	var nesting callNesting
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 1<<20), 16<<20)
 	for sc.Scan() {
@@ -87,7 +89,7 @@ func roundEnds(path string) []int64 {
 		if err := json.Unmarshal(sc.Bytes(), &rec); err != nil {
 			continue
 		}
-		if rec.Event == nil || rec.Event.Tool == nil || rec.Event.Tool.ParentID != "" {
+		if rec.Event == nil || rec.Event.Tool == nil || nesting.child(rec.Event.Kind, rec.Event.Tool.ID, rec.Event.Tool.ParentID) {
 			continue
 		}
 		switch rec.Event.Kind {

@@ -57,6 +57,7 @@ func rebuildWithPrevious(ctx context.Context, old *control.Controller, previous 
 	if old == nil {
 		return nil, fmt.Errorf("boot: Rebuild requires the controller being replaced")
 	}
+	opts = inheritComposition(old, opts)
 	if _, observed := old.ObservePosture(); observed && opts.Observe == nil {
 		return nil, ErrObserveRebuild
 	}
@@ -82,7 +83,7 @@ func rebuildWithPrevious(ctx context.Context, old *control.Controller, previous 
 	var fromGraph *extension.DependencyGraph
 	if previous != nil && previous.Plan != nil && previous.Plan.Graph != nil {
 		fromGraph = previous.Plan.Graph
-	} else if g, err := buildRuntimeGraph(home, nil); err == nil {
+	} else if g, err := buildRuntimeGraph(home, nil, opts.Composition); err == nil {
 		fromGraph = g
 	}
 	opts.Graph = fromGraph
@@ -103,7 +104,7 @@ func rebuildWithPrevious(ctx context.Context, old *control.Controller, previous 
 	}
 
 	var toGraph *extension.DependencyGraph
-	if g, err := buildRuntimeGraph(home, nil); err == nil {
+	if g, err := buildRuntimeGraph(home, nil, opts.Composition); err == nil {
 		toGraph = g
 	}
 	var previousSnapshot *extension.RuntimeSnapshot
@@ -145,6 +146,7 @@ func rebuildWithPrevious(ctx context.Context, old *control.Controller, previous 
 // conversation, and the session axes a switch must not silently reset.
 type RuntimeMigration struct {
 	prevPath         string
+	prevModelRef     string
 	carried          []provider.Message
 	authorizations   control.SessionAuthorizations
 	toolApprovalMode string
@@ -161,6 +163,7 @@ type RuntimeMigration struct {
 func CaptureRuntimeMigration(old control.SessionAPI) RuntimeMigration {
 	m := RuntimeMigration{
 		prevPath:         old.SessionPath(),
+		prevModelRef:     old.ModelRef(),
 		carried:          old.History(),
 		toolApprovalMode: old.ToolApprovalMode(),
 		postureDefaulted: old.Posture().Defaulted,
@@ -184,6 +187,11 @@ func ApplyRuntimeMigration(ctrl, old *control.Controller, m RuntimeMigration) er
 	carried := spliceFreshSystemPrompt(m.carried, ctrl.History())
 	path := sessionstore.ContinueSessionPath(m.prevPath, ctrl.SessionDir(), ctrl.Label())
 	ctrl.AdoptHistory(carried, path)
+	// Same conversation, different model: the carried blocks were composed
+	// for the model being replaced, so this one is owed them once.
+	if old != nil && m.prevModelRef != ctrl.ModelRef() {
+		ctrl.RestateStandingProjection()
+	}
 
 	// Re-apply session axes a rebuild must not reset.
 	if m.postureDefaulted {

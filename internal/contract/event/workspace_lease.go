@@ -13,4 +13,5 @@ type WorkspaceLease struct {
 	HolderSessionID string   `json:"holderSessionId,omitempty"`
 	Paths           []string `json:"paths,omitempty"`
 	RequestedPaths  []string `json:"requestedPaths,omitempty"`
+	Repository      string   `json:"repository,omitempty"`
 }

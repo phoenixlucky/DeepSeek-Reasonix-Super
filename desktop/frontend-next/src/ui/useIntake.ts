@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useFileDrop, type Dropped } from "./filedrop";
+import { PATH_TYPE } from "./filedrag";
 import { planIntake, planIsEmpty, planTone, type IntakeItem, type IntakePlan } from "./intake";
 
 interface Options {
@@ -62,6 +63,7 @@ export function useIntake({ root, onReceive }: Options): {
 // path and never bytes. Everything it produces is marked pending.
 function preview(dt: DataTransfer | null, root?: string): IntakePlan | null {
   if (!dt) return null;
+  if (Array.from(dt.types).includes(PATH_TYPE)) return planIntake([{ kind: "file", pending: true }], root);
   const items: IntakeItem[] = [];
   for (const item of Array.from(dt.items ?? [])) {
     if (item.kind === "file") items.push({ kind: "file", mime: item.type, pending: true });

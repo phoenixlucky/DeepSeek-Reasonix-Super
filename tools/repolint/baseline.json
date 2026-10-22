@@ -15,7 +15,7 @@
     "essay": 2696,
     "file-size": 19628,
     "flat-view": 0,
-    "frontend-parity": 27,
+    "frontend-parity": 13,
     "function-size": 2652,
     "layer-order": 0,
     "layering": 0,
@@ -1249,21 +1249,17 @@
     },
     "internal/session/control/approval_orchestration.go": {
       "essay": 38,
-      "frontend-parity": 3
+      "frontend-parity": 1
     },
     "internal/session/control/attachments.go": {
       "orphan": 1
-    },
-    "internal/session/control/capability_scope.go": {
-      "frontend-parity": 1
     },
     "internal/session/control/checkpoint.go": {
       "essay": 16
     },
     "internal/session/control/controller.go": {
       "essay": 29,
-      "file-size": 461,
-      "frontend-parity": 5
+      "file-size": 461
     },
     "internal/session/control/controller_test.go": {
       "essay": 9
@@ -1272,8 +1268,7 @@
       "essay": 2
     },
     "internal/session/control/extension_ui.go": {
-      "essay": 4,
-      "frontend-parity": 1
+      "essay": 4
     },
     "internal/session/control/extensions.go": {
       "essay": 5
@@ -1285,8 +1280,7 @@
       "struct-state": 9
     },
     "internal/session/control/goal_control.go": {
-      "essay": 1,
-      "frontend-parity": 1
+      "essay": 1
     },
     "internal/session/control/goalusage.go": {
       "essay": 2
@@ -1307,12 +1301,8 @@
     "internal/session/control/mcp.go": {
       "essay": 7
     },
-    "internal/session/control/mcp_admin.go": {
-      "frontend-parity": 6
-    },
     "internal/session/control/mcp_servers.go": {
-      "essay": 2,
-      "frontend-parity": 2
+      "essay": 2
     },
     "internal/session/control/memory.go": {
       "essay": 12
@@ -1344,8 +1334,7 @@
       "essay": 5
     },
     "internal/session/control/session_lifecycle.go": {
-      "essay": 11,
-      "frontend-parity": 3
+      "essay": 11
     },
     "internal/session/control/session_snapshot.go": {
       "essay": 14
@@ -1380,7 +1369,6 @@
     "internal/session/control/turn_submit.go": {
       "complexity": 3,
       "essay": 4,
-      "frontend-parity": 1,
       "function-size": 12
     },
     "internal/state/checkpoint/barrier.go": {
@@ -1706,6 +1694,9 @@
     },
     "workers/crash-report/src/index.ts": {
       "file-size": 686
+    },
+    "tools/repolint/frontendparity.go": {
+      "frontend-parity": 13
     }
   }
 }

@@ -7,7 +7,7 @@ import "reasonix/internal/contract/eventwire"
 // about how its turns ended, so a restored call has an outcome only where the
 // record says it failed, and the last turn reads as neither open nor finished.
 func (t *Transcript) Restore(msgs []HistoryMessage) {
-	t.Items, t.awaiting = t.Items[:0], nil
+	t.Items, t.awaiting, t.grown = t.Items[:0], nil, nil
 	t.Running, t.Terminal, t.EndReason = false, TurnOpen, ""
 	calls := map[string]int{}
 	for _, m := range msgs {

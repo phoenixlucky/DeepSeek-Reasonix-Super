@@ -149,18 +149,8 @@ func (s *SubagentStore) read(ref, parentSession, workspaceRoot string, partialOK
 	if err != nil {
 		return "", "", err
 	}
-	owner := strings.TrimSpace(meta.ParentSession)
-	if owner != parentSession {
-		ok, lineageErr := s.isAncestorSession(owner, parentSession)
-		if lineageErr != nil {
-			return "", meta.Status, fmt.Errorf("subagent reference %q ownership could not be verified: %w", ref, lineageErr)
-		}
-		if !ok {
-			return "", meta.Status, fmt.Errorf("subagent reference %q does not belong to the current conversation lineage", ref)
-		}
-	}
-	if want := strings.TrimSpace(workspaceRoot); want != "" && strings.TrimSpace(meta.WorkspaceRoot) != want {
-		return "", meta.Status, fmt.Errorf("subagent reference %q belongs to a different workspace", ref)
+	if err := s.checkOwner(ref, meta, parentSession, workspaceRoot); err != nil {
+		return "", meta.Status, err
 	}
 	readable := meta.Status == sessionstore.SubagentCompleted || (partialOK && meta.Status == sessionstore.SubagentCancelled)
 	if !readable {

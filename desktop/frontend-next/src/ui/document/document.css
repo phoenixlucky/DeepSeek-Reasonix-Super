@@ -1,0 +1,77 @@
+.document-preview, .document-pdf {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.document-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  flex-wrap: wrap;
+}
+.document-controls button, .document-controls select {
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.document-notice, .document-preview > p {
+  padding: 8px 12px;
+}
+.document-html {
+  flex: 1;
+  width: 100%;
+  min-height: 240px;
+  background: white;
+  border: 0;
+}
+.document-table, .document-pdf-scroll, .document-picture {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.document-table table {
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.document-table td, .document-table th {
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  max-width: 400px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  line-height: 29px;
+}
+.document-table th {
+  position: sticky;
+  left: 0;
+  background: var(--surface);
+}
+.document-table tr[aria-hidden] td {
+  padding: 0;
+  border: 0;
+}
+.document-pdf-scroll {
+  padding: 12px;
+}
+.document-pdf-page {
+  position: relative;
+  width: fit-content;
+  margin: auto;
+}
+.document-pdf-page canvas {
+  display: block;
+}
+.document-pdf-page .textLayer {
+  position: absolute;
+  inset: 0;
+}
+.document-picture img {
+  display: block;
+}

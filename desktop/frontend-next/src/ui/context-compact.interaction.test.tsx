@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, expect, it, vi } from "vitest";
 import { MockPort } from "../port/mock";
 import type { WireEvent } from "../port/wire";
+import { ToastStack } from "./ToastStack";
 import { Pane } from "./Pane";
 
 afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); });
@@ -26,6 +27,7 @@ async function mount(running = false, side = false) {
   const settings = vi.fn();
   const host = document.createElement("aside");
   const view = render(<>
+    <ToastStack onFeedback={() => {}} />
     <Pane port={port} rt={{ id: "compact", root: "/workspace", name: "Workspace", base: "/rt/compact" }}
       title="Workspace" active visible sideHost={side ? host : null} side={side}
       onFocus={() => {}} onReport={() => {}} onSessionChanged={() => {}} pulse={0} findPulse={0}

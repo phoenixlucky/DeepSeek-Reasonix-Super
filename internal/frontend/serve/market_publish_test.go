@@ -125,14 +125,15 @@ func TestMarketPublishHandsTheSessionToThePublisher(t *testing.T) {
 
 func TestMarketPublishRefusalsCarryTheirCause(t *testing.T) {
 	for err, want := range map[error]string{
-		market.ErrSignedOut:                                "market.signed_out",
-		market.ErrEmailUnverified:                          "market.email_unverified",
-		market.ErrNotOwner:                                 "market.not_owner",
-		market.ErrVersionExists:                            "market.version_exists",
-		market.ErrRateLimited:                              "market.rate_limited",
-		fmt.Errorf("%w: x", market.ErrUnpublishable):       "market.unpublishable",
-		&market.RejectedError{Message: "summary too long"}: "market.rejected",
-		fmt.Errorf("%w: down", market.ErrUnreachable):      "market.unreachable",
+		market.ErrSignedOut:                          "market.signed_out",
+		market.ErrEmailUnverified:                    "market.email_unverified",
+		market.ErrNotOwner:                           "market.not_owner",
+		market.ErrVersionExists:                      "market.version_exists",
+		market.ErrRateLimited:                        "market.rate_limited",
+		fmt.Errorf("%w: x", market.ErrUnpublishable): "market.unpublishable",
+		fmt.Errorf("%w: %w", market.ErrUnpublishable, market.ErrInvalidPluginSource): "market.invalid_plugin_source",
+		&market.RejectedError{Message: "summary too long"}:                           "market.rejected",
+		fmt.Errorf("%w: down", market.ErrUnreachable):                                "market.unreachable",
 	} {
 		base := publishServer(t, true, "tok", &fakePublisher{err: err})
 		if code := marketCode(t, postPublish(t, base+"/market/publish", themeSubmission)); code != want {

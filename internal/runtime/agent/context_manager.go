@@ -120,8 +120,8 @@ func (m ContextManager) prepareOnce(ctx context.Context, policy ContextPreparePo
 		est = policy.ObservedInputTokens
 		prepared.InputTokens = est
 		pressure = est
-	} else if floor, ok := a.providerReportedFloor(visibleShape, prepared.ProjectionVersion); ok {
-		pressure = max(pressure, floor)
+	} else {
+		pressure = a.promptPressure(visibleShape, prepared.ProjectionVersion, pressure)
 	}
 	inputHash := a.contextMaintenanceInputHash(visible)
 	if blocked, reason := a.contextMaintenanceBlocked(inputHash, ownEst, policy.Trigger == CompactionTriggerOverflow); blocked && policy.Trigger != CompactionTriggerManual {
@@ -214,6 +214,9 @@ func (m ContextManager) foldContext(ctx context.Context, prepared PreparedContex
 		// A request that was declined is answered, not failed: the caller gets
 		// the reason the host already settled and says so in its own words.
 		// Only a fold nothing else can free is an error.
+		if policy.Trigger == CompactionTriggerManual && est >= fold {
+			a.noteContextComposition()
+		}
 		if policy.Trigger == CompactionTriggerManual && est < hard {
 			prepared.Maintenance = CompactVerdict{Reason: noopReason}
 			return prepared, nil
@@ -234,6 +237,7 @@ func (m ContextManager) foldContext(ctx context.Context, prepared PreparedContex
 		reason := fmt.Sprintf("summary result remains above fold trigger (%d >= %d)", result.InputTokens, fold)
 		a.recordContextMaintenanceBlocked(a.contextMaintenanceInputHash(result.Messages), policy.Trigger, "summary", FailResultAboveTrigger, reason)
 		a.sess.win.compaction.stuck = true
+		a.noteContextComposition()
 		// Only a provider that already refused ends the turn here. Our ceiling
 		// is an estimate, and refusing on it turns a window too small to
 		// summarize one turn into a failed run the provider would have served.

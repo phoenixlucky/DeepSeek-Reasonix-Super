@@ -42,7 +42,7 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request) {
 			lang = cfg.DesktopLanguage()
 		}
 	}
-	data := s.ctl().CompletionData(lang)
+	data := s.ctl().CompletionDataFor(lang, line, cursor)
 	// A client of this server completes inside the workspace and nowhere else,
 	// which is the same boundary SubmitHTTP resolves its references within.
 	data.Scoped = true

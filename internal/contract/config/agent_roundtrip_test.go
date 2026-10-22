@@ -35,6 +35,8 @@ func probe(f reflect.Value, key string) bool {
 			f.SetString("en")
 		case "auto_plan":
 			f.SetString("on")
+		case "turn_narration":
+			f.SetString("detailed")
 		default:
 			f.SetString("probe-" + key)
 		}

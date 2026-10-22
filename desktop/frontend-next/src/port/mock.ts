@@ -1,16 +1,17 @@
-import type { PlanAction } from "./session";
+import { sessionCompletion } from "./mock_sessions";
+import type { SurfaceActionRequest, SurfaceActionRecord } from "./surface";
+import type { JobOutput, PlanAction } from "./session";
+import { approvalKind } from "./mock_approval";
 import { HttpError } from "./port";
 import type { AccountState, AgentPort, Completion, CompletionItem, DeviceGrant, StudioLogs, VersionHub, VersionNotes, ApprovalMode, ApprovalVerdict, Checkpoint, RewindPlan, RewindResult, RewindUndo, RewindScope, HistoryMessage, HostTodo, BrowserTab, ModelEntry, Preset, ProviderSetup, RoleAssignments, RoleOverride, SessionEntry, SessionStatus, WalletReading, MemoryCatalog, MemoryEdit, UsageReport, MemoryEntry, WorkspaceInfo, Attachment, DroppedRef, Queue, QueueItem, Queued, ChipCall, NotifyPrefs, TrayPrefs, UsageQuery } from "./port";
 import type { ExecutionGraphRead, TrajectoryRead, WireEvent } from "./wire";
-import { MockWorkspace } from "./mock_workspace";
+import { MockWorkspace, mockWorkspaces, mockWorktreeSources, MockPreparations } from "./mock_workspace";
 import { SCRIPT, mockMsgIndex, mockTurnStart } from "./fixture";
 import { MockExecutionHold, mockExecutionGraph } from "./mock_graph";
 import { mockStorage, mockStoragePlan } from "./mock_storage";
-import { MEMORIES } from "./mock_memory";
+import { MEMORIES, mockMemoryCatalog } from "./mock_memory";
 import { mockModels } from "./mock_models";
 import { mockUsage } from "./mock_usage";
-
-
 
 export class MockPort extends MockWorkspace implements AgentPort {
   private listeners = new Set<(ev: WireEvent) => void>();
@@ -68,19 +69,24 @@ export class MockPort extends MockWorkspace implements AgentPort {
   // The subagent runs somewhere cheaper; everything else rides the main model.
   private assigned: RoleAssignments = {
     web_search: "",
-    planner: "",
-    subagent: "deepseek/deepseek-flash",
-    guardian: "",
-    decision: "",
-    vision: "",
+    roles: {
+      title: "", planner: "",
+      subagent: "deepseek/deepseek-flash",
+      guardian: "", decision: "", vision: "",
+    },
+    efforts: {},
   };
 
   async roles(): Promise<RoleAssignments> {
     return this.assigned;
   }
 
-  async setRole(role: string, ref: string) {
-    this.assigned = { ...this.assigned, [role]: ref };
+  async setRole(role: string, ref: string, effort?: string) {
+    if (role === "web_search") {
+      this.assigned = { ...this.assigned, web_search: ref };
+      return;
+    }
+    this.assigned = { ...this.assigned, roles: { ...this.assigned.roles, [role]: ref }, efforts: { ...this.assigned.efforts, [role]: effort ?? "auto" } };
   }
 
   overrides: Record<string, RoleOverride[]> = {};
@@ -111,11 +117,7 @@ export class MockPort extends MockWorkspace implements AgentPort {
   }
 
   async memories(): Promise<MemoryCatalog> {
-    return {
-      memories: this.mem.map((m) => ({ ...m })),
-      recallQuery: "缓存命中率为什么会掉",
-      indexPath: "~/.reasonix/projects/reasonix/memory/MEMORY.md",
-    };
+    return mockMemoryCatalog(this.mem);
   }
 
   // The fixture reports a clean revert on the first ask and a conflicted one
@@ -175,7 +177,7 @@ export class MockPort extends MockWorkspace implements AgentPort {
     this.mem = this.mem.filter((m) => m.name !== name);
   }
 
-  async versions(): Promise<VersionHub> {
+  async versions(_refresh?: boolean): Promise<VersionHub> {
     return { current: "dev", pinned: "", stalePin: false, latest: "", newer: false, versions: [] };
   }
 
@@ -220,15 +222,7 @@ export class MockPort extends MockWorkspace implements AgentPort {
   async accountLogout(): Promise<void> {}
 
   async workspaces(): Promise<WorkspaceInfo> {
-    return {
-      current: this.state.workspaceRoot ?? "",
-      canSwitch: true,
-      canIsolate: true,
-      recents: [
-        { path: "~/projects/reasonix-site", name: "reasonix-site" },
-        { path: "~/work/notes", name: "notes" },
-      ],
-    };
+    return mockWorkspaces(this.state.workspaceRoot ?? "");
   }
 
   async setWorkspace(path: string) {
@@ -237,13 +231,24 @@ export class MockPort extends MockWorkspace implements AgentPort {
     await this.newSession();
   }
 
-  async isolateWorkspace() {
+  async worktreeSources(): Promise<import("./workspace").WorktreeSources> {
+    return mockWorktreeSources(this.state.workspaceRoot ?? "", this.branchState.branch);
+  }
+
+  private preparations = new MockPreparations();
+  prepareWorktree(id: string, selection: import("./workspace").WorktreeSelection) { return this.preparations.prepare(id, selection, async () => { await this.isolateWorkspace(selection); return (await this.status()).workspaceRoot ?? ""; }); }
+  worktreePreparation(id: string) { return this.preparations.read(id); }
+  cancelWorktreePreparation(id: string) { return this.preparations.read(id); }
+
+  async isolateWorkspace(_selection?: import("./workspace").WorktreeSelection) {
     await this.setWorkspace((this.state.workspaceRoot ?? "") + " (隔离副本)");
+    this.branchState.branch = "reasonix/delivery-demo";
   }
 
   async openInEditor() {
     return { editor: "Visual Studio Code", root: "/work/demo" };
   }
+  async openDocument() {}
   revealsFiles() { return true; }
   async revealInFileManager() {}
 
@@ -293,7 +298,7 @@ export class MockPort extends MockWorkspace implements AgentPort {
     return `目标：${draft.trim()}\n\n约束：不改变现有行为。\n\n完成标准：相关测试通过。`;
   }
 
-  async complete(line: string, cursor: number): Promise<Completion> {
+  async complete(line: string, cursor: number, _signal?: AbortSignal): Promise<Completion> {
     const before = line.slice(0, cursor);
     const at = before.lastIndexOf("@");
     if (at >= 0 && !/\s/.test(before.slice(at + 1)) && (at === 0 || /\s/.test(line[at - 1]))) {
@@ -316,9 +321,11 @@ export class MockPort extends MockWorkspace implements AgentPort {
           insert: "@" + dir + n,
           descend: n.endsWith("/"),
           kind: n.endsWith("/") ? "dir" : "file",
-        }));
+        })).filter((it) => it.insert !== line.slice(at, to));
       return { kind: "ref", from: at, to, query: frag.slice(dir.length), items };
     }
+    const hash = sessionCompletion(line, cursor);
+    if (hash) return hash;
     if (line.startsWith("/") && !/\s/.test(line)) {
       const q = line.toLowerCase();
       const items = [...this.builtins, ...this.commands].filter((it) => it.label.toLowerCase().startsWith(q));
@@ -348,8 +355,8 @@ export class MockPort extends MockWorkspace implements AgentPort {
 
   async markSessionViewed() {}
 
-  async status() {
-    return { ...this.state };
+  async status(): Promise<SessionStatus> {
+    return { ...this.state, agentCompositionLocked: this.compositions.compositionStarted, ...(location.search.includes("tariff") && { tariff: { peak: !location.search.includes("tariff=off"), changesAt: new Date(Date.now() + 130 * 60_000).toISOString() } }) };
   }
 
   async balance(): Promise<WalletReading | null> {
@@ -379,8 +386,6 @@ export class MockPort extends MockWorkspace implements AgentPort {
     if (path === ".reasonix") return { files: [".reasonix/REASONIX.local.md"], directories: [] };
     return hidden ? { files: [".gitignore", "README.md"], directories: [".reasonix", "internal"] } : { files: ["README.md"], directories: ["internal"] };
   }
-  async workspaceFile(path: string) { return { path, content: `// ${path}\n`, revision: "fixture" }; }
-  workspaceImageURL(path: string) { return `/fixture/${path}`; }
   async saveWorkspaceFile(file: import("./port").WorkspaceFile) { return { ...file, revision: file.revision + "-saved" }; }
 
   async trajectory(): Promise<TrajectoryRead> {
@@ -564,7 +569,7 @@ export class MockPort extends MockWorkspace implements AgentPort {
 
   // The fixture has a window with an icon, because the state worth designing
   // is the one where both switches mean something.
-  private notifications: NotifyPrefs = { enabled: false, turnDone: true, approval: true, ask: true, feedbackReply: true, sound: false };
+  private notifications: NotifyPrefs = { enabled: false, turnDone: true, approval: true, ask: true, feedbackReply: true, diskLow: true, sound: false, phone: { enabled: false, approval: false, input: false, error: false } };
 
   async notifyPrefs(): Promise<NotifyPrefs | null> {
     return { ...this.notifications };
@@ -649,6 +654,12 @@ export class MockPort extends MockWorkspace implements AgentPort {
     this.state = { ...this.state, jobs: this.state.jobs?.map((j) => (j === job ? { ...j, status: "killed" } : j)) };
   }
 
+  async jobOutput(jobId: string): Promise<JobOutput> {
+    const job = this.state.jobs?.find((j) => j.id === jobId);
+    if (!job || job.status !== "running") throw new HttpError(409, "no running background job with this id", { code: "job.not_running" });
+    return { text: "> dev\n> vite\n\n  VITE ready in 312 ms\n  Local: http://localhost:5173/\n", status: job.status, bytes: 66, truncated: false };
+  }
+
   async retryQueued(itemId: string) {
     void itemId;
   }
@@ -673,9 +684,11 @@ export class MockPort extends MockWorkspace implements AgentPort {
     window.clearTimeout(at);
     this.queued.delete(itemId);
     this.dropQueued(itemId);
+    for(const [id,record] of this.surfaceActions) if(record.itemId===itemId)this.surfaceActions.set(id,{...record,status:"withdrawn"});
   }
 
   async submit(text: string, chips?: ChipCall): Promise<Queued | void> {
+    this.compositions.markCompositionStarted();
     if (chips && this.queuePaused) return this.queueFollowup(text);
     if (this.state.running) {
       this.emit({ kind: "steer", text });
@@ -733,7 +746,12 @@ export class MockPort extends MockWorkspace implements AgentPort {
   async answer(_id: string, _answers: { questionId: string; selected: string[] }[]) {
     this.ungate();
   }
+  async engageQuestion(_id: string) {}
 
+  private surfaceActions = new Map<string,SurfaceActionRecord>();
+  async surfaceActionState(callId: string):Promise<SurfaceActionRecord> {return this.surfaceActions.get(callId) ?? {active:true,action:{surfaceId:"mock",sessionId:"mock",callId,actionId:"",requestId:"",values:{}}};}
+  async surfaceAction(request: SurfaceActionRequest) {const rec=await (request.delivery==="steer"?this.steer(JSON.stringify(request.action)):this.queueFollowup(JSON.stringify(request.action)));this.surfaceActions.set(request.action.callId,{active:true,action:request.action,itemId:rec.itemId,status:"accepted",canWithdraw:true});return rec;}
+  async extensionSurfaces(): Promise<import("./surface_replay").ExtensionSurfaceReplay> { return { surfaces: [] }; }
   async invokeExtensionAction(name: string) {
     return `${name} 在 mock 里没有真实扩展可执行`;
   }
@@ -774,15 +792,4 @@ export class MockPort extends MockWorkspace implements AgentPort {
   async setGoal(text: string) {
     this.state.goal = text;
   }
-}
-
-// Which owner answers a pending approval. The kernel decides it from the
-// approval itself — a recovery gate, the plan tool, otherwise the tool gate —
-// and the fixture reads the same fields the card does rather than inventing a
-// third rule.
-function approvalKind(ev: WireEvent): "plan_approval" | "recovery_approval" | "tool_approval" {
-  const a = ev.approval;
-  if (a?.kind === "plan" || a?.tool === "exit_plan_mode") return "plan_approval";
-  if (a?.kind === "recovery") return "recovery_approval";
-  return "tool_approval";
 }

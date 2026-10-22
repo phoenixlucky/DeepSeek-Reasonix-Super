@@ -45,7 +45,10 @@ func (t forgetTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 	if in.Name == "" {
 		return "", fmt.Errorf("name is required")
 	}
-	memory, found := t.store.Read(in.Name)
+	memory, found, err := t.store.Read(in.Name)
+	if err != nil {
+		return "", err
+	}
 	archive, err := t.store.Archive(in.Name)
 	if err != nil {
 		return "", err

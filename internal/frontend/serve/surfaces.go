@@ -16,6 +16,8 @@ import (
 // them, and it is keyed by surface rather than by plugin so one extension's two
 // surfaces can sit in different places.
 func (s *Server) registerSurfaceRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /surfaces/{id}/action", s.surfaceActionState)
+	mux.HandleFunc("POST /surfaces/action", s.surfaceAction)
 	mux.HandleFunc("GET /surfaces", s.surfaceSlots)
 	mux.HandleFunc("POST /surfaces", s.assignSurfaceSlot)
 }

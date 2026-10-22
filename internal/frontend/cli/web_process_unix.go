@@ -7,7 +7,7 @@ import (
 	"syscall"
 )
 
-func webAddressInUse(err error) bool {
+func webPortTaken(err error) bool {
 	return errors.Is(err, syscall.EADDRINUSE)
 }
 

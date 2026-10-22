@@ -29,7 +29,7 @@ func TestSaveBoundsLongNames(t *testing.T) {
 	if path2 == path {
 		t.Fatalf("distinct long names collapsed to one file: %q", path)
 	}
-	if got := s.List(); len(got) != 2 {
+	if got := mustStore(t, s).List(); len(got) != 2 {
 		t.Fatalf("List() = %d memories, want 2", len(got))
 	}
 }

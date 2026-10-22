@@ -157,6 +157,9 @@ func renderTool(it *Item, width int) string {
 			lines = append(lines, outputSummary(t.Name, t.Output, avail, it.Fold)...)
 		}
 	}
+	for _, v := range t.Videos {
+		lines = append(lines, termrender.Dim(connector+fmt.Sprintf(i18n.M.TUIVideoSentFmt, v.Name, videoDetail(v), v.Model)))
+	}
 	if n := len(it.Children); n > 0 {
 		lines = append(lines, termrender.Dim(connector+fmt.Sprintf(i18n.M.TUISubagentCallsFmt, n)))
 	}
@@ -331,6 +334,13 @@ func codedNoticeText(it *Item) string {
 		if p, ok := event.DecodeInboxRecovered(it.Detail); ok {
 			return fmt.Sprintf(i18n.M.NoticeInboxRecoveredFmt, p.Count)
 		}
+	case event.NoticeCodeInboxUnrecovered:
+		// The payload names the queue directory for a diagnostic, not for the
+		// reader: the sentence is the same whatever it holds, and a Detail that
+		// is not the payload keeps the kernel's own text.
+		if _, ok := event.DecodeInboxUnrecovered(it.Detail); ok {
+			return i18n.M.NoticeInboxUnrecovered
+		}
 	case event.NoticeCodeJobFinished, event.NoticeCodeJobKilled:
 		if p, ok := event.DecodeJobNotice(it.Detail); ok {
 			name := p.Label
@@ -426,3 +436,12 @@ func indent(block, prefix string) string {
 // hasThought is false for reasoning that carries no text: a block of only
 // whitespace has nothing to fold, so it earns no "thought for 0s" marker.
 func hasThought(reasoning string) bool { return strings.TrimSpace(reasoning) != "" }
+
+// videoDetail is a video's size and, when the container said it, its length.
+func videoDetail(v eventwire.VideoShown) string {
+	detail := textutil.HumanBytes(v.Size)
+	if v.DurationMs > 0 {
+		detail += fmt.Sprintf(" · %.1fs", float64(v.DurationMs)/1000)
+	}
+	return detail
+}

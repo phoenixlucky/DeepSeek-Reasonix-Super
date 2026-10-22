@@ -194,13 +194,11 @@ func TestE2EToolTurnAndPersistence(t *testing.T) {
 	}
 
 	// Persistence: a transcript path was returned and the turn is on disk.
-	if pr.TranscriptPath == nil {
-		t.Fatal("no transcriptPath returned")
+	transcript := promptTranscript(t, resp.Result)
+	if !strings.HasPrefix(transcript, dir) {
+		t.Errorf("transcriptPath %q not under session dir %q", transcript, dir)
 	}
-	if !strings.HasPrefix(*pr.TranscriptPath, dir) {
-		t.Errorf("transcriptPath %q not under session dir %q", *pr.TranscriptPath, dir)
-	}
-	data, err := os.ReadFile(*pr.TranscriptPath)
+	data, err := os.ReadFile(transcript)
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}
@@ -299,7 +297,7 @@ func TestE2ESessionListResumeAndDelete(t *testing.T) {
 	}
 
 	client1, stop1 := startServer(t, mkFactory())
-	client1.call(t, "initialize", InitializeParams{ProtocolVersion: 1})
+	client1.call(t, "initialize", InitializeParams{ProtocolVersion: 1, ClientCapabilities: statusUpdatesCaps})
 	newResp := client1.call(t, "session/new", SessionNewParams{Cwd: cwd})
 	var nr SessionNewResult
 	if err := json.Unmarshal(newResp.Result, &nr); err != nil || nr.SessionID == "" {
@@ -314,15 +312,12 @@ func TestE2ESessionListResumeAndDelete(t *testing.T) {
 	if err := json.Unmarshal(promptResp.Result, &pr); err != nil {
 		t.Fatalf("prompt result: %v", err)
 	}
-	if pr.TranscriptPath == nil {
-		t.Fatal("prompt did not return a transcript path")
-	}
-	transcript := *pr.TranscriptPath
+	transcript := promptTranscript(t, promptResp.Result)
 	stop1()
 
 	client2, stop2 := startServer(t, mkFactory())
 	defer stop2()
-	client2.call(t, "initialize", InitializeParams{ProtocolVersion: 1})
+	client2.call(t, "initialize", InitializeParams{ProtocolVersion: 1, ClientCapabilities: statusUpdatesCaps})
 	listResp := client2.call(t, "session/list", SessionListParams{Cwd: cwd})
 	var lr SessionListResult
 	if err := json.Unmarshal(listResp.Result, &lr); err != nil {
@@ -522,6 +517,9 @@ func TestE2EApprovalRoundTrip(t *testing.T) {
 		if pr.ToolCall.Kind != "edit" {
 			t.Errorf("permission kind = %q, want edit", pr.ToolCall.Kind)
 		}
+		if pr.ToolCall.Name != "writeit" {
+			t.Errorf("permission tool name = %q, want the tool's own name beside its title", pr.ToolCall.Name)
+		}
 		if !strings.Contains(pr.ToolCall.Title, "writeit") {
 			t.Errorf("permission title = %q, want it to mention writeit", pr.ToolCall.Title)
 		}
@@ -680,4 +678,27 @@ func assertResumeReplaysNoTranscript(t *testing.T, c *rpcClient, sessionID, cwd 
 			return
 		}
 	}
+}
+
+// promptTranscript reads the transcript path a session/prompt result carries
+// under _meta["reasonix.io"], and fails if it also appears at the top level,
+// where the ACP schema allows no such member.
+func promptTranscript(t *testing.T, result json.RawMessage) string {
+	t.Helper()
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(result, &raw); err != nil {
+		t.Fatalf("prompt result: %v", err)
+	}
+	if _, ok := raw["transcriptPath"]; ok {
+		t.Errorf("transcriptPath at the top level of %s", result)
+	}
+	var meta struct {
+		Reasonix struct {
+			TranscriptPath string `json:"transcriptPath"`
+		} `json:"reasonix.io"`
+	}
+	if err := json.Unmarshal(raw["_meta"], &meta); err != nil || meta.Reasonix.TranscriptPath == "" {
+		t.Fatalf("no _meta transcriptPath in %s (%v)", result, err)
+	}
+	return meta.Reasonix.TranscriptPath
 }

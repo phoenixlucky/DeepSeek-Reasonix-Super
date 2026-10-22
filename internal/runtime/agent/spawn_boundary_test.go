@@ -16,6 +16,7 @@ var knownDirectChildRunners = map[string]string{
 	"internal/runtime/agent/child_run.go":      "defines the runners",
 	"internal/runtime/delegation/task.go":      "the unified path itself",
 	"internal/assembly/boot/skill_subagent.go": "run_skill + read_only_skill runners",
+	"internal/assembly/boot/side_session.go":   "side conversation: one in-memory session reused across questions",
 	"internal/frontend/cli/review.go":          "reasonix review",
 	"desktop/subagents_app.go":                 "desktop profile preview",
 }

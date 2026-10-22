@@ -6,6 +6,8 @@ import type { TrajectoryAvailability } from "../port/wire";
 import { categoryOf } from "./icons";
 import { serialiseTrajectory, spanText, trajectoryFileName } from "./trajectory-export";
 
+const SIGNAL_GAP = 22;
+
 type Bucket = "model" | "tool" | "recovery" | "system";
 
 const isRecovery = (row: TrajRow) =>
@@ -74,19 +76,25 @@ export function RunAnalysis({ rows, availability, onSave }: {
   const signals = rows.filter((r) => !r.dur && !r.tool && r.kind !== "event");
   const first = activities.length ? Math.min(...activities.map((r) => r.at)) : 0;
   const [pick, setPick] = useState<{ seq: number; from: "row" | "signal" } | null>(null);
+  const [member, setMember] = useState<number | null>(null);
   const [zoom, setZoom] = useState(1);
   const [signalWidth, setSignalWidth] = useState(0);
   const timeline = useRef<HTMLDivElement>(null);
   const signalLine = useRef<HTMLDivElement>(null);
-  const lanes: number[] = [];
-  const placedSignals = [...signals].sort((a, b) => a.at - b.at).map((row) => {
+  // Marks closer than one hit target are one marker with a count: stacking them
+  // in lanes turned a run's burst of simultaneous signals into a tall column.
+  const clusters: Array<{ rows: TrajRow[]; left: number }> = [];
+  let anchor = -Infinity;
+  for (const row of [...signals].sort((a, b) => a.at - b.at)) {
     const left = row.at / Math.max(span, 1);
     const x = left * signalWidth;
-    const free = lanes.findIndex((end) => x - end >= 22);
-    const lane = free < 0 ? lanes.length : free;
-    lanes[lane] = x;
-    return { row, left, lane };
-  });
+    const last = clusters[clusters.length - 1];
+    if (last && x - anchor < SIGNAL_GAP) last.rows.push(row);
+    else {
+      clusters.push({ rows: [row], left });
+      anchor = x;
+    }
+  }
   useLayoutEffect(() => {
     const line = signalLine.current;
     if (!line) return;
@@ -103,6 +111,7 @@ export function RunAnalysis({ rows, availability, onSave }: {
   const clickedTop = useRef<{ el: HTMLElement; top: number } | null>(null);
   const toggle = (seq: number, from: "row" | "signal", el: HTMLElement) => {
     clickedTop.current = { el, top: el.getBoundingClientRect().top };
+    setMember(null);
     setPick((cur) => (cur?.seq === seq && cur.from === from ? null : { seq, from }));
   };
   useLayoutEffect(() => {
@@ -184,16 +193,39 @@ export function RunAnalysis({ rows, availability, onSave }: {
       {signals.length > 0 && (
         <section className="run-signals">
           <div className="run-section-head"><b>{t("信号轨")}</b><span>{t("与下方共用时间轴")}</span></div>
-          <p className="run-section-note">{t("没有时长、也不是工具调用的运行记录，位置就是时间，无法拖动；缩放后可横向滚动，重叠信号分行显示。点一个看它的记录。")}</p>
-          <div className="run-signal-track"><div className="run-signal-line" ref={signalLine} style={{ height: `${lanes.length * 30 + 4}px` }}>
-            {placedSignals.map(({ row, left, lane }) => (
-              <button data-action="analysis.signal" data-target={String(row.seq)} key={row.seq} style={{ left: `${left * 100}%`, top: `${lane * 30 + 17}px` }} onClick={(e) => toggle(row.seq, "signal", e.currentTarget)} title={spanText(row.payload)}
-                aria-label={`${labelOf(row)} · +${decimals(row.at, 2)}s`} aria-expanded={pick?.from === "signal" && picked?.seq === row.seq}>
-                <i data-c={bucketOf(row)} />
-              </button>
-            ))}
+          <p className="run-section-note">{t("没有时长、也不是工具调用的运行记录，位置就是时间，无法拖动；缩放后可横向滚动，挨得太近的信号合并成一个带数量的标记。点一个看它的记录。")}</p>
+          <div className="run-signal-track"><div className="run-signal-line" ref={signalLine}>
+            {clusters.map(({ rows: group, left }) => {
+              const row = group[0];
+              const open = pick?.from === "signal" && pick.seq === row.seq;
+              return (
+                <button data-action="analysis.signal" data-target={String(row.seq)} key={row.seq} style={{ left: `${left * 100}%` }} onClick={(e) => toggle(row.seq, "signal", e.currentTarget)}
+                  title={group.length > 1 ? t("{n} 个信号", { n: group.length }) : spanText(row.payload)}
+                  aria-label={group.length > 1 ? `${t("{n} 个信号", { n: group.length })} · +${decimals(row.at, 2)}s` : `${labelOf(row)} · +${decimals(row.at, 2)}s`} aria-expanded={open}>
+                  {group.length > 1 ? <b data-c={bucketOf(row)}>{group.length}</b> : <i data-c={bucketOf(row)} />}
+                </button>
+              );
+            })}
           </div></div>
-          {picked && pick?.from === "signal" && <Inspect row={picked} index={activities.findIndex((r) => r.seq === picked.seq)} />}
+          {picked && pick?.from === "signal" && (() => {
+            const group = clusters.find((c) => c.rows[0].seq === picked.seq)?.rows ?? [picked];
+            if (group.length === 1) return <Inspect row={picked} index={activities.findIndex((r) => r.seq === picked.seq)} />;
+            const chosen = group.find((r) => r.seq === member) ?? null;
+            return (
+              <div className="run-signal-group">
+                <ul>
+                  {group.map((r) => (
+                    <li key={r.seq}>
+                      <button data-action="analysis.signal" data-target={String(r.seq)} onClick={() => setMember((cur) => (cur === r.seq ? null : r.seq))} aria-expanded={chosen?.seq === r.seq}>
+                        <i data-c={bucketOf(r)} /><span>{labelOf(r)}</span><small>+{decimals(r.at, 2)}s</small>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                {chosen && <Inspect row={chosen} index={activities.findIndex((r) => r.seq === chosen.seq)} />}
+              </div>
+            );
+          })()}
         </section>
       )}
 

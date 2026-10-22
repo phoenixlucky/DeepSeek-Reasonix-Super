@@ -100,7 +100,7 @@ func TestEffectDesktopDefaultPostureFollowsSandboxAndTrust(t *testing.T) {
 					userConfig += "[desktop]\ndefault_tool_approval_mode = \"" + mode + "\"\n"
 				}
 				run := buildDesktopRun(t, userConfig, writeCall("w", "notes.md"))
-				confined := bash == "enforce" && sandbox.Available()
+				confined := bash == "enforce" && sandbox.ConfinesByDefault()
 				if got := run.ctrl.WritesConfined(); got != confined {
 					t.Fatalf("WritesConfined = %v, want %v", got, confined)
 				}

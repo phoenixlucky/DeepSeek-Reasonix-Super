@@ -79,9 +79,8 @@ func TestWindowsLaunchQuotesHostilePaths(t *testing.T) {
 	if strings.Contains(outer, "; rm -rf ") && !strings.Contains(outer, "'") {
 		t.Fatal("workspace escaped its quotes")
 	}
-	// The inner script is itself encoded, so the serve's own arguments never
-	// pass through a second round of shell parsing.
-	inner := decodePS(t, "-EncodedCommand "+innerPayload(t, outer))
+	_, script := (windowsShell{}).LaunchScript(LaunchSpec{Bin: bin, Workspace: workspace}, paths)
+	inner := string(script)
 	if !strings.Contains(inner, "--token-file") || !strings.Contains(inner, "--port-file") {
 		t.Fatalf("inner script does not start a serve:\n%s", inner)
 	}
@@ -93,22 +92,6 @@ func TestWindowsLaunchQuotesHostilePaths(t *testing.T) {
 	if !strings.Contains(inner, "%USERPROFILE%") {
 		t.Fatalf("a literal %%USERPROFILE%% was lost:\n%s", inner)
 	}
-}
-
-// innerPayload pulls the nested -EncodedCommand argument out of the launcher.
-func innerPayload(t *testing.T, outer string) string {
-	t.Helper()
-	const marker = "-EncodedCommand "
-	at := strings.LastIndex(outer, marker)
-	if at < 0 {
-		t.Fatalf("no nested command in:\n%s", outer)
-	}
-	rest := outer[at+len(marker):]
-	end := strings.IndexAny(rest, "'\" ")
-	if end < 0 {
-		t.Fatalf("nested command does not end:\n%s", outer)
-	}
-	return rest[:end]
 }
 
 // The two spellings of one path: the file layer addresses /C:/Users/..., the
@@ -179,7 +162,7 @@ func (s loginShell) Exec(_ context.Context, cmd string) (remote.ExecResult, erro
 	return remote.ExecResult{ExitCode: 127}, nil
 }
 
-func (loginShell) SFTP() (*sftpfs.FS, error) { return nil, errors.New("no file layer here") }
+func (loginShell) Files() (sftpfs.Files, error) { return nil, errors.New("no file layer here") }
 
 func decodeB64UTF16(encoded string) string {
 	raw, err := base64.StdEncoding.DecodeString(encoded)

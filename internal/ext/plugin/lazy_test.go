@@ -31,6 +31,8 @@ func (t *mutableLazyTarget) Name() string            { return t.name }
 func (t *mutableLazyTarget) Description() string     { return "writer test target" }
 func (t *mutableLazyTarget) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (t *mutableLazyTarget) ReadOnly() bool          { return false }
+func (t *mutableLazyTarget) MCPServerName() string   { return "srv" }
+func (t *mutableLazyTarget) MCPRawToolName() string  { return "mutate" }
 func (t *mutableLazyTarget) Execute(context.Context, json.RawMessage) (string, error) {
 	t.calls++
 	return "executed", nil
@@ -41,6 +43,8 @@ func (t *destructiveLazyTarget) Description() string      { return "destructive 
 func (t *destructiveLazyTarget) Schema() json.RawMessage  { return json.RawMessage(`{"type":"object"}`) }
 func (t *destructiveLazyTarget) ReadOnly() bool           { return true }
 func (t *destructiveLazyTarget) MCPDestructiveHint() bool { return true }
+func (t *destructiveLazyTarget) MCPServerName() string    { return "srv" }
+func (t *destructiveLazyTarget) MCPRawToolName() string   { return "wipe" }
 func (t *destructiveLazyTarget) Execute(context.Context, json.RawMessage) (string, error) {
 	t.calls++
 	return "executed", nil
@@ -506,6 +510,17 @@ func TestLazyCacheMissAsyncSpawn(t *testing.T) {
 	// Execute call.
 	waitForServer(t, host, "mock", 5*time.Second)
 
+	// The server is in the host before the registry is swapped, so the swap is
+	// waited for as well rather than read at the instant the server appears.
+	swapped := func() bool {
+		_, stub := reg.Get("mcp__mock__connect")
+		_, echo := reg.Get("mcp__mock__echo")
+		_, zed := reg.Get("mcp__mock__zed")
+		return !stub && echo && zed
+	}
+	for deadline := time.Now().Add(5 * time.Second); !swapped() && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if _, found := reg.Get("mcp__mock__connect"); found {
 		t.Errorf("connect stub should be removed after swap, names=%v", reg.Names())
 	}

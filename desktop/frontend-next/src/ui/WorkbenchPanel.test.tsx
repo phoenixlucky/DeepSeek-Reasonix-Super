@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { EditorView } from "@codemirror/view";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MockPort } from "../port/mock";
 import { HttpError } from "../port/port";
 import * as hostModule from "../port/host";
@@ -260,18 +260,6 @@ describe("WorkbenchPanel", () => {
     } finally { views.mockRestore(); hide.mockRestore(); vi.unstubAllGlobals(); }
   });
 
-  it("dismisses the launcher when the title-bar Browser is reopened on an iframe host", async () => {
-    const user = userEvent.setup();
-    const props = { port: new MockPort(), tabs: [], manual: true, shown: true, scheme: "light" as const, changes: [], onCloseManual: vi.fn(), onSurfaces: vi.fn(), onExternal: vi.fn() };
-    const { rerender } = render(<WorkbenchPanel {...props} browserAsk={0} />);
-    await user.click(screen.getByRole("button", { name: "新建标签" }));
-    rerender(<WorkbenchPanel {...props} manual={false} browserAsk={1} />);
-    rerender(<WorkbenchPanel {...props} browserAsk={2} />);
-    expect(screen.queryByRole("group", { name: "开始" })).toBeNull();
-    expect(screen.getByRole("tab", { name: "浏览器" }).getAttribute("aria-selected")).toBe("true");
-    expect(screen.getByRole("region", { name: "内置 Browser" })).toBeTruthy();
-  });
-
   it.each(["escape", "plus"])("restores the explorer when new-tab choice is cancelled with %s", async (cancel) => {
     const user = userEvent.setup();
     const { container } = render(<WorkbenchPanel port={new MockPort()} tabs={[]} manual shown scheme="light" changes={[]} onCloseManual={vi.fn()} onSurfaces={vi.fn()} onExternal={vi.fn()} />);
@@ -283,7 +271,7 @@ describe("WorkbenchPanel", () => {
     expect(container.querySelector(".workbench-body")?.hasAttribute("data-files")).toBe(true);
   });
 
-  it.each([[false, false], [true, false], [false, true]])("respects newer Files choices (reopen: %s, title bar: %s)", async (reopen, titleBar) => {
+  it.each([false, true])("respects newer Files choices (reopen: %s)", async (reopen) => {
     const user = userEvent.setup();
     const port = new MockPort();
     const views = vi.spyOn(hostModule.host(), "drawsBrowserViews").mockReturnValue(true);
@@ -291,12 +279,9 @@ describe("WorkbenchPanel", () => {
     vi.spyOn(port, "browserOpen").mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
     try {
       const props = { port, tabs: [], manual: true, shown: true, scheme: "light" as const, changes: [], onCloseManual: vi.fn(), onSurfaces: vi.fn(), onExternal: vi.fn() };
-      const { container, rerender } = render(<WorkbenchPanel {...props} browserAsk={0} />);
-      if (titleBar) rerender(<WorkbenchPanel {...props} browserAsk={1} />);
-      else {
-        await user.click(screen.getByRole("button", { name: "新建标签" }));
-        await user.click(screen.getByRole("button", { name: "浏览器" }));
-      }
+      const { container } = render(<WorkbenchPanel {...props} />);
+      await user.click(screen.getByRole("button", { name: "新建标签" }));
+      await user.click(screen.getByRole("button", { name: "浏览器" }));
       await user.click(container.querySelector('[data-action="workbench.launch-files"]')!);
       if (reopen) {
         await user.click(screen.getByRole("button", { name: "新建标签" }));
@@ -409,6 +394,74 @@ describe("WorkbenchPanel", () => {
     await user.click(screen.getByRole("button", { name: "关闭 My page" }));
     expect(onCloseManual).not.toHaveBeenCalled();
     expect(container.querySelector(".workbench-body")?.hasAttribute("data-files")).toBe(true);
+  });
+
+  // A file opened from the explorer steps the list aside rather than closing it,
+  // so closing that file comes back to the list. Folding the column instead
+  // leaves someone who opened one file with no workbench at all. With no tabs
+  // the launcher draws a "文件" card as well as the toolbar toggle, so the
+  // toolbar button is named by its action rather than its label.
+  it("returns to the explorer when a file opened from it is closed", async () => {
+    const user = userEvent.setup();
+    const onCloseManual = vi.fn();
+    const { container } = render(<WorkbenchPanel port={new MockPort()} tabs={[]} manual={false} shown scheme="light" changes={[]} onCloseManual={onCloseManual} onSurfaces={vi.fn()} onExternal={vi.fn()} />);
+
+    await user.click(container.querySelector<HTMLElement>('[data-action="workbench.files"]')!);
+    expect(container.querySelector(".workbench-body")?.hasAttribute("data-files")).toBe(true);
+
+    await user.click(await screen.findByRole("button", { name: "README.md" }));
+    expect(screen.getByRole("tab", { name: "README.md" })).toBeTruthy();
+    // The list stepped aside for the file.
+    expect(container.querySelector(".workbench-body")?.hasAttribute("data-files")).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: "关闭 README.md" }));
+    expect(onCloseManual).not.toHaveBeenCalled();
+    expect(container.querySelector(".workbench-body")?.hasAttribute("data-files")).toBe(true);
+  });
+
+  // The list was stepped aside for that file, not closed on behalf of the one
+  // behind it: closing the file leaves the other tab selected and alone, so the
+  // list must stay out of its way and the column must not fold.
+  it("does not bring the explorer back over a tab that is still open", async () => {
+    const user = userEvent.setup();
+    const onCloseManual = vi.fn();
+    const page = { id: "b1", target: "t1", url: "https://example.com", title: "My page", active: false };
+    const { container } = render(<WorkbenchPanel port={new MockPort()} tabs={[page]} manual={false} shown scheme="light" changes={[]} onCloseManual={onCloseManual} onSurfaces={vi.fn()} onExternal={vi.fn()} />);
+
+    await user.click(container.querySelector<HTMLElement>('[data-action="workbench.files"]')!);
+    await user.click(await screen.findByRole("button", { name: "README.md" }));
+    expect(container.querySelector(".workbench-body")?.hasAttribute("data-files")).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: "关闭 README.md" }));
+    expect(container.querySelector(".workbench-body")?.hasAttribute("data-files")).toBe(false);
+    expect(onCloseManual).not.toHaveBeenCalled();
+    expect(screen.getByRole("tab", { name: "My page" }).getAttribute("aria-selected")).toBe("true");
+  });
+
+  // Closing every browser tab at once while a file from the explorer is still
+  // open leaves that file behind, so the column stays and the list stays away.
+  // The batch goes through the same rule as a single close, which is the point.
+  it("keeps the column when every browser tab is closed at once beside an explorer file", async () => {
+    const user = userEvent.setup();
+    const onCloseManual = vi.fn();
+    const pages = [
+      { id: "b1", target: "t1", url: "https://top.baidu.com", title: "Agent page", active: false },
+      { id: "b2", target: "t2", url: "https://example.com", title: "My page", active: false },
+    ];
+    const { container } = render(<WorkbenchPanel port={new MockPort()} tabs={pages} manual={false} shown scheme="light" changes={[]} onCloseManual={onCloseManual} onSurfaces={vi.fn()} onExternal={vi.fn()} />);
+
+    await user.click(container.querySelector<HTMLElement>('[data-action="workbench.files"]')!);
+    await user.click(await screen.findByRole("button", { name: "README.md" }));
+    expect(screen.getByRole("tab", { name: "README.md" })).toBeTruthy();
+
+    await user.pointer({ keys: "[MouseRight]", target: screen.getByRole("tab", { name: "My page" }) });
+    await user.click(await screen.findByRole("menuitem", { name: "关闭全部浏览器标签" }));
+
+    expect(screen.queryByRole("tab", { name: "My page" })).toBeNull();
+    expect(screen.queryByRole("tab", { name: "Agent page" })).toBeNull();
+    expect(screen.getByRole("tab", { name: "README.md" })).toBeTruthy();
+    expect(onCloseManual).not.toHaveBeenCalled();
+    expect(container.querySelector(".workbench-body")?.hasAttribute("data-files")).toBe(false);
   });
 
   it("shows a page the person opened beside the agent's, while the agent's tab stays active", () => {
@@ -561,6 +614,37 @@ describe("WorkbenchPanel", () => {
     expect(reveal).toHaveBeenLastCalledWith("README.md");
   });
 
+  it("shows the open file in the system file manager from the file's own toolbar", async () => {
+    const user = userEvent.setup();
+    const port = new MockPort();
+    const reveal = vi.spyOn(port, "revealInFileManager");
+    render(<WorkbenchPanel port={port} tabs={[]} manual={false} shown scheme="light" changes={[]} onCloseManual={vi.fn()} onSurfaces={vi.fn()} onExternal={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "README.md" }));
+    await user.click(await screen.findByRole("button", { name: "在系统文件管理器中显示此文件" }));
+    expect(reveal).toHaveBeenLastCalledWith("README.md");
+  });
+
+  it("says why showing the open file was refused, next to the file", async () => {
+    const user = userEvent.setup();
+    const port = new MockPort();
+    vi.spyOn(port, "revealInFileManager").mockRejectedValue(
+      new HttpError(403, "no window", { code: "workspace.locate_no_window", error: "no window" }),
+    );
+    render(<WorkbenchPanel port={port} tabs={[]} manual={false} shown scheme="light" changes={[]} onCloseManual={vi.fn()} onSurfaces={vi.fn()} onExternal={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "README.md" }));
+    await user.click(await screen.findByRole("button", { name: "在系统文件管理器中显示此文件" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("这个内核不在本机，没法在系统文件管理器中显示它的文件。");
+  });
+
+  it("offers no file-manager button on a remote workspace's file", async () => {
+    const user = userEvent.setup();
+    const port = new MockPort();
+    render(<WorkbenchPanel port={port} tabs={[]} manual={false} shown scheme="light" changes={[]} remote onCloseManual={vi.fn()} onSurfaces={vi.fn()} onExternal={vi.fn()} />);
+    await user.click(await screen.findByRole("button", { name: "README.md" }));
+    await screen.findByRole("button", { name: "保存" });
+    expect(screen.queryByRole("button", { name: "在系统文件管理器中显示此文件" })).toBeNull();
+  });
+
   it("offers no way to reveal a remote workspace's paths on this machine", async () => {
     const port = new MockPort();
     const reveal = vi.spyOn(port, "revealInFileManager");
@@ -696,5 +780,78 @@ describe("WorkbenchPanel", () => {
     await land({ content: "# Second", revision: "r2" });
 
     expect(view.state.doc.toString()).toBe("# First\n\n## Saved");
+  });
+});
+
+describe("opening the project in other programs from the file panel", () => {
+  it("offers the menu in the explorer head and on an open file, and not on a remote workspace", async () => {
+    const user = userEvent.setup();
+    const port = new MockPort();
+    const hub = { openWith: vi.fn().mockResolvedValue(undefined), openWithTargets: vi.fn().mockResolvedValue([{ id: "terminal", name: "终端", available: true }]) };
+    vi.spyOn(hostModule, "host").mockReturnValue({ revealsFiles: () => true, describe: async () => ({ platform: "darwin" }) } as never);
+    const props = { port, tabs: [], manual: false, shown: true, scheme: "light" as const, changes: [], onCloseManual: vi.fn(), onSurfaces: vi.fn(), onExternal: vi.fn(), workspaceRoot: "/w", hub };
+    const view = render(<WorkbenchPanel {...props} />);
+    await user.click(screen.getAllByRole("button", { name: "用其他程序打开项目" })[0]!);
+    await user.click(await screen.findByRole("menuitem", { name: "用 终端 打开" }));
+    expect(hub.openWith).toHaveBeenCalledWith("/w", "terminal");
+    view.rerender(<WorkbenchPanel {...props} remote />);
+    expect(screen.queryByRole("button", { name: "用其他程序打开项目" })).toBeNull();
+  });
+});
+
+describe("naming a built-in browser tab", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  const page = { id: "p", target: "tp", url: "https://example.com/a/very/long/path?x=1", title: "", active: true };
+  const draw = () => {
+    const port = new MockPort();
+    const props = { port, manual: false, shown: true, scheme: "light" as const, changes: [], onCloseManual: vi.fn(), onSurfaces: vi.fn(), onExternal: vi.fn() };
+    return render(<WorkbenchPanel {...props} tabs={[page]} />);
+  };
+
+  it("shows the address until the person names the tab, and keeps the name across a title change", async () => {
+    const user = userEvent.setup();
+    const view = draw();
+    const tab = screen.getByRole("tab", { name: page.url });
+    await user.dblClick(within(tab).getByText(page.url));
+    const field = screen.getByRole("textbox", { name: "重命名页签" });
+    await user.clear(field);
+    await user.type(field, "文档{Enter}");
+    expect(screen.getByRole("tab", { name: "文档" })).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "重命名页签" })).toBeNull();
+    // The page's own title arriving later does not take the name back.
+    view.rerender(<WorkbenchPanel port={new MockPort()} manual={false} shown scheme="light" changes={[]} onCloseManual={vi.fn()} onSurfaces={vi.fn()} onExternal={vi.fn()} tabs={[{ ...page, title: "Example Domain" }]} />);
+    expect(screen.getByRole("tab", { name: "文档" })).toBeTruthy();
+  });
+
+  it("opening the field and leaving it unchanged does not freeze the page's title", async () => {
+    const user = userEvent.setup();
+    const view = draw();
+    await user.dblClick(within(screen.getByRole("tab", { name: page.url })).getByText(page.url));
+    await user.keyboard("{Enter}");
+    view.rerender(<WorkbenchPanel port={new MockPort()} manual={false} shown scheme="light" changes={[]} onCloseManual={vi.fn()} onSurfaces={vi.fn()} onExternal={vi.fn()} tabs={[{ ...page, title: "Example Domain" }]} />);
+    expect(screen.getByRole("tab", { name: "Example Domain" })).toBeTruthy();
+  });
+
+  it("F2 on a focused browser tab opens the same field from the keyboard", async () => {
+    const user = userEvent.setup();
+    draw();
+    within(screen.getByRole("tab", { name: page.url })).getByRole("button", { name: page.url }).focus();
+    await user.keyboard("{F2}");
+    expect(screen.getByRole("textbox", { name: "重命名页签" })).toBeTruthy();
+  });
+
+  it("Escape keeps the old label, and an emptied name gives the page's own label back", async () => {
+    const user = userEvent.setup();
+    draw();
+    await user.dblClick(within(screen.getByRole("tab", { name: page.url })).getByText(page.url));
+    await user.type(screen.getByRole("textbox", { name: "重命名页签" }), "x{Escape}");
+    expect(screen.getByRole("tab", { name: page.url })).toBeTruthy();
+    await user.dblClick(within(screen.getByRole("tab", { name: page.url })).getByText(page.url));
+    await user.clear(screen.getByRole("textbox", { name: "重命名页签" }));
+    await user.type(screen.getByRole("textbox", { name: "重命名页签" }), "名字{Enter}");
+    await user.dblClick(within(screen.getByRole("tab", { name: "名字" })).getByText("名字"));
+    await user.clear(screen.getByRole("textbox", { name: "重命名页签" }));
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("tab", { name: page.url })).toBeTruthy();
   });
 });

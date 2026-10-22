@@ -170,3 +170,18 @@ it("saving the name it already has sends nothing", async () => {
   expect(port.renameProvider).not.toHaveBeenCalled();
   expect(screen.queryByRole("textbox", { name: /重命名/ })).toBeNull();
 });
+
+const at = (name: string, baseUrl: string, keyEnv = "SHARED_KEY"): ProviderEntry => ({ ...entry(name, baseUrl), keyEnv });
+
+it("two ports on one host are two services in the list", async () => {
+  draw([at("local", "http://127.0.0.1:8756/v1"), at("local-2", "http://127.0.0.1:8788/v1")]);
+  await screen.findAllByText("127.0.0.1:8756");
+  expect(rows()).toHaveLength(2);
+  expect(screen.getAllByText("127.0.0.1:8788").length).toBeGreaterThan(0);
+});
+
+it("two entries at the very same address both stay in the list", async () => {
+  draw([at("first", "http://127.0.0.1:8756/v1"), at("second", "http://127.0.0.1:8756/v1")]);
+  await screen.findAllByText("127.0.0.1:8756");
+  expect(rows()).toHaveLength(2);
+});

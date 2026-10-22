@@ -6,6 +6,7 @@ import { App } from "./App";
 import { MockHub } from "../port/mock_hub";
 import type { TreeWorkspace } from "../port/hub";
 import { boot, STORAGE } from "../i18n";
+import { setShowsSessionQuickActions } from "../state/sessionQuick";
 
 beforeEach(() => {
   localStorage.clear();
@@ -22,6 +23,7 @@ afterEach(() => {
 });
 
 it("converges two App trees and counts after another client's changes and page recovery", async () => {
+  setShowsSessionQuickActions(true);
   let book: TreeWorkspace[] = [{ root: "/project", name: "project", remembered: true, sessions: [
     { path: "/sessions/alpha.jsonl", name: "alpha", title: "Alpha" },
     { path: "/sessions/beta.jsonl", name: "beta", title: "Beta" },
@@ -45,10 +47,10 @@ it("converges two App trees and counts after another client's changes and page r
     return hub;
   });
   const views = clients.map((hub) => render(<App hub={hub} />));
-  const count = (i: number, scope: string) => views[i].container.querySelector(`[data-action="session.filter"][data-value="${scope}"] b`)?.textContent;
+  const count = (i: number) => views[i].container.querySelector(".wsnode > .wsrow .rowcount")?.textContent;
   const ids = (i: number) => Array.from(views[i].container.querySelectorAll<HTMLElement>('[data-action-click="session.open"]'), (row) => row.dataset.target).sort();
   const notify = () => listeners.forEach((fn) => fn());
-  await waitFor(() => clients.forEach((_, i) => expect(count(i, "all")).toBe("2")));
+  await waitFor(() => clients.forEach((_, i) => expect(count(i)).toBe("2")));
   views.forEach((view) => {
     const row = view.container.querySelector('.wsrow')!;
     if (row.getAttribute("aria-expanded") === "false") fireEvent.click(row);
@@ -61,9 +63,8 @@ it("converges two App trees and counts after another client's changes and page r
     notify();
   });
   await waitFor(() => clients.forEach((_, i) => {
-    expect(count(i, "all")).toBe("1");
-    expect(count(i, "archived")).toBe("1");
-    expect(count(i, "pinned")).toBe("1");
+    expect(count(i)).toBe("1");
+    expect(views[i].container.querySelector('[data-action="session.pin"][aria-pressed="true"]')).toBeTruthy();
     expect(ids(i)).toEqual(["/sessions/beta.jsonl"]);
   }));
   await act(async () => {
@@ -79,18 +80,18 @@ it("converges two App trees and counts after another client's changes and page r
     window.dispatchEvent(new Event("online"));
     window.dispatchEvent(new Event("pageshow"));
   });
-  await waitFor(() => clients.forEach((_, i) => {
-    expect(count(i, "all")).toBe("2");
-    expect(count(i, "archived")).toBe("0");
-  }));
+  await waitFor(() => {
+    expect(count(0)).toBe("2");
+    expect(count(1)).toBeUndefined();
+  });
   expect(ids(1)).toEqual([]);
   const reads = clients.map((hub) => vi.mocked(hub.tree).mock.calls.length);
   clients.forEach((hub) => vi.mocked(hub.tree).mockRejectedValueOnce(new Error("tree temporarily unavailable")));
   await act(async () => { notify(); });
   await waitFor(() => clients.forEach((hub, i) => expect(hub.tree).toHaveBeenCalledTimes(reads[i] + 1)));
-  clients.forEach((_, i) => expect(count(i, "all")).toBe("2"));
+  expect(count(0)).toBe("2");
   await act(async () => { book = []; notify(); });
-  await waitFor(() => clients.forEach((_, i) => expect(count(i, "all")).toBe("0")));
+  await waitFor(() => clients.forEach((_, i) => expect(count(i)).toBeUndefined()));
 });
 
 

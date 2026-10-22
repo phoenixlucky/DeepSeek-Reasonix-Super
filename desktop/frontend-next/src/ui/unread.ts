@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { host } from "../port/host";
 import type { AgentPort } from "../port/port";
 import type { RuntimeView, TreeWorkspace } from "../port/hub";
+import { rememberUnreadSince, sessionKey } from "../state/newAnswers";
 
 type Trees = Record<string, TreeWorkspace[] | null>;
 
-const keyOf = (host: string | undefined, path: string) => `${host ?? ""}\n${path}`;
+const keyOf = sessionKey;
 
 // The kernel's answer with the rows the person has just opened drawn as seen.
 // Same reference back when nothing is cleared, so a memoised sidebar stays put.
@@ -25,6 +27,13 @@ export function isUnread(rt: RuntimeView, tree: TreeWorkspace[], remote: Trees):
   return book.some((ws) => ws.sessions.some((s) => s.path === rt.sessionPath && !!s.unread));
 }
 
+function unreadSince(rt: RuntimeView, tree: TreeWorkspace[], remote: Trees): number | undefined {
+  if (!rt.sessionPath) return undefined;
+  const book = rt.host ? remote[rt.host] ?? [] : tree;
+  for (const ws of book) for (const s of ws.sessions) if (s.path === rt.sessionPath && s.unread) return s.viewedAt;
+  return undefined;
+}
+
 interface Inputs {
   runtimes: RuntimeView[];
   ports: Map<string, AgentPort>;
@@ -34,9 +43,10 @@ interface Inputs {
   reload: () => Promise<unknown>;
 }
 
-// Viewing is the window's decision and the kernel never infers it: a session
-// becoming the pane in front, or a turn ending in the pane already there while
-// the window has focus. A refused call puts the mark back rather than saying so.
+// Viewing is the window's decision and the kernel never infers it. The pane in
+// front is seen when it becomes the one in front, when a turn ends in it, and
+// whenever it is unread while the window has focus, whichever of the pane, its
+// list or its path arrived last. A refused call puts the mark back.
 export function useViewed({ runtimes, ports, active, tree, remote, reload }: Inputs) {
   const [cleared, setCleared] = useState<Set<string>>(() => new Set());
   const now = useRef({ runtimes, ports, tree, remote, reload, active });
@@ -57,6 +67,8 @@ export function useViewed({ runtimes, ports, active, tree, remote, reload }: Inp
       return;
     }
     if (!owed && !isUnread(rt, cur.tree, cur.remote)) return;
+    const since = unreadSince(rt, cur.tree, cur.remote);
+    if (!owed && since) rememberUnreadSince(key, since);
     inflight.current.add(key);
     const set = (on: boolean) =>
       setCleared((prev) => {
@@ -89,12 +101,26 @@ export function useViewed({ runtimes, ports, active, tree, remote, reload }: Inp
     [mark],
   );
 
+  useEffect(() => {
+    const focus = () => { if (document.hasFocus()) view(now.current.active); };
+    window.addEventListener("focus", focus);
+    return () => window.removeEventListener("focus", focus);
+  }, [view]);
+
   const front = useRef(active);
   useEffect(() => {
-    if (front.current === active || !ports.has(active)) return;
+    if (front.current === active || (active && !ports.has(active))) return;
     front.current = active;
-    view(active);
+    if (active) view(active);
   }, [active, ports, view]);
+
+  const frontUnread = useMemo(() => {
+    const rt = runtimes.find((r) => r.id === active);
+    return !!rt && isUnread(rt, tree, remote);
+  }, [runtimes, active, tree, remote]);
+  useEffect(() => {
+    if (active && frontUnread && ports.has(active) && document.hasFocus()) view(active);
+  }, [active, frontUnread, ports, view]);
 
   useEffect(() => {
     if (held.current.size === 0) return;
@@ -114,4 +140,9 @@ export function useViewed({ runtimes, ports, active, tree, remote, reload }: Inp
   }, [remote, cleared]);
 
   return { view, turnDone, tree: local, remote: far };
+}
+
+export function useUnreadBadge(tree: TreeWorkspace[], remote: Trees) {
+  const unread = useMemo(() => [tree, ...Object.values(remote)].some((book) => book?.some((ws) => ws.sessions.some((s) => s.unread && !s.archived))), [tree, remote]);
+  useEffect(() => { void host().setUnreadBadge(unread).catch(() => {}); }, [unread]);
 }

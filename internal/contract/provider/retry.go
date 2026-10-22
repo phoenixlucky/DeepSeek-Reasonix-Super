@@ -18,7 +18,15 @@ import (
 // header phase after the initial try (so up to MaxRetries+1 total attempts).
 const MaxRetries = 10
 
+// RetriesUntilCancelled as a retry limit keeps retrying transient failures
+// until the caller's context ends. Auth and timeout failures keep their own
+// small bounds, and a non-retryable status still returns at once.
+const RetriesUntilCancelled = -1
+
 const maxBackoff = 15 * time.Second
+
+// retryBackoffUnit is the first backoff step; a var so a test can shrink it.
+var retryBackoffUnit = 500 * time.Millisecond
 
 // maxRetryAfter bounds a server-supplied Retry-After. Rate-limit windows are
 // routinely longer than our own backoff cap, and clamping to it just spends
@@ -79,7 +87,7 @@ const (
 )
 
 // RetryInfo describes a backoff about to happen: Attempt is the 1-based retry
-// number (of Max) and Delay is how long SendWithRetry will wait before it.
+// number (of Max; zero Max means no limit) and Delay is how long SendWithRetry will wait before it.
 // Cause and Status describe the failure being retried; Timeout is how long the
 // coming attempt waits for response headers.
 type RetryInfo struct {
@@ -119,12 +127,16 @@ func retryNotifyFromContext(ctx context.Context) RetryNotify {
 }
 
 // WithRetryLimit caps connection/header retries for a single logical request.
-// A zero limit makes an explicit diagnostic perform exactly one HTTP attempt.
+// A zero limit makes an explicit diagnostic perform exactly one HTTP attempt;
+// RetriesUntilCancelled removes the cap.
 func WithRetryLimit(ctx context.Context, retries int) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return context.WithValue(ctx, retryLimitKey{}, max(0, min(retries, MaxRetries)))
+	if retries < 0 {
+		retries = RetriesUntilCancelled
+	}
+	return context.WithValue(ctx, retryLimitKey{}, retries)
 }
 
 func retryLimitFromContext(ctx context.Context) int {
@@ -264,7 +276,7 @@ func backoffDelay(attempt int, retryAfter time.Duration) time.Duration {
 		}
 		return retryAfter
 	}
-	d := min(time.Duration(1<<(attempt-1))*500*time.Millisecond, maxBackoff)
+	d := min(time.Duration(1<<min(attempt-1, 16))*retryBackoffUnit, maxBackoff)
 	return d + time.Duration(rand.IntN(250))*time.Millisecond
 }
 
@@ -325,11 +337,11 @@ func SendWithRetry(ctx context.Context, httpClient *http.Client, opts SendOption
 	authRetries := 0
 	timeoutRetries := 0
 
-	for attempt := 0; attempt <= retryLimit; attempt++ {
+	for attempt := 0; retryLimit == RetriesUntilCancelled || attempt <= retryLimit; attempt++ {
 		if attempt > 0 {
 			delay := backoffDelay(attempt, retryAfter)
 			if notify != nil {
-				notify(RetryInfo{Attempt: attempt, Max: retryLimit, Delay: delay, Err: lastErr, Cause: cause, Status: status, Timeout: opts.HeaderTimeout})
+				notify(RetryInfo{Attempt: attempt, Max: max(retryLimit, 0), Delay: delay, Err: lastErr, Cause: cause, Status: status, Timeout: opts.HeaderTimeout})
 			}
 			select {
 			case <-ctx.Done():

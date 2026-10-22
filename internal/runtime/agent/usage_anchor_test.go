@@ -97,7 +97,7 @@ func TestProviderReportedUsageTriggersFoldWhenLocalEstimateRunsLow(t *testing.T)
 	if a.sess.output.promptCalibration.Load() != nil {
 		t.Fatal("setup: an image request must not calibrate")
 	}
-	if a.ContextUsedTokens() >= a.CompactTrigger() {
+	if a.window().estimatedVisibleRequestTokens(a.window().modelVisibleMessages()) >= a.CompactTrigger() {
 		t.Fatal("setup: local estimate must still read low after the usage")
 	}
 	foldPass(t, a)
@@ -237,5 +237,138 @@ func TestUnfoldableReportedUsageDoesNotRepeatTheAttempt(t *testing.T) {
 	}
 	if prov.calls.Load() != 0 {
 		t.Fatalf("summary calls = %d with nothing foldable", prov.calls.Load())
+	}
+}
+
+func TestGaugeReadsTheProviderReportedSizeWhenTheEstimateRunsLow(t *testing.T) {
+	a, _ := newAnchorAgent(t)
+	before := a.ContextUsedTokens()
+	sendWithUsage(t, a, &provider.Usage{PromptTokens: 92_000})
+	if got := a.ContextUsedTokens(); got < 92_000 {
+		t.Fatalf("gauge = %d after the provider reported 92000 (estimate before: %d); it reads lower than the size the fold trigger acts on", got, before)
+	}
+	if budget := a.ContextBudget(); budget.TokensUsed < 92_000 {
+		t.Fatalf("the budget the model is told counts %d used, below the 92000 the provider reported", budget.TokensUsed)
+	}
+}
+
+func TestGaugeFallsBackToTheEstimateAfterAFold(t *testing.T) {
+	a, _ := newAnchorAgent(t)
+	sendWithUsage(t, a, &provider.Usage{PromptTokens: 92_000})
+	foldPass(t, a)
+	if got := a.ContextUsedTokens(); got >= 92_000 {
+		t.Fatalf("gauge = %d after a fold: the pre-fold 92000 describes a context that no longer exists", got)
+	}
+}
+
+// A session that has sent an image never calibrates, so its estimate stays at
+// the cold rate for good. When the provider counts fewer tokens than that guess,
+// the gauge must follow the provider (report FB-112W-8A74: 313k shown for a
+// 245k context), not the larger of the two.
+func TestGaugeFollowsTheProviderWhenTheColdEstimateRunsHigh(t *testing.T) {
+	a, _ := newAnchorAgent(t)
+	cold := a.ContextUsedTokens()
+	sendWithUsage(t, a, &provider.Usage{PromptTokens: 52_000})
+	if a.sess.output.promptCalibration.Load() != nil {
+		t.Fatal("setup: an image request must not calibrate, which is what leaves the estimate cold")
+	}
+	if cold <= 56_000 {
+		t.Fatalf("setup: the cold estimate %d must sit well above the provider's 52k", cold)
+	}
+	if got := a.ContextUsedTokens(); got < 52_000 || got > 56_000 {
+		t.Fatalf("gauge = %d, want the provider's 52k plus what grew since (cold guess was %d)", got, cold)
+	}
+	grown := append(a.Session().Messages, provider.Message{Role: provider.RoleAssistant, Content: strings.Repeat("g", 8_000)})
+	a.Session().Messages = grown
+	a.sess.output.contextUsage.Store(nil)
+	if got := a.ContextUsedTokens(); got <= 52_000 {
+		t.Fatalf("gauge = %d after new content, want it above the anchored 52k", got)
+	}
+}
+
+// Calibrated, the estimate can still run high (more of the text is CJK than when
+// the ratio was learned, and the excess is priced at the cold rate). The provider's
+// count wins there too.
+func TestGaugeFollowsTheProviderWhenACalibratedEstimateRunsHigh(t *testing.T) {
+	a := newCalibratedAgent(t)
+	if a.sess.output.promptCalibration.Load() == nil {
+		t.Fatal("setup: a text-only request must calibrate")
+	}
+	est := a.window().estimatedVisibleRequestTokens(a.window().modelVisibleMessages())
+	a.sess.output.usageAnchor.Store(&usageAnchor{
+		promptTokens: est * 3 / 4, visible: a.window().visibleRequestShape(a.window().modelVisibleMessages()), projectionVersion: a.window().currentProjectionVersion(),
+	})
+	a.sess.output.contextUsage.Store(nil)
+	if got := a.ContextUsedTokens(); got != est*3/4 {
+		t.Fatalf("gauge = %d, want the provider's %d, not the estimate %d", got, est*3/4, est)
+	}
+}
+
+func newCalibratedAgent(t *testing.T) *Agent {
+	t.Helper()
+	msgs := []provider.Message{{Role: provider.RoleSystem, Content: "system"}}
+	for range 6 {
+		msgs = append(msgs,
+			provider.Message{Role: provider.RoleUser, Content: "question " + strings.Repeat("q", 100)},
+			provider.Message{Role: provider.RoleAssistant, Content: strings.Repeat("a", 4_000)},
+		)
+	}
+	msgs = append(msgs, provider.Message{Role: provider.RoleUser, Content: "current"})
+	a := New(&summaryCounter{}, tool.NewRegistry(), &sessionstore.Session{Messages: msgs}, Options{
+		ContextWindow: anchorWindow, CompactRatio: 0.85, RecentKeep: 2, WorkspaceID: "ws", ModelRef: "m",
+	}, event.Discard)
+	sendWithUsage(t, a, &provider.Usage{PromptTokens: 9_000})
+	return a
+}
+
+// The gauge and the fold trigger read the same number: what the gauge shows is
+// what the trigger compares to its line, so a fold never fires while the gauge
+// is short of it, nor holds off while the gauge is past it.
+func TestGaugeAndFoldTriggerReadOnePressure(t *testing.T) {
+	cases := []struct {
+		name     string
+		reported int // provider prompt tokens; 0 = no anchor
+		fold     bool
+	}{
+		{"anchor above the line folds", 92_000, true},
+		{"anchor below the line holds even though the cold estimate is above it", 52_000, false},
+		{"no anchor leaves the estimate, below the line", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, prov := newAnchorAgent(t)
+			if tc.reported > 0 {
+				sendWithUsage(t, a, &provider.Usage{PromptTokens: tc.reported})
+			} else {
+				sendWithUsage(t, a, nil)
+			}
+			visible := a.window().modelVisibleMessages()
+			shape := a.window().visibleRequestShape(visible)
+			pressure := a.window().promptPressure(shape, a.window().currentProjectionVersion(), a.window().estimatedShapeTokens(shape))
+			if gauge := a.ContextUsedTokens(); gauge != pressure {
+				t.Fatalf("gauge %d != the trigger's pressure %d", gauge, pressure)
+			}
+			foldPass(t, a)
+			if folded := prov.calls.Load() == 1; folded != tc.fold {
+				t.Fatalf("folded=%v at pressure %d against a line of %d, want %v", folded, pressure, a.CompactTrigger(), tc.fold)
+			}
+			if tc.fold != (pressure >= a.CompactTrigger()) {
+				t.Fatalf("pressure %d against line %d disagrees with the expected fold=%v", pressure, a.CompactTrigger(), tc.fold)
+			}
+		})
+	}
+}
+
+// After a fold the reported size describes a context that no longer exists, so
+// both readings fall back to the estimate together.
+func TestGaugeAndFoldTriggerAgreeAfterAFold(t *testing.T) {
+	a, _ := newAnchorAgent(t)
+	sendWithUsage(t, a, &provider.Usage{PromptTokens: 92_000})
+	foldPass(t, a)
+	visible := a.window().modelVisibleMessages()
+	shape := a.window().visibleRequestShape(visible)
+	est := a.window().estimatedShapeTokens(shape)
+	if got := a.ContextUsedTokens(); got != a.window().promptPressure(shape, a.window().currentProjectionVersion(), est) || got >= 92_000 {
+		t.Fatalf("after a fold gauge = %d, want the estimate (%d), not the stale 92k", got, est)
 	}
 }

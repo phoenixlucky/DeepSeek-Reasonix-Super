@@ -3,6 +3,7 @@ package skill
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -123,6 +124,20 @@ func TestParseAllowedToolsExtraSpaces(t *testing.T) {
 	got := parseAllowedTools("  bash  ,  grep  ")
 	if len(got) != 2 || got[0] != "bash" || got[1] != "grep" {
 		t.Errorf("extra spaces = %v", got)
+	}
+}
+
+func TestParseAllowedToolsAcceptsTheSpecSpelling(t *testing.T) {
+	got := parseAllowedTools("Bash(git add:*) Read grep")
+	want := []string{"Bash(git add:*)", "Read", "grep"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("space separated = %q, want %q", got, want)
+	}
+	if got := parseAllowedTools("[read_file, grep]"); !reflect.DeepEqual(got, []string{"read_file", "grep"}) {
+		t.Errorf("bracketed list = %q", got)
+	}
+	if got := parseAllowedTools(`"Read" 'Grep'`); !reflect.DeepEqual(got, []string{"Read", "Grep"}) {
+		t.Errorf("quoted = %q", got)
 	}
 }
 
@@ -441,6 +456,88 @@ func TestDeleteRemovesDirectoryLayoutSkill(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Dir(path)); !os.IsNotExist(err) {
 		t.Fatalf("skill directory should be removed, stat err=%v", err)
+	}
+}
+
+// A SKILL.md at the top of a skills root is listed as a skill, and its folder is
+// the root: removing the folder would take every other skill with it.
+func TestDeleteOfARootLevelSkillLeavesTheOtherSkills(t *testing.T) {
+	home := testenv.TempDir(t)
+	root := filepath.Join(home, ".reasonix", SkillsDirname)
+	other := filepath.Join(root, "other")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, SkillFile), []byte("---\ndescription: o\n---\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	top := filepath.Join(root, SkillFile)
+	if err := os.WriteFile(top, []byte("---\nname: top\ndescription: t\n---\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st := New(Options{HomeDir: home, DisableBuiltins: true})
+	if err := st.Delete("top", ScopeGlobal); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := os.Stat(top); !os.IsNotExist(err) {
+		t.Fatalf("the root-level skill file should be gone, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(other, SkillFile)); err != nil {
+		t.Fatalf("a sibling skill was removed with it: %v", err)
+	}
+	if _, ok := st.Read("other"); !ok {
+		t.Fatal("the other skill must still be readable")
+	}
+}
+
+// What a removal would delete is stated once, by the same rule Delete follows,
+// so a person shown it is shown exactly what goes: a folder for a directory-layout
+// skill, a single file for a flat <name>.md skill, and only SKILL.md for one that
+// sits at the top of a skills root.
+func TestRemovalTargetIsExactlyWhatDeleteRemoves(t *testing.T) {
+	home := testenv.TempDir(t)
+	root := filepath.Join(home, ".reasonix", SkillsDirname)
+	write := func(rel, body string) string {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	write("folder-skill/SKILL.md", "---\ndescription: f\n---\nbody")
+	write("folder-skill/scripts/run.sh", "echo hi")
+	write("flat-skill.md", "---\ndescription: f\n---\nbody")
+	write(SkillFile, "---\nname: top\ndescription: t\n---\nbody")
+	st := New(Options{HomeDir: home, DisableBuiltins: true})
+	for _, tc := range []struct {
+		name   string
+		target string
+		folder bool
+	}{
+		{"folder-skill", filepath.Join(root, "folder-skill"), true},
+		{"flat-skill", filepath.Join(root, "flat-skill.md"), false},
+		{"top", filepath.Join(root, SkillFile), false},
+	} {
+		sk, ok := st.Read(tc.name)
+		if !ok {
+			t.Fatalf("%s is not listed", tc.name)
+		}
+		target, folder := st.RemovalTarget(sk)
+		if target != tc.target || folder != tc.folder {
+			t.Fatalf("%s: RemovalTarget = %q folder=%v, want %q folder=%v", tc.name, target, folder, tc.target, tc.folder)
+		}
+		if err := st.Delete(tc.name, ScopeGlobal); err != nil {
+			t.Fatalf("Delete(%s): %v", tc.name, err)
+		}
+		if _, err := os.Lstat(target); !os.IsNotExist(err) {
+			t.Fatalf("%s: the shown target %q is still there: %v", tc.name, target, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "folder-skill", "scripts", "run.sh")); !os.IsNotExist(err) {
+		t.Fatal("the folder was shown as the target, so its sibling files go with it")
 	}
 }
 

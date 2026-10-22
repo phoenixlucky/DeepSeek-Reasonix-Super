@@ -3,13 +3,14 @@ package config
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
 // SetShell records which interpreter the shell tool runs commands under. An
 // empty path keeps auto-detection of the executable, which is what every host
 // without a custom install wants; pinning one survives a PATH that changes.
-func (c *Config) SetShell(prefer, path string) error {
+func (c *Config) SetShell(prefer, path string, args ...string) error {
 	switch strings.ToLower(strings.TrimSpace(prefer)) {
 	case "", "auto":
 		c.Tools.Shell.Prefer = "auto"
@@ -23,5 +24,6 @@ func (c *Config) SetShell(prefer, path string) error {
 		return fmt.Errorf("shell prefer %q: must be auto|bash|powershell|pwsh", prefer)
 	}
 	c.Tools.Shell.Path = strings.TrimSpace(path)
+	c.Tools.Shell.Args = slices.Clone(args)
 	return nil
 }

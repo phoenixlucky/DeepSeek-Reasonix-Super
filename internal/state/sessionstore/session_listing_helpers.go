@@ -9,6 +9,7 @@ import (
 // disk, when it was created/last active, the first user message as a preview, and
 // a rough turn count.
 type SessionInfo struct {
+	MetadataState  string
 	Path           string
 	CreatedAt      time.Time
 	LastActivityAt time.Time
@@ -23,7 +24,9 @@ type SessionInfo struct {
 	CustomTitle    string
 	Archived       bool
 	Pinned         bool
+	ManualRank     float64
 	Unread         bool
+	ViewedAt       time.Time
 	Recovered      bool
 	RecoveryReason string
 	RecoveryDigest string
@@ -46,7 +49,9 @@ type SessionOrderInfo struct {
 	CustomTitle    string
 	Archived       bool
 	Pinned         bool
+	ManualRank     float64
 	Unread         bool
+	ViewedAt       time.Time
 	Recovered      bool
 	RecoveryReason string
 	RecoveryDigest string
@@ -81,7 +86,9 @@ func sessionInfoFromOrder(session SessionOrderInfo, preview string, turns int, c
 		CustomTitle:    session.CustomTitle,
 		Archived:       session.Archived,
 		Pinned:         session.Pinned,
+		ManualRank:     session.ManualRank,
 		Unread:         session.Unread,
+		ViewedAt:       session.ViewedAt,
 		Recovered:      session.Recovered,
 		RecoveryReason: session.RecoveryReason,
 		RecoveryDigest: session.RecoveryDigest,

@@ -13,6 +13,7 @@ func (s *Server) registerProgressWatchRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /progress-watch", s.progressWatchSettings)
 	mux.HandleFunc("POST /progress-watch", s.saveProgressWatchSettings)
 	s.registerAskTimeoutRoutes(mux)
+	s.registerSessionRefRoutes(mux)
 }
 
 func (s *Server) progressWatchSettings(w http.ResponseWriter, _ *http.Request) {

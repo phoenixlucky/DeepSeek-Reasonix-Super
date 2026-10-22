@@ -18,7 +18,8 @@ import (
 // canonical position, and never the model's prose. "I will search the history"
 // is not a search; a recall call with a query is.
 
-// failure stages, in funnel order. Exactly one is reported per run.
+// failure stages, in funnel order. Exactly one is reported per run, except for
+// NoEvidence: that stage belongs to a run with no measurement at all.
 const (
 	stageReadMissed   = "NoSearch"           // never asked, and never read the target either
 	stageSearchMiss   = "SearchMiss"         // searched, target never came back
@@ -26,6 +27,7 @@ const (
 	stageAnswerWrong  = "ReadButAnswerWrong" // opened it and still answered wrong
 	stageRecovered    = "Recovered"
 	stageContaminated = "Contaminated"
+	stageNoEvidence   = "NoEvidence"
 
 	// Routing is judged by model round, not by the linear order of tool events:
 	// two calls in one round are one parallel fan-out, and calling that
@@ -115,6 +117,12 @@ type contextMetrics struct {
 	FinalAnswer   string `json:"final_answer,omitempty"`
 	FailureStage  string `json:"failure_stage"`
 	TimeoutReason string `json:"timeout_reason,omitempty"`
+
+	// Failed marks a run that ended before a transcript existed: it has no score
+	// and no place in the statistics. The row stays in results.jsonl with its
+	// task, arm and stage, so a failure is counted rather than dropped.
+	Failed bool   `json:"failed,omitempty"`
+	Reason string `json:"reason,omitempty"`
 
 	// UnexpectedWorkTools are investigation tools used instead of recall.
 	// Reaching for the workspace is behaviour, not noise: how a model routes
@@ -462,6 +470,12 @@ type funnel struct {
 func summarize(arm string, runs []contextMetrics) funnel {
 	f := funnel{Arm: arm, Runs: len(runs), Stages: map[string]int{}, Routes: map[string]int{}}
 	for _, r := range runs {
+		// A run that never produced a transcript is not a scored run and has no
+		// stage to place: counting it would put an empty name in the funnel, the
+		// stage table and the routes.
+		if r.Failed {
+			continue
+		}
 		if r.Contaminated {
 			f.Contaminated++
 			f.Stages[r.FailureStage]++
@@ -631,7 +645,7 @@ func reportStopping(all []contextMetrics) string {
 	var extraRounds, extraTokens []float64
 	sufficient, answeredNext := 0, 0
 	for _, m := range all {
-		if m.Contaminated {
+		if m.Failed || m.Contaminated {
 			continue
 		}
 		classes[m.StoppingClass]++

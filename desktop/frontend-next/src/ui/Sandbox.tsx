@@ -194,7 +194,11 @@ export function CommandMode({
   return (
     <div className="sec">
       <h3>{t("命令执行方式")}</h3>
-      {box.available ? (
+      {box.available && box.platform === "windows" ? (
+        <p className="note">
+          {t("在 Windows 上启用后，命令无法在清单之外创建或改写文件、写注册表；但删除或重命名清单之外的文件、读取文件、联网，以及 ssh-agent、docker 管道和任务计划程序等系统服务不受限制，Everyone 本来就能写的位置和被授权的工具链缓存命令也能写。需要交互式桌面会话，并会在清单里的文件夹上加一条权限项（可用 reasonix sandbox revoke 收回）。")}
+        </p>
+      ) : box.available ? (
         <p className="note">
           {t("启用沙箱后，命令无法写入清单之外的位置。上方的可写目录清单由操作系统实施，不依赖 agent 自觉遵守。")}
         </p>

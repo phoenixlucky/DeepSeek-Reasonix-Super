@@ -637,6 +637,14 @@ func normalizeBinaryThinkingEffort(level string) (string, error) {
 	}
 }
 
+// EffortUndeclared reports an entry whose reasoning levels nothing declares: no
+// supported_efforts, no known ladder for its model, and no protocol switched off
+// by the user. That is a gap in what the entry says, which the person can fill,
+// and not a statement that the model has no reasoning levels.
+func EffortUndeclared(e *ProviderEntry) bool {
+	return e != nil && !EffortCapabilityForEntry(e).Supported && explicitReasoningProtocol(e) != ReasoningProtocolNone
+}
+
 func effortNotConfigurableError(e *ProviderEntry) error {
 	name := ""
 	if e != nil {
@@ -644,6 +652,9 @@ func effortNotConfigurableError(e *ProviderEntry) error {
 	}
 	if name == "" {
 		name = "this model"
+	}
+	if EffortUndeclared(e) {
+		return fmt.Errorf("effort is not configurable for %s: no levels are declared; list the provider's levels as supported_efforts on its [[providers]] entry", name)
 	}
 	return fmt.Errorf("effort is not configurable for %s", name)
 }

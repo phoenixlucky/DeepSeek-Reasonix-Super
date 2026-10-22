@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"reasonix/internal/contract/delivery"
 	"reasonix/internal/contract/event"
 	"reasonix/internal/contract/provider"
 	"reasonix/internal/contract/tool"
@@ -50,14 +51,18 @@ func (l barrierLevel) message() string {
 // form the model sees; rawOutput is the full original when truncation applied
 // (empty when identical so we avoid double storage). images ride outside text.
 type toolOutcome struct {
+	preview   *event.FileDiff
 	output    string
 	rawOutput string // full original when different from output
+	unbounded string // what the tool returned, whenever bound moved or cut it
 	images    []string
+	videos    []provider.VideoRef
 	blocked   bool
 	// endsRound marks a call whose result is a user decision. The pre-scheduling
 	// scan cannot see one an extension substituted in, so the call reports it.
-	endsRound bool
-	errMsg    string
+	endsRound     bool
+	errMsg        string
+	checkpointErr error
 	// refusalCode is the identity of a host refusal, carried beside the words
 	// rather than recovered from them. Empty when the call was not refused.
 	refusalCode    string
@@ -82,6 +87,17 @@ type toolOutcome struct {
 	execution *tool.ShellExecution
 	// todoEcho marks a todo_write that wrote the list the host already held.
 	todoEcho bool
+}
+
+// keepFull records what the bound replaced: rawOutput for the conversation when
+// it cut the middle, unbounded for a nested caller whenever it changed anything.
+func (o *toolOutcome) keepFull(full string) {
+	if o.truncMsg != "" {
+		o.rawOutput = full
+	}
+	if o.bound.Kind != event.BoundWhole {
+		o.unbounded = full
+	}
 }
 
 // refusedShellExecution describes a shell call the host stopped before launch,
@@ -115,6 +131,7 @@ type batchExecution struct {
 	results    []string
 	outcomes   []toolOutcome
 	images     [][]string
+	videos     [][]provider.VideoRef
 	executions []*tool.ShellExecution
 }
 
@@ -124,10 +141,9 @@ type batchExecution struct {
 // ordering stays provider-ordered. ToolResult events are emitted after the
 // batch in call order. Images are aligned by index with results.
 func (a *Agent) executeBatch(ctx context.Context, turn *turnRuntime, calls []provider.ToolCall) batchExecution {
-	// The assistant message already stored this slice in Session. Keep execution
-	// state separate so refreshing a dependent preview never mutates shared
-	// session memory outside Session's lock.
-	calls = append([]provider.ToolCall(nil), calls...)
+	// Session owns the original slice; dependent previews and argument preparation
+	// must not mutate it outside the session lock.
+	calls = a.prepareCallBatch(calls)
 	for _, c := range calls {
 		a.emitEagerToolDispatch(ctx, c)
 	}
@@ -138,36 +154,28 @@ func (a *Agent) executeBatch(ctx context.Context, turn *turnRuntime, calls []pro
 	startedAt := make([]int64, len(calls))
 	completedStepInBatch := false
 	receiptMark := a.ledgerMark()
-	// Full dispatches used the batch's initial file state. After a writer runs
-	// (even a failed one — disk may have mutated), refresh dependent writer
-	// previews. The first writer stays on the single-preview fast path.
-	earlierWriterRan := false
 	surfaceWriters := make([]bool, len(calls))
 	run := func(i int) {
 		t, _, ambiguous := a.svc.tools.ResolveCall(calls[i].Name)
 		known := t != nil && len(ambiguous) == 0
 		writer := known && !t.ReadOnly()
 		surfaceWriters[i] = writer
-		if earlierWriterRan && writer {
-			if refreshed, changed := refreshCurrentFileDiff(ctx, t, calls[i]); changed {
-				calls[i] = refreshed
-				a.sess.conversation.UpdateToolCallPreview(refreshed)
-				a.emitFullToolDispatch(ctx, refreshed, true)
-			}
-		}
 		start := time.Now()
 		startedAt[i] = start.UnixMilli()
 		if calls[i].Name == "complete_step" && completedStepInBatch {
 			output := "blocked: only one successful complete_step is allowed per tool-call round. Continue from the newly promoted in_progress todo in the next round instead of batching sign-offs."
 			outcomes[i] = toolOutcome{output: output, blocked: true, errMsg: "blocked: complete_step sign-offs must be serial"}
 			if a.task.ledger != nil {
-				a.task.ledger.Record(evidence.ReceiptFromToolCall(calls[i].Name, json.RawMessage(calls[i].Arguments), false, evidence.ToolFacts{ReadOnly: true}))
+				a.task.ledger.Record(evidence.ReceiptFromToolCall(calls[i].Name, json.RawMessage(calls[i].ExecutionArguments()), false, evidence.ToolFacts{ReadOnly: true}))
 			}
 			durations[i] = time.Since(start).Milliseconds()
 			results[i] = output
 			return
 		}
 		outcomes[i] = a.executeOne(ctx, turn, calls[i])
+		if p := outcomes[i].preview; p != nil {
+			calls[i].Diff, calls[i].Added, calls[i].Removed = p.Diff, p.Added, p.Removed
+		}
 		recordWorkspaceMutation(a.svc.sink, outcomes[i].workspaceMutation)
 		if outcomes[i].executed {
 			surfaceWriters[i] = outcomes[i].workspaceMutation != nil
@@ -189,9 +197,6 @@ func (a *Agent) executeBatch(ctx context.Context, turn *turnRuntime, calls []pro
 		if calls[i].ResolvedReadOnly != nil {
 			a.sess.conversation.UpdateToolCallResolution(calls[i])
 			a.emitResolvedToolDispatch(calls[i], outcomes[i].resolvedProfile)
-		}
-		if surfaceWriters[i] || (outcomes[i].resolved && !outcomes[i].resolvedReadOnly) {
-			earlierWriterRan = true
 		}
 	}
 	cancelled := false
@@ -257,11 +262,11 @@ func (a *Agent) executeBatch(ctx context.Context, turn *turnRuntime, calls []pro
 				t, _, ambiguous := a.svc.tools.ResolveCall(calls[i].Name)
 				known := t != nil && len(ambiguous) == 0
 				readOnly := known && t.ReadOnly()
-				if calls[i].Name == "bash" && permission.BashCommandIsReadOnly(json.RawMessage(calls[i].Arguments)) {
+				if calls[i].Name == "bash" && permission.BashCommandIsReadOnly(json.RawMessage(calls[i].ExecutionArguments())) {
 					readOnly = true
 				}
-				isVerification := calls[i].Name == "bash" && evidence.IsDeliveryVerificationCommand(bashCommandFromArgs(json.RawMessage(calls[i].Arguments)))
-				mutates := evidence.ToolCallMutates(calls[i].Name, json.RawMessage(calls[i].Arguments), readOnly)
+				isVerification := calls[i].Name == "bash" && evidence.IsDeliveryVerificationCommand(bashCommandFromArgs(json.RawMessage(calls[i].ExecutionArguments())))
+				mutates := evidence.ToolCallMutates(calls[i].Name, json.RawMessage(calls[i].ExecutionArguments()), readOnly)
 				if mutates || isVerification {
 					markDependencySkipped(i, barrierFull)
 					// markDependencySkipped fills this index; move on.
@@ -310,12 +315,13 @@ func (a *Agent) executeBatch(ctx context.Context, turn *turnRuntime, calls []pro
 			readOnly = *c.ResolvedReadOnly
 		}
 		tr := event.Tool{
-			ID:           c.ID,
-			Name:         c.Name,
-			Args:         c.Arguments,
-			ResolvedName: c.ResolvedName,
-			CapabilityID: c.CapabilityID,
-			Output:       o.output, Images: o.images,
+			ID:                    c.ID,
+			Name:                  c.Name,
+			Args:                  c.ExecutionArguments(),
+			ArgumentNormalization: c.ArgumentNormalization,
+			ResolvedName:          c.ResolvedName,
+			CapabilityID:          c.CapabilityID,
+			Output:                o.output, Images: o.images, Videos: shownVideos(o.videos, a.nativeVideoModel()),
 			Err: o.errMsg, RefusalCode: o.refusalCode, WorkspaceLease: o.workspaceLease,
 			ReadOnly:   readOnly,
 			Bound:      o.bound,
@@ -323,6 +329,11 @@ func (a *Agent) executeBatch(ctx context.Context, turn *turnRuntime, calls []pro
 			Execution:  toEventShellExecution(o.execution, durations[i]),
 			Issuer:     event.IssuedByModel, Executed: o.executed,
 		}
+		manifest := o.output
+		if o.rawOutput != "" {
+			manifest = o.rawOutput
+		}
+		tr.Deliveries = delivery.Decode(c.ResolvedName, c.CapabilityID, o.errMsg != "" || !o.executed || o.blocked, manifest)
 		if startedAt[i] > 0 {
 			tr.StartedAt = startedAt[i]
 			tr.EndedAt = startedAt[i] + durations[i]
@@ -333,21 +344,22 @@ func (a *Agent) executeBatch(ctx context.Context, turn *turnRuntime, calls []pro
 			}
 		}
 		a.emitToolCard(ctx, c, tr, o.todoEcho)
-		if o.truncMsg != "" {
-			a.svc.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: o.truncMsg})
-		}
+		a.emitToolOutcomeWarnings(o)
 	}
 	a.observeOutcomeShadow(cancelled, receiptMark)
 	images := make([][]string, len(calls))
+	videos := make([][]provider.VideoRef, len(calls))
 	executions := make([]*tool.ShellExecution, len(calls))
 	for i := range outcomes {
 		images[i] = outcomes[i].images
+		videos[i] = outcomes[i].videos
 		executions[i] = outcomes[i].execution
 	}
 	return batchExecution{
 		results:    results,
 		outcomes:   outcomes,
 		images:     images,
+		videos:     videos,
 		executions: executions,
 	}
 }
@@ -356,7 +368,7 @@ func (a *Agent) executeBatch(ctx context.Context, turn *turnRuntime, calls []pro
 // proxy or an ambiguous target, which fall through to run() so executeOne can
 // resolve the real one and re-apply the barrier before Commit/Execute.
 func (a *Agent) barrierSkip(call provider.ToolCall, level barrierLevel) (toolOutcome, bool) {
-	isVerification := call.Name == "bash" && evidence.IsDeliveryVerificationCommand(bashCommandFromArgs(json.RawMessage(call.Arguments)))
+	isVerification := call.Name == "bash" && evidence.IsDeliveryVerificationCommand(bashCommandFromArgs(json.RawMessage(call.ExecutionArguments())))
 	if !batchCallStaticallySkippable(a, call) || !level.covers(true, isVerification) {
 		return toolOutcome{}, false
 	}
@@ -364,7 +376,7 @@ func (a *Agent) barrierSkip(call provider.ToolCall, level barrierLevel) (toolOut
 	var ex *tool.ShellExecution
 	if call.Name == "bash" {
 		resolved, _, _ := a.svc.tools.ResolveCall(call.Name)
-		ex = refusedShellExecution(resolved, json.RawMessage(call.Arguments), tool.ShellPhaseDependency)
+		ex = refusedShellExecution(resolved, json.RawMessage(call.ExecutionArguments()), tool.ShellPhaseDependency)
 		if isVerification {
 			ex.Verification = tool.ShellVerificationNotRun
 		}
@@ -381,7 +393,7 @@ func batchFailureBarrier(a *Agent, call provider.ToolCall, o toolOutcome) barrie
 	}
 	readOnly := false
 	toolName := call.Name
-	toolArgs := json.RawMessage(call.Arguments)
+	toolArgs := json.RawMessage(call.ExecutionArguments())
 	t, _, ambiguous := a.svc.tools.ResolveCall(call.Name)
 	known := t != nil && len(ambiguous) == 0
 	if known {
@@ -448,14 +460,14 @@ func batchCallStaticallySkippable(a *Agent, call provider.ToolCall) bool {
 		return false
 	}
 	readOnly := t.ReadOnly()
-	if call.Name == "bash" && permission.BashCommandIsReadOnly(json.RawMessage(call.Arguments)) {
+	if call.Name == "bash" && permission.BashCommandIsReadOnly(json.RawMessage(call.ExecutionArguments())) {
 		readOnly = true
 	}
-	isVerification := call.Name == "bash" && evidence.IsDeliveryVerificationCommand(bashCommandFromArgs(json.RawMessage(call.Arguments)))
+	isVerification := call.Name == "bash" && evidence.IsDeliveryVerificationCommand(bashCommandFromArgs(json.RawMessage(call.ExecutionArguments())))
 	if isVerification {
 		return true
 	}
-	return !readOnly || evidence.ToolCallMutates(call.Name, json.RawMessage(call.Arguments), readOnly)
+	return !readOnly || evidence.ToolCallMutates(call.Name, json.RawMessage(call.ExecutionArguments()), readOnly)
 }
 
 type toolCallBatch struct {
@@ -490,7 +502,7 @@ func parallelisable(ctx context.Context, r *tool.Registry, call provider.ToolCal
 	if t == nil || len(ambiguous) > 0 {
 		return false
 	}
-	args := json.RawMessage(call.Arguments)
+	args := json.RawMessage(call.ExecutionArguments())
 	// ReadOnly says a call needs no approval; it does not say the call may share
 	// a batch. A tool that advances host state or reads what an earlier call in
 	// this reply started answers that second question itself.
@@ -545,7 +557,7 @@ launch:
 func scheduleUpToDecision(reg *tool.Registry, calls []provider.ToolCall) ([]provider.ToolCall, int) {
 	for i, c := range calls {
 		t, _, ambiguous := reg.ResolveCall(c.Name)
-		if t != nil && len(ambiguous) == 0 && tool.IsDecisionBarrier(t) {
+		if t != nil && len(ambiguous) == 0 && tool.IsDecisionBarrierCall(t, json.RawMessage(c.ExecutionArguments())) {
 			return calls[:i+1], i
 		}
 	}
@@ -588,5 +600,16 @@ func refusalCodeOf(err error) string {
 	if errors.As(err, &refusal) {
 		return refusal.Code
 	}
+	var identity tool.RefusalIdentity
+	if errors.As(err, &identity) {
+		return identity.RefusalCode()
+	}
 	return ""
+}
+
+func (a *Agent) emitToolOutcomeWarnings(outcome toolOutcome) {
+	a.emitCheckpointWarning(outcome.checkpointErr)
+	if outcome.truncMsg != "" {
+		a.svc.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: outcome.truncMsg})
+	}
 }

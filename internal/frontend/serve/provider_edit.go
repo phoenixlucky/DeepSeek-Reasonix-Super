@@ -4,12 +4,16 @@ package serve
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 
 	"reasonix/internal/contract/config"
+	"reasonix/internal/contract/pricing"
 	"reasonix/internal/contract/provider"
+	"reasonix/internal/model/billing"
 )
 
 // editProvider changes only the fields this panel owns and leaves the rest of
@@ -21,43 +25,7 @@ func (s *Server) editProvider(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusForbidden, "provider.editing_disabled", "provider editing is not enabled on this server", nil)
 		return
 	}
-	// The three compatibility fields are pointers so that "not sent" and "sent
-	// empty" stay different answers: a client that does not show them must not
-	// silently clear the headers a gateway needs.
-	var body struct {
-		Name    string `json:"name"`
-		BaseURL string `json:"baseUrl"`
-		// The wire format. A different one is the same account spoken to
-		// another way, so it is a change to this entry, not a new entry.
-		Kind            *string  `json:"kind"`
-		APIKey          string   `json:"apiKey"`
-		Models          []string `json:"models"`
-		Default         string   `json:"default"`
-		Vision          []string `json:"vision"`
-		ContextWindow   *int     `json:"contextWindow"`
-		MaxOutputTokens *int     `json:"maxOutputTokens"`
-		// Seconds the endpoint may stay silent, before its response headers or
-		// between stream events, before the call is read as dropped. Zero is
-		// the built-in default.
-		IdleTimeoutSeconds *int               `json:"idleTimeoutSeconds"`
-		Headers            *map[string]string `json:"headers"`
-		ExtraBody          *map[string]any    `json:"extraBody"`
-		// Which request shape this endpoint controls thinking with. No probe
-		// answers it — a relay forwards a vendor's models under its own name —
-		// so the declaration has to come from whoever knows what is behind it.
-		ReasoningProtocol *string `json:"reasoningProtocol"`
-		// The endpoint's effort vocabulary, for a relay whose protocol ladder is
-		// not the one its backend accepts. An empty list clears the declaration.
-		SupportedEfforts *[]string `json:"supportedEfforts"`
-		DefaultEffort    *string   `json:"defaultEffort"`
-		// Per-model vocabularies for a gateway serving several vendors' models;
-		// a listed model sent without one inherits the connection's.
-		ModelEfforts *map[string]modelEffortView `json:"modelEfforts"`
-		// Per-model window and output cap, with the same listed-models-are-the-
-		// whole-answer rule; a model sent empty inherits the connection's.
-		ModelLimits  *map[string]modelLimitsView `json:"modelLimits"`
-		ModelAliases *map[string]string          `json:"modelAliases"`
-	}
+	var body providerEditBody
 	if !decodeProviderBody(w, r, &body) {
 		return
 	}
@@ -97,7 +65,7 @@ func (s *Server) editProvider(w http.ResponseWriter, r *http.Request) {
 	if !applyNumericFields(w, entry, body.ContextWindow, body.MaxOutputTokens, body.IdleTimeoutSeconds) {
 		return
 	}
-	if bad := applyModelLimits(entry, models, body.ModelLimits); bad != nil {
+	if bad := applyModelDeclarations(entry, models, body.ModelLimits, body.ModelPrices); bad != nil {
 		refuse(w, http.StatusBadRequest, bad.code, bad.message, bad.detail)
 		return
 	}
@@ -106,6 +74,15 @@ func (s *Server) editProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	if bad := applyReasoningFields(entry, models, body.ReasoningProtocol, body.SupportedEfforts, body.DefaultEffort, body.ModelEfforts); bad != nil {
 		refuse(w, http.StatusBadRequest, bad.code, bad.message, bad.detail)
+		return
+	}
+	if !applyEndpointSwitches(w, entry, body.WebSearch, body.Continuation) {
+		return
+	}
+	if !applyBillingMode(w, entry, body.BillingMode) {
+		return
+	}
+	if !applyBalanceFields(w, entry, body.BalanceURL, body.BalanceFormat) {
 		return
 	}
 	if body.ExtraBody != nil {
@@ -132,7 +109,61 @@ func (s *Server) editProvider(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	if err := config.NoteProviderKeys(config.UserConfigPath(), entry); err != nil {
+		slog.Warn("serve: could not record the keys the 1.x line drops", "provider", entry.Name, "err", err)
+	}
 	s.applyEditedProvider(w, r, entry, assemblyShape(entry) != assembled, wasListed)
+}
+
+// providerEditBody carries the compatibility fields as pointers, so that "not
+// sent" and "sent empty" stay different answers: a client that does not show
+// them must not silently clear the headers a gateway needs.
+type providerEditBody struct {
+	Name    string `json:"name"`
+	BaseURL string `json:"baseUrl"`
+	// The wire format. A different one is the same account spoken to
+	// another way, so it is a change to this entry, not a new entry.
+	Kind            *string  `json:"kind"`
+	APIKey          string   `json:"apiKey"`
+	Models          []string `json:"models"`
+	Default         string   `json:"default"`
+	Vision          []string `json:"vision"`
+	ContextWindow   *int     `json:"contextWindow"`
+	MaxOutputTokens *int     `json:"maxOutputTokens"`
+	// Seconds the endpoint may stay silent, before its response headers or
+	// between stream events, before the call is read as dropped. Zero is
+	// the built-in default.
+	IdleTimeoutSeconds *int               `json:"idleTimeoutSeconds"`
+	Headers            *map[string]string `json:"headers"`
+	ExtraBody          *map[string]any    `json:"extraBody"`
+	// Which request shape this endpoint controls thinking with. No probe
+	// answers it — a relay forwards a vendor's models under its own name —
+	// so the declaration has to come from whoever knows what is behind it.
+	ReasoningProtocol *string `json:"reasoningProtocol"`
+	// The endpoint's effort vocabulary, for a relay whose protocol ladder is
+	// not the one its backend accepts. An empty list clears the declaration.
+	SupportedEfforts *[]string `json:"supportedEfforts"`
+	DefaultEffort    *string   `json:"defaultEffort"`
+	// Per-model vocabularies for a gateway serving several vendors' models;
+	// a listed model sent without one inherits the connection's.
+	ModelEfforts *map[string]modelEffortView `json:"modelEfforts"`
+	// Per-model window and output cap, with the same listed-models-are-the-
+	// whole-answer rule; a model sent empty inherits the connection's.
+	ModelLimits  *map[string]modelLimitsView `json:"modelLimits"`
+	ModelPrices  *map[string]*modelPriceView `json:"modelPrices"`
+	ModelAliases *map[string]string          `json:"modelAliases"`
+	// Declarations a panel used to write one click at a time. Pointers, so
+	// an unsent one leaves the stored choice alone. Whether thinking
+	// parameters are sent is reasoningProtocol "none", not a field of its own.
+	WebSearch    *bool   `json:"webSearch"`
+	Continuation *string `json:"continuation"`
+	// The wallet endpoint and the format it answers in. Sent empty, the URL
+	// removes the readout and takes its format with it.
+	BalanceURL    *string `json:"balanceUrl"`
+	BalanceFormat *string `json:"balanceFormat"`
+	// How the connection is billed: payg, or subscription_equivalent where the
+	// figures shown are an API-priced estimate of a plan. Unsent leaves it alone.
+	BillingMode *string `json:"billingMode"`
 }
 
 // applyEditedProvider answers a saved edit. What the agent binds at assembly
@@ -172,6 +203,18 @@ func (s *Server) runsListedModelOf(entry *config.ProviderEntry) bool {
 	return running == entry.Name && slices.Contains(entry.ModelList(), model)
 }
 
+// priceRates is what quotes read of a price. Where it was read and when are not
+// part of it, so noting a source does not rebuild a running conversation.
+func priceRates(prices map[string]*provider.Pricing) map[string][4]any {
+	out := make(map[string][4]any, len(prices))
+	for model, p := range prices {
+		if p != nil {
+			out[model] = [4]any{p.Input, p.Output, p.CacheHit, p.Currency}
+		}
+	}
+	return out
+}
+
 // assemblyShape is what of an entry the agent binds when it is built. Empty and
 // absent collections are one answer, because the form sends {} for a field it
 // leaves blank and the file drops it.
@@ -183,10 +226,11 @@ func assemblyShape(e *config.ProviderEntry) string {
 		return v
 	}
 	shape := []any{
-		e.Kind, e.BaseURL, orNil(len(e.Models), e.Models), e.Vision, orNil(len(e.VisionModels), e.VisionModels),
+		e.BalanceURL, e.BalanceFormat, e.Kind, e.BaseURL, orNil(len(e.Models), e.Models), e.Vision, orNil(len(e.VisionModels), e.VisionModels),
 		orNil(len(e.ModelOverrides), e.ModelOverrides), e.ContextWindow, e.MaxOutputTokens,
 		orNil(len(e.Headers), e.Headers), orNil(len(e.ExtraBody), e.ExtraBody), e.ReasoningProtocol,
 		orNil(len(e.SupportedEfforts), e.SupportedEfforts), e.DefaultEffort, e.IdleTimeoutSeconds,
+		orNil(len(e.Prices), priceRates(e.Prices)), e.ProviderBillingMode(), orNil(len(e.VideoModels), e.VideoModels), e.VideoProtocol,
 	}
 	b, err := json.Marshal(shape)
 	if err != nil {
@@ -363,111 +407,75 @@ func visionSettableOf(cfg *config.Config, p *config.ProviderEntry) []string {
 	return out
 }
 
-// setProviderThinking pins or releases the plain-chat request shape. Relays
-// that reject an unknown thinking/reasoning_effort field fail every request
-// until this is off, and the endpoint's own error rarely names the field.
-func (s *Server) setProviderThinking(w http.ResponseWriter, r *http.Request) {
-	if !s.grants.at(r).providerEdit {
-		refuse(w, http.StatusForbidden, "provider.editing_disabled", "provider editing is not enabled on this server", nil)
-		return
+// applyBillingMode sets the billing mode from the closed set the quotes know.
+func applyBillingMode(w http.ResponseWriter, entry *config.ProviderEntry, mode *string) bool {
+	if mode == nil {
+		return true
 	}
-	var body struct {
-		Name string `json:"name"`
-		On   bool   `json:"on"`
+	switch m := strings.TrimSpace(*mode); m {
+	case pricing.BillingModePAYG, pricing.BillingModeSubscriptionEquivalent:
+		entry.BillingMode = m
+		return true
 	}
-	if !decodeProviderBody(w, r, &body) {
-		return
-	}
-	edit := config.LoadForEdit(config.UserConfigPath())
-	entry, ok := edit.Provider(strings.TrimSpace(body.Name))
-	if !ok {
-		notFound(w, "provider", body.Name)
-		return
-	}
-	if !config.CanConfigureThinkingParams(entry) {
-		refuse(w, http.StatusBadRequest, "provider.no_thinking_param", "this protocol never sends thinking parameters", nil)
-		return
-	}
-	config.SetThinkingParams(entry, body.On)
-	if err := edit.SaveTo(config.UserConfigPath()); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	refuse(w, http.StatusBadRequest, "provider.billing_mode_unknown", "the billing mode must be payg or subscription_equivalent",
+		map[string]any{"modes": []string{pricing.BillingModePAYG, pricing.BillingModeSubscriptionEquivalent}})
+	return false
 }
 
-// setProviderContinuation pins how this endpoint carries context between turns.
-// A relay may answer the Responses protocol without storing any, and it rejects
-// the reference rather than ignoring it — so every turn after the first fails
-// until this is stateless. Declared rather than probed: a retry that happens to
-// succeed says nothing about why the first attempt did not.
-func (s *Server) setProviderContinuation(w http.ResponseWriter, r *http.Request) {
-	if !s.grants.at(r).providerEdit {
-		refuse(w, http.StatusForbidden, "provider.editing_disabled", "provider editing is not enabled on this server", nil)
-		return
+// applyBalanceFields sets the wallet endpoint and its declared format, the
+// format only from the closed set.
+func applyBalanceFields(w http.ResponseWriter, entry *config.ProviderEntry, rawURL, format *string) bool {
+	if rawURL != nil {
+		trimmed := strings.TrimSpace(*rawURL)
+		if trimmed != "" {
+			u, err := url.Parse(trimmed)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+				refuse(w, http.StatusBadRequest, "provider.balance_url_invalid", "the balance address must be an http or https URL", nil)
+				return false
+			}
+		}
+		entry.BalanceURL = trimmed
+		if trimmed == "" {
+			entry.BalanceFormat = ""
+		}
 	}
-	var body struct {
-		Name string `json:"name"`
-		Mode string `json:"mode"`
+	if format != nil {
+		f := strings.TrimSpace(*format)
+		if f != "" && !billing.Format(f).Valid() {
+			refuse(w, http.StatusBadRequest, "provider.balance_format_unknown", "that balance format is not one of the declared formats", map[string]any{"format": f, "formats": balanceFormatNames()})
+			return false
+		}
+		entry.BalanceFormat = f
 	}
-	if !decodeProviderBody(w, r, &body) {
-		return
-	}
-	mode, ok := config.ParseContinuation(body.Mode)
-	if !ok {
-		badValue(w, "mode", string(config.ContinuationAuto), string(config.ContinuationStateful), string(config.ContinuationStateless))
-		return
-	}
-	edit := config.LoadForEdit(config.UserConfigPath())
-	entry, found := edit.Provider(strings.TrimSpace(body.Name))
-	if !found {
-		notFound(w, "provider", body.Name)
-		return
-	}
-	if !config.CanConfigureContinuation(entry) {
-		refuse(w, http.StatusBadRequest, "provider.no_continuation", "this protocol carries no stored state between turns", nil)
-		return
-	}
-	config.SetContinuation(entry, mode)
-	if err := edit.SaveTo(config.UserConfigPath()); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	return true
 }
 
-// setProviderWebSearch records the tri-state for the endpoint-executed search
-// tool. It is a real per-entry choice, unlike the protocol: the wire format is
-// what makes it available, and this only says whether to use it.
-func (s *Server) setProviderWebSearch(w http.ResponseWriter, r *http.Request) {
-	if !s.grants.at(r).providerEdit {
-		refuse(w, http.StatusForbidden, "provider.editing_disabled", "provider editing is not enabled on this server", nil)
-		return
+// applyEndpointSwitches stores the two per-endpoint declarations and answers
+// the refusal itself. Each exists only where the protocol catalog says the wire
+// has the field; a value for an entry without it is a caller to correct. No
+// probe tells a relay that stores no state from one that does, so it is declared.
+func applyEndpointSwitches(w http.ResponseWriter, entry *config.ProviderEntry, webSearch *bool, continuation *string) bool {
+	if webSearch != nil {
+		if !config.SupportsServerWebSearch(entry) {
+			refuse(w, http.StatusBadRequest, "provider.no_websearch_wire", "this protocol has no wire format for a provider-executed web search", nil)
+			return false
+		}
+		on := *webSearch
+		entry.WebSearch = &on
 	}
-	var body struct {
-		Name string `json:"name"`
-		On   bool   `json:"on"`
+	if continuation != nil {
+		mode, ok := config.ParseContinuation(*continuation)
+		if !ok {
+			badValue(w, "continuation", string(config.ContinuationAuto), string(config.ContinuationStateful), string(config.ContinuationStateless))
+			return false
+		}
+		if !config.CanConfigureContinuation(entry) {
+			refuse(w, http.StatusBadRequest, "provider.no_continuation", "this protocol carries no stored state between turns", nil)
+			return false
+		}
+		config.SetContinuation(entry, mode)
 	}
-	if !decodeProviderBody(w, r, &body) {
-		return
-	}
-	edit := config.LoadForEdit(config.UserConfigPath())
-	entry, ok := edit.Provider(strings.TrimSpace(body.Name))
-	if !ok {
-		notFound(w, "provider", body.Name)
-		return
-	}
-	if !config.SupportsServerWebSearch(entry) {
-		refuse(w, http.StatusBadRequest, "provider.no_websearch_wire", "this protocol has no wire format for a provider-executed web search", nil)
-		return
-	}
-	on := body.On
-	entry.WebSearch = &on
-	if err := edit.SaveTo(config.UserConfigPath()); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	return true
 }
 
 // applyNumericFields stores the three numbers a form sends as pointers, so

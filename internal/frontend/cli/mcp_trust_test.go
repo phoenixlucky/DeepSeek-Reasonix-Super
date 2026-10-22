@@ -11,7 +11,10 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"reasonix/internal/base/testenv"
+	"reasonix/internal/contract/config"
 	"reasonix/internal/ext/plugin"
+	"reasonix/internal/ext/pluginspec"
 )
 
 func TestMCPTrustNeedsExactlyOneConfiguredServer(t *testing.T) {
@@ -85,5 +88,33 @@ func TestTrustHeldMCPToolsConfirmation(t *testing.T) {
 	}
 	if _, err := trustHeldMCPTools(spec, "", strings.NewReader("y\n"), &bytes.Buffer{}, true); !errors.Is(err, plugin.ErrNoHeldTools) {
 		t.Fatalf("after trusting, held = %v, want ErrNoHeldTools", err)
+	}
+}
+
+func TestMCPTrustCLIFollowAndUnfollowRecordTheChoice(t *testing.T) {
+	isolateCLIConfigHome(t)
+	workspace := testenv.TempDir(t)
+	t.Chdir(workspace)
+	entry := config.PluginEntry{Name: "figma", Type: "http", URL: "https://mcp.figma.com/mcp", Source: config.MCPSourceUserConfig}
+	if _, err := config.InstallUserPluginForRoot(workspace, entry, true); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	previous := mcpTrustForCLI
+	mcpTrustForCLI = func(plugin.Spec, string) ([]string, error) { called = true; return nil, nil }
+	t.Cleanup(func() { mcpTrustForCLI = previous })
+
+	spec := func() plugin.Spec {
+		specs := pluginspec.ForRootWithOptions([]config.PluginEntry{entry}, workspace, pluginspec.Options{StateHome: config.ReasonixHomeDir(), ConfigSource: string(entry.Source)})
+		return specs[0]
+	}
+	if code := mcpTrustCLI([]string{"figma", "--follow"}); code != 0 || !plugin.ToolPinsFollow(spec()) {
+		t.Fatalf("--follow exit=%d followed=%v", code, plugin.ToolPinsFollow(spec()))
+	}
+	if code := mcpTrustCLI([]string{"figma", "--unfollow"}); code != 0 || plugin.ToolPinsFollow(spec()) {
+		t.Fatalf("--unfollow exit=%d followed=%v", code, plugin.ToolPinsFollow(spec()))
+	}
+	if called {
+		t.Fatal("choosing to follow also trusted the held definitions")
 	}
 }

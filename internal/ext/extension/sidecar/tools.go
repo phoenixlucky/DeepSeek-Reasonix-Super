@@ -13,7 +13,7 @@ import (
 // validateTools holds the tools a runtime activated at initialize to the ones
 // its manifest declares: the model is shown the manifest's schemas, so a tool
 // the manifest does not describe has nothing the model could have called.
-func (c *Client) validateTools(served []string) error {
+func (c *Client) validateTools(served []string, specs []protocol.ToolSpec) error {
 	if len(served) == 0 {
 		return nil
 	}
@@ -21,11 +21,26 @@ func (c *Client) validateTools(served []string) error {
 		return &protocol.ProtocolError{Reason: protocol.ErrCapabilityNotDeclared, Message: fmt.Sprintf("extension %s served tools without the tools capability", c.pluginID)}
 	}
 	for _, name := range served {
+		if c.rt.DynamicTools {
+			if !hasSpec(specs, name) {
+				return &protocol.ProtocolError{Reason: protocol.ErrCapabilityNotDeclared, Message: fmt.Sprintf("extension %s served tool %q without describing it in toolSpecs", c.pluginID, name)}
+			}
+			continue
+		}
 		if !c.declaresTool(name) {
 			return &protocol.ProtocolError{Reason: protocol.ErrCapabilityNotDeclared, Message: fmt.Sprintf("extension %s served tool %q which its manifest does not declare", c.pluginID, name)}
 		}
 	}
 	return nil
+}
+
+func hasSpec(specs []protocol.ToolSpec, name string) bool {
+	for _, spec := range specs {
+		if spec.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) declaresTool(name string) bool {
@@ -67,5 +82,12 @@ func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage
 
 // DeclaredTools returns the tools this runtime's manifest declares.
 func (c *Client) DeclaredTools() []pluginpkg.RuntimeTool {
-	return append([]pluginpkg.RuntimeTool(nil), c.rt.Tools...)
+	out := append([]pluginpkg.RuntimeTool(nil), c.rt.Tools...)
+	if !c.rt.DynamicTools {
+		return out
+	}
+	for _, spec := range c.initResult.ToolSpecs {
+		out = append(out, pluginpkg.RuntimeTool{Name: spec.Name, Description: spec.Description, InputSchema: spec.InputSchema, ReadOnly: spec.ReadOnly})
+	}
+	return out
 }

@@ -10,6 +10,7 @@ func TestProtocolsDeclareWhereEffortLands(t *testing.T) {
 		"openai":    "reasoning_effort",
 		"responses": "reasoning.effort",
 		"anthropic": "output_config.effort",
+		"gemini":    "generation_config.thinking_level",
 		"typesafe":  "",
 	}
 	seen := 0

@@ -18,6 +18,9 @@ var ErrWriteFenceClosed = errors.New("write path is outside this run's granted p
 // one is worth coming back to.
 var ErrWritePathBusy = errors.New("write path is in use by another run")
 
+// CodeWritePathBusy is the refusal code a frontend words for ErrWritePathBusy.
+const CodeWritePathBusy = "write.path_busy"
+
 // WriteGrant is one delegated run's write scope: what it declared before
 // starting, plus what a user granted while it ran. The two stay apart because
 // only the declared set can be proven non-overlapping up front — nothing added

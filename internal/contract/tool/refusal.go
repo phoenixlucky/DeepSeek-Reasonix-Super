@@ -5,6 +5,10 @@ package tool
 
 import "strings"
 
+type RefusalIdentity interface {
+	RefusalCode() string
+}
+
 // Refusal is one host refusal. Code is the identity and the only thing a reader
 // may classify on; Message is presentation and may be reworded or translated
 // without changing what the refusal means. Whoever first knows why the call
@@ -13,6 +17,8 @@ import "strings"
 type Refusal struct {
 	Code    string
 	Message string
+	// Remedy, when set, is the setting whose change would lift this refusal.
+	Remedy *Remedy
 }
 
 // Error lets one value serve both refusal paths a contextual tool has: the
@@ -25,15 +31,23 @@ func (r Refusal) Error() string { return r.String() }
 // because an identity the model never sees is one it cannot cite back.
 func (r Refusal) String() string {
 	msg := strings.TrimSpace(r.Message)
-	if r.Code == "" {
-		return msg
+	switch {
+	case r.Code == "":
+	case msg == "":
+		msg = "(refusal: " + r.Code + ")"
+	default:
+		msg += " (refusal: " + r.Code + ")"
 	}
-	if msg == "" {
-		return "(refusal: " + r.Code + ")"
+	if r.Remedy != nil {
+		msg += " (fix: " + r.Remedy.String() + ")"
 	}
-	return msg + " (refusal: " + r.Code + ")"
+	return strings.TrimSpace(msg)
 }
 
 // Empty reports a refusal carrying neither identity nor words, which is what a
 // tool that cannot say why it is unavailable returns.
 func (r Refusal) Empty() bool { return r.Code == "" && strings.TrimSpace(r.Message) == "" }
+
+// CodeCancelledByUser identifies a call the user stopped on its own while the
+// turn went on. Whatever the call had already done outside the host is unknown.
+const CodeCancelledByUser = "tool.cancelled_by_user"

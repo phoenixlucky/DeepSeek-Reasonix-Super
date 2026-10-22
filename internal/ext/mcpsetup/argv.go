@@ -15,8 +15,7 @@ import (
 //	-- npx -y chrome-devtools-mcp@latest      (name derived from the package)
 //	https://example.com/mcp                   (name derived from the host)
 //	<name> [command...|--http URL] [--env K=V] [--header K=V]
-func ParseArgs(args []string) (entry config.PluginEntry, err error) {
-	defer func() { err = secrets.DiagnosticError(err) }()
+func ParseArgs(args []string) (config.PluginEntry, error) {
 	var e config.PluginEntry
 	if len(args) == 0 {
 		return e, fmt.Errorf("mcp add: missing server name, command, or URL")
@@ -50,7 +49,7 @@ func ParseArgs(args []string) (entry config.PluginEntry, err error) {
 
 	e.Name = strings.TrimSpace(args[0])
 	if e.Name == "" || strings.HasPrefix(e.Name, "-") {
-		return e, fmt.Errorf("mcp add: first argument must be the server name, got %q", args[0])
+		return e, fmt.Errorf("mcp add: first argument must be the server name or a remote URL")
 	}
 	rest := args[1:]
 	if len(rest) > 0 && rest[0] == "--" {
@@ -106,7 +105,7 @@ func applyFlags(e *config.PluginEntry, rest []string) error {
 				return err
 			}
 		default:
-			return fmt.Errorf("mcp add: unknown flag %q", a)
+			return fmt.Errorf("mcp add: unknown flag %q", key)
 		}
 	}
 	return nil

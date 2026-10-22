@@ -16,7 +16,7 @@ import { parse } from "@babel/parser";
 // about a quarter of the product's inputs, including ones that write kernel
 // state. A ceiling measured against that set could only ever fall for the
 // wrong reason.
-const SOURCES = import.meta.glob(["./**/*.{ts,tsx}", "!./**/*.test.*", "!./actions.ts"], {
+const SOURCES = import.meta.glob(["./**/*.{ts,tsx}", "!./**/*.test.*", "!./actions.ts", "!./actions_*.ts"], {
   query: "?raw",
   import: "default",
   eager: true,
@@ -56,7 +56,7 @@ const undeclared = census.roots.filter((r) => !r.actions.length);
 // denominator that grows because the instrument was corrected is not the same
 // event as one that grows because debt was added, and numbers either side of
 // that change do not compare.
-const UNDECLARED_CEILING = 218;
+const UNDECLARED_CEILING = 217;
 
 /** One file, for holding the discovery rules themselves. */
 const only = (src: string) => certifyRoots(new Map([["src/ui/X.tsx", src]]), { resolve });
@@ -169,6 +169,15 @@ describe("what counts as an input a person performs", () => {
 // name instead is what left every Picker call site outside the universe — with
 // a kernel write among them — while Seal A read as held.
 describe("what a certified primitive's call site counts as", () => {
+  it("keeps tooltip-wrapped button actions at the call site", () => {
+    const c = among({
+      "src/ui/X.tsx": `import { TooltipButton } from "./TooltipButton";
+        export const A = () => <TooltipButton data-action="a.b" onClick={() => save()} />;`,
+      "src/ui/TooltipButton.tsx": "export function TooltipButton() { return null }",
+    });
+    expect(c.roots.map((r) => [r.event, r.actions])).toEqual([["click", ["a.b"]]]);
+    expect(c.uncertified).toEqual([]);
+  });
   it("makes the call site the input, on the contract rather than the spelling", () => {
     const c = among({
       "src/ui/X.tsx": `import { Picker } from "./Menu";

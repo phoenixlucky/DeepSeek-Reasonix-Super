@@ -41,3 +41,29 @@ func TestTreeListsAHeldSessionBeforeItIsWritten(t *testing.T) {
 		t.Fatalf("held rows = %+v, want the one unwritten session at %s", held, path)
 	}
 }
+
+// A pane on a conversation that is on disk but outside the window is not
+// "unwritten": the window leaving its row out is the view's choice, and adding
+// a second row for it would list one conversation twice.
+func TestTreeDoesNotAddAnOpenSessionTheWindowLeftOut(t *testing.T) {
+	t.Setenv("REASONIX_HOME", testenv.TempDir(t))
+	root := testenv.TempDir(t)
+	h := NewHub(HubOptions{})
+	rt := hubRuntime(t, h, root)
+	paths := seedAged(t, root, 120)
+	oldest := paths[0]
+	rt.Server.Controller().SetSessionPath(oldest)
+
+	srv := httptest.NewServer(operatorHandler(h))
+	defer srv.Close()
+	ws := treeFor(t, srv, "")
+	var rows int
+	for _, s := range ws.Sessions {
+		if filepath.Clean(s.Path) == filepath.Clean(oldest) {
+			rows++
+		}
+	}
+	if rows > 1 {
+		t.Fatalf("the open conversation was listed %d times", rows)
+	}
+}

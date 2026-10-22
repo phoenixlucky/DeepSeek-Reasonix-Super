@@ -29,7 +29,16 @@ func (PlatformSender) Send(m Message) error {
 	return notification.Push()
 }
 
-var messageBeep = syscall.NewLazyDLL("user32.dll").NewProc("MessageBeep")
+var (
+	user32                = syscall.NewLazyDLL("user32.dll")
+	messageBeep           = user32.NewProc("MessageBeep")
+	allowSetForegroundWin = user32.NewProc("AllowSetForegroundWindow")
+)
+
+func init() {
+	const asfwAny = ^uintptr(0)
+	allowForeground = func() { _, _, _ = allowSetForegroundWin.Call(asfwAny) }
+}
 
 // Chime plays the system's asterisk sound, which is the one the person already
 // hears for a finished task elsewhere; it does not depend on toast settings.

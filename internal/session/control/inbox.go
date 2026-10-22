@@ -10,8 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"reasonix/internal/contract/config"
 	"reasonix/internal/contract/event"
 	"reasonix/internal/contract/provider"
+	"reasonix/internal/contract/surfacespec"
 	"reasonix/internal/state/sessioninbox"
 )
 
@@ -31,16 +33,17 @@ const (
 
 // InboxRequest is the frontend-facing enqueue payload.
 type InboxRequest struct {
-	Intent      sessioninbox.InboxIntent
-	Origin      sessioninbox.PromptOrigin
-	Display     string
-	Raw         string
-	Submit      string
-	Format      string
-	Source      string
-	Idempotency string
-	Invocations []InvocationRequest
-	Extra       map[string]string
+	SurfaceAction *surfacespec.Action
+	Intent        sessioninbox.InboxIntent
+	Origin        sessioninbox.PromptOrigin
+	Display       string
+	Raw           string
+	Submit        string
+	Format        string
+	Source        string
+	Idempotency   string
+	Invocations   []InvocationRequest
+	Extra         map[string]string
 	// FreezeRefs lists workspace-relative paths to freeze at enqueue time.
 	FreezeRefs []string
 	// Via is the paired device the item came from; nil is the window.
@@ -189,7 +192,7 @@ func (s *inboxState) activeIDs() []string {
 // adoptInboxLocked opens the queue at path and wires its change listener, so
 // every path that binds a store reports movement. Callers hold c.inbox.mu.
 func (c *Controller) adoptInboxLocked(path string) (*sessioninbox.Store, error) {
-	st, err := sessioninbox.Open(path, sessioninbox.Limits{})
+	st, err := sessioninbox.Open(path, sessioninbox.Limits{MaxItems: queuedInputCeiling(config.LoadForEdit(config.UserConfigPath()).QueuedInputLimit())})
 	if err != nil {
 		return nil, err
 	}
@@ -201,10 +204,13 @@ func (c *Controller) adoptInboxLocked(path string) (*sessioninbox.Store, error) 
 	return st, nil
 }
 
+// ErrInboxNeedsSession: the queue lives beside a saved session, and this one has no path yet.
+var ErrInboxNeedsSession = errors.New("inbox requires a persisted session path")
+
 func (c *Controller) ensureInbox() (*sessioninbox.Store, error) {
 	path := c.SessionPath()
 	if path == "" {
-		return nil, fmt.Errorf("inbox requires a persisted session path")
+		return nil, ErrInboxNeedsSession
 	}
 	c.inbox.mu.Lock()
 	defer c.inbox.mu.Unlock()
@@ -220,11 +226,28 @@ func (c *Controller) ensureInbox() (*sessioninbox.Store, error) {
 		return nil, err
 	}
 	snap := st.Snapshot()
+	if snap.Unrecovered {
+		// The contents are unknown, so this says so and never the count.
+		c.sink.Emit(inboxUnrecoveredNotice(st.Dir()))
+		return st, nil
+	}
 	if snap.Recovered && snap.RecoveredN > 0 {
 		c.sink.Emit(inboxRecoveredNotice(snap.RecoveredN))
 		sessioninbox.NoteRecovered(snap.RecoveredN)
 	}
 	return st, nil
+}
+
+// inboxUnrecoveredNotice carries the queue directory as a typed payload; the
+// English text is the fallback for a frontend that does not word the code.
+func inboxUnrecoveredNotice(dir string) event.Event {
+	return event.Event{
+		Kind:   event.Notice,
+		Level:  event.LevelWarn,
+		Code:   event.NoticeCodeInboxUnrecovered,
+		Text:   "The queue could not be read, so the inbox contents are unknown and it is paused. Inspect the queue before resuming.",
+		Detail: event.InboxUnrecovered{Dir: dir}.Encode(),
+	}
 }
 
 // inboxRecoveredNotice carries the count as a typed payload; the English text is
@@ -242,6 +265,7 @@ func inboxRecoveredNotice(n int) event.Event {
 // rebindInbox opens the inbox for the current session path. Safe across
 // NewSession/Resume/SetSessionPath; does not copy items on fork.
 func (c *Controller) rebindInbox() {
+	c.rebindPeers()
 	path := c.SessionPath()
 	c.inbox.mu.Lock()
 	defer c.inbox.mu.Unlock()
@@ -250,7 +274,7 @@ func (c *Controller) rebindInbox() {
 			return
 		}
 		// Pause the old session's queue so it is not auto-run if reopened.
-		_ = c.inbox.store.SetPaused(true)
+		_ = c.inbox.store.Pause(sessioninbox.PauseSessionChanged)
 		c.inbox.store.Close()
 		c.inbox.store = nil
 		c.inbox.clearActive()
@@ -264,10 +288,19 @@ func (c *Controller) rebindInbox() {
 		return
 	}
 	snap := st.Snapshot()
+	if snap.Unrecovered {
+		// As in ensureInbox: say the contents are unknown, never a count.
+		dir := st.Dir()
+		// Capture the sink: New writes c.sink right after this call returns.
+		sink := c.sink
+		go func() { sink.Emit(inboxUnrecoveredNotice(dir)) }()
+		return
+	}
 	if snap.Recovered && snap.RecoveredN > 0 {
 		// Emit after unlock via deferred sink call would race; emit here.
+		sink := c.sink
 		go func(n int) {
-			c.sink.Emit(inboxRecoveredNotice(n))
+			sink.Emit(inboxRecoveredNotice(n))
 		}(snap.RecoveredN)
 		sessioninbox.NoteRecovered(snap.RecoveredN)
 	}
@@ -278,13 +311,18 @@ func (c *Controller) pauseInboxOnRotate() {
 	st := c.inbox.store
 	c.inbox.mu.Unlock()
 	if st != nil {
-		_ = st.SetPaused(true)
+		_ = st.Pause(sessioninbox.PauseSessionChanged)
 	}
 }
 
 // EnqueueInbox durably queues an instruction. Only returns a receipt after
 // blob+manifest commit. Does not auto-start a turn (call TrySubmit / dispatcher).
 func (c *Controller) EnqueueInbox(req InboxRequest) (sessioninbox.InboxReceipt, error) {
+	c.compositionMutationMu.Lock()
+	defer c.compositionMutationMu.Unlock()
+	if err := c.compositionEnqueueReady(); err != nil {
+		return sessioninbox.InboxReceipt{}, err
+	}
 	st, err := c.ensureInbox()
 	if err != nil {
 		return sessioninbox.InboxReceipt{}, err
@@ -310,10 +348,17 @@ func (c *Controller) EnqueueInbox(req InboxRequest) (sessioninbox.InboxReceipt, 
 		Extra:        maps.Clone(req.Extra),
 		Via:          req.Via,
 	}
-	env.FrozenRefBlock, env.FrozenImages, env.ReferenceErrors = c.freezeInboxReferences(context.Background(), submit, req.FreezeRefs)
+	// Text the host wrote for another party is data: an @token in it names nothing here.
+	if req.SurfaceAction == nil && !req.Origin.IsHost() {
+		env.FrozenRefBlock, env.FrozenImages, env.ReferenceErrors = c.freezeInboxReferences(context.Background(), submit, req.FreezeRefs)
+	}
 	intent := req.Intent
 	if intent != sessioninbox.IntentSteer {
 		intent = sessioninbox.IntentFollowup
+	}
+	rollback, err := c.beginCompositionEnqueue()
+	if err != nil {
+		return sessioninbox.InboxReceipt{}, err
 	}
 	rec, err := st.Enqueue(sessioninbox.EnqueueRequest{
 		Intent:      intent,
@@ -329,14 +374,14 @@ func (c *Controller) EnqueueInbox(req InboxRequest) (sessioninbox.InboxReceipt, 
 		} else {
 			sessioninbox.NoteTxFail()
 		}
-		return sessioninbox.InboxReceipt{}, err
+		return sessioninbox.InboxReceipt{}, errors.Join(err, rollback())
 	}
 	if !rec.Idempotent && len(env.ReferenceErrors) > 0 {
 		reason := strings.Join(env.ReferenceErrors, "; ")
 		if stateErr := st.SetState(rec.ItemID, sessioninbox.StateBlocked, reason); stateErr != nil {
 			return sessioninbox.InboxReceipt{}, stateErr
 		}
-		if pauseErr := st.SetPaused(true); pauseErr != nil {
+		if pauseErr := st.Pause(sessioninbox.PauseReferenceBlocked); pauseErr != nil {
 			return sessioninbox.InboxReceipt{}, pauseErr
 		}
 		rec.Paused = true
@@ -384,6 +429,9 @@ func (c *Controller) UpdateInboxItem(id, display, raw, submit string) (sessionin
 	if err != nil {
 		return sessioninbox.InboxItemMeta{}, err
 	}
+	if previous.Extra[surfacespec.ActionMessageName] != "" {
+		return sessioninbox.InboxItemMeta{}, sessioninbox.ErrInvalidState
+	}
 	env := sessioninbox.PromptEnvelope{
 		DisplayText:  display,
 		RawText:      raw,
@@ -407,7 +455,7 @@ func (c *Controller) UpdateInboxItem(id, display, raw, submit string) (sessionin
 		if err := st.SetState(id, sessioninbox.StateBlocked, reason); err != nil {
 			return sessioninbox.InboxItemMeta{}, err
 		}
-		_ = st.SetPaused(true)
+		_ = st.Pause(sessioninbox.PauseReferenceBlocked)
 		updated.State = sessioninbox.StateBlocked
 		updated.BlockReason = reason
 	}
@@ -424,6 +472,9 @@ func (c *Controller) AppendInboxItem(id, text, idempotency string, extra map[str
 	_, previous, err := st.ReadItem(id)
 	if err != nil {
 		return sessioninbox.InboxItemMeta{}, err
+	}
+	if previous.Extra[surfacespec.ActionMessageName] != "" {
+		return sessioninbox.InboxItemMeta{}, sessioninbox.ErrInvalidState
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -460,7 +511,7 @@ func (c *Controller) AppendInboxItem(id, text, idempotency string, extra map[str
 		if err := st.SetState(id, sessioninbox.StateBlocked, reason); err != nil {
 			return sessioninbox.InboxItemMeta{}, err
 		}
-		_ = st.SetPaused(true)
+		_ = st.Pause(sessioninbox.PauseReferenceBlocked)
 		updated.State = sessioninbox.StateBlocked
 		updated.BlockReason = reason
 	}
@@ -471,82 +522,12 @@ func (c *Controller) AppendInboxItem(id, text, idempotency string, extra map[str
 // removed the same way and by the same verb - it is queued too, and a frontend
 // that has to name a second one is a frontend that has to know which half of
 // the queue a line landed in.
-func (c *Controller) DeleteInboxItem(id string) error {
-	st, err := c.ensureInbox()
-	if err != nil {
-		return err
-	}
-	switch dropped, dropErr := c.DropQueuedSteer(id); {
-	case dropErr != nil:
-		return dropErr
-	case dropped:
-		return nil
-	}
-	if err := st.DeleteItem(id); !errors.Is(err, sessioninbox.ErrInvalidState) {
-		return err
-	}
-	// Not in the queue and not pending: for a steer that means the turn read it
-	// already, which is a different answer than "wrong state for a delete".
-	if meta, _, readErr := st.ReadItem(id); readErr == nil && steerAlreadyAdmitted(meta.State) {
-		return ErrSteerApplied
-	}
-	return sessioninbox.ErrInvalidState
-}
-
-// CancelWithInboxItems stops the active turn and discards only the durable
-// pending items explicitly owned by the cancelling frontend. Admission is
-// paused around the batch deletion so TurnDone cannot race a cancelled item
-// into a new provider turn. Unrelated inbox items remain intact.
-func (c *Controller) CancelWithInboxItems(ids []string, source string) error {
-	st, err := c.ensureInbox()
-	if err != nil {
-		c.Cancel()
-		return err
-	}
-	wasPaused := st.Snapshot().Paused
-	if err := st.SetPaused(true); err != nil {
-		c.Cancel()
-		return err
-	}
-	if err := st.DiscardPendingItemsOwned(ids, strings.TrimSpace(source)); err != nil {
-		// Keep the inbox paused for inspection if an item already crossed the
-		// admission boundary. Cancellation still stops that in-flight turn.
-		c.Cancel()
-		return err
-	}
-	c.Cancel()
-	if !wasPaused {
-		if err := st.SetPaused(false); err != nil {
-			return err
-		}
-		c.maybeDispatchInbox()
-	}
-	return nil
-}
-
 func (c *Controller) MoveInboxItem(id string, toIndex int) error {
 	st, err := c.ensureInbox()
 	if err != nil {
 		return err
 	}
 	return st.MoveItem(id, toIndex)
-}
-
-func (c *Controller) SetInboxPaused(paused bool) error {
-	st, err := c.ensureInbox()
-	if err != nil {
-		return err
-	}
-	if err := st.SetPaused(paused); err != nil {
-		return err
-	}
-	if paused {
-		sessioninbox.NotePaused()
-	} else {
-		// On resume, try to dispatch if idle.
-		c.maybeDispatchInbox()
-	}
-	return nil
 }
 
 func (c *Controller) RetryInboxItem(id string) error {
@@ -577,13 +558,20 @@ func (c *Controller) RefreshInboxReferences(id string) error {
 	if err == nil && len(env.ReferenceErrors) > 0 {
 		reason := strings.Join(env.ReferenceErrors, "; ")
 		err = st.SetState(id, sessioninbox.StateBlocked, reason)
-		_ = st.SetPaused(true)
+		_ = st.Pause(sessioninbox.PauseReferenceBlocked)
 	}
 	return err
 }
 
 // TrySubmitInboxItem admits a queued item as a new turn when the session is idle.
 func (c *Controller) TrySubmitInboxItem(id string) (sessioninbox.InboxReceipt, error) {
+	return c.submitInboxItem(id, false)
+}
+
+// submitInboxItem is TrySubmitInboxItem; ignoringPause admits an item the person
+// has just let in although the queue is paused, and leaves the pause and every
+// other queued item as they were.
+func (c *Controller) submitInboxItem(id string, ignoringPause bool) (sessioninbox.InboxReceipt, error) {
 	c.inbox.admissionMu.Lock()
 	defer c.inbox.admissionMu.Unlock()
 	st, err := c.ensureInbox()
@@ -597,14 +585,14 @@ func (c *Controller) TrySubmitInboxItem(id string) (sessioninbox.InboxReceipt, e
 	if meta.State != sessioninbox.StateQueued {
 		return sessioninbox.InboxReceipt{}, sessioninbox.ErrInvalidState
 	}
-	if st.Snapshot().Paused {
+	if st.Snapshot().Paused && !ignoringPause {
 		return sessioninbox.InboxReceipt{}, sessioninbox.ErrPaused
 	}
 	// Refuse before claiming the durable item: claiming, requeuing and waking the
 	// dispatcher again stacks identical transcript notices for one pending
 	// message, and holding the queue keeps the text resumable after promotion.
 	if err := c.ensureWriteAuthorityReady(); err != nil {
-		if pauseErr := st.SetPaused(true); pauseErr != nil {
+		if pauseErr := st.Pause(sessioninbox.PauseWriteAuthority); pauseErr != nil {
 			return sessioninbox.InboxReceipt{}, pauseErr
 		}
 		snap := st.Snapshot()
@@ -621,14 +609,18 @@ func (c *Controller) TrySubmitInboxItem(id string) (sessioninbox.InboxReceipt, e
 	}
 	if block != "" {
 		_ = st.SetState(id, sessioninbox.StateBlocked, block)
-		_ = st.SetPaused(true)
+		_ = st.Pause(sessioninbox.PauseReferenceBlocked)
 		return sessioninbox.InboxReceipt{}, fmt.Errorf("%w: %s", sessioninbox.ErrInvalidState, block)
 	}
 	// Persist the in-flight state before admission. Active tracking is installed
 	// only after Controller admission is reserved and before the turn can finish.
 	c.inbox.trackAdmission(id)
 	defer c.inbox.untrackAdmission(id)
-	if err := st.ClaimItem(id); err != nil {
+	claim := st.ClaimItem
+	if ignoringPause {
+		claim = st.ClaimItemOverPause
+	}
+	if err := claim(id); err != nil {
 		return sessioninbox.InboxReceipt{}, err
 	}
 	c.inbox.mu.Lock()
@@ -694,7 +686,7 @@ func (c *Controller) onInboxTurnDone() {
 		for _, id := range ids {
 			_ = st.SetStateCoded(id, sessioninbox.StateUncertain, sessioninbox.BlockSnapshotFailed, "turn completed but transcript snapshot failed")
 		}
-		_ = st.SetPaused(true)
+		_ = st.Pause(sessioninbox.PauseTurnRecord)
 		c.inbox.mu.Lock()
 		c.inbox.untrackActiveSet(ids)
 		c.inbox.mu.Unlock()
@@ -719,7 +711,7 @@ func (c *Controller) onInboxTurnDone() {
 		}
 	}
 	if ackFailed {
-		_ = st.SetPaused(true)
+		_ = st.Pause(sessioninbox.PauseTurnRecord)
 		sessioninbox.NoteUncertain()
 	}
 	c.inbox.mu.Lock()
@@ -774,4 +766,13 @@ func firstNonEmptyStr(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// queuedInputCeiling maps the user's setting, where 0 means no limit, onto the
+// store's, where 0 means its default.
+func queuedInputCeiling(limit int) int {
+	if limit <= 0 {
+		return sessioninbox.NoItemLimit
+	}
+	return limit
 }

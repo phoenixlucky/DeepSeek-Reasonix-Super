@@ -1,6 +1,9 @@
 package agent
 
-import "reasonix/internal/contract/provider"
+import (
+	"reasonix/internal/contract/event"
+	"reasonix/internal/contract/provider"
+)
 
 // ContextBreakdown says where the prompt's tokens went. "How full" is only
 // actionable once you know what is filling it — a memory file, a tool
@@ -26,7 +29,23 @@ type ContextBreakdown struct {
 	// The window share, which is the bound the user configured and the one
 	// they will look for when the other fires instead.
 	CapacityAt int `json:"capacityAt"`
+	// Largest is each message class's biggest single holders, largest first: the
+	// totals above say a class is heavy, this says which message made it so.
+	Largest []ContextHolder `json:"largest,omitempty"`
 }
+
+// ContextHolder is one message among a class's largest. Class is the
+// breakdown's own name for it (user, reply, output); Tool is the producing
+// tool's name for a tool result; Active says it belongs to the turn still
+// running, which a fold cannot take.
+type ContextHolder struct {
+	Class  string `json:"class"`
+	Tool   string `json:"tool,omitempty"`
+	Tokens int    `json:"tokens"`
+	Active bool   `json:"active,omitempty"`
+}
+
+const largestHoldersPerClass = 5
 
 // ContextBreakdown measures the visible request one message class at a time.
 func (a *Agent) ContextBreakdown() ContextBreakdown {
@@ -53,7 +72,36 @@ func (a *Agent) ContextBreakdown() ContextBreakdown {
 	} {
 		*class.to = a.window().classTokens(messagesWithRole(visible, class.role), false)
 	}
+	out.Largest = holdersByClass(a.window().largestMessages(visible))
 	return out
+}
+
+// holdersByClass keeps the largest few of each class, in the order the
+// messages arrive: largest first within a class.
+func holdersByClass(items []event.ContextItem) []ContextHolder {
+	var out []ContextHolder
+	kept := map[string]int{}
+	for _, it := range items {
+		class := messageClass(provider.Role(it.Role))
+		if class == "" || kept[class] >= largestHoldersPerClass {
+			continue
+		}
+		kept[class]++
+		out = append(out, ContextHolder{Class: class, Tool: it.Tool, Tokens: it.Tokens, Active: it.Active})
+	}
+	return out
+}
+
+func messageClass(role provider.Role) string {
+	switch role {
+	case provider.RoleUser:
+		return "user"
+	case provider.RoleAssistant:
+		return "reply"
+	case provider.RoleTool:
+		return "output"
+	}
+	return ""
 }
 
 // classTokens estimates one slice of the request. The schemas ride their own

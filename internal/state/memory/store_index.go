@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -22,16 +23,26 @@ func fault(op, path string) error {
 	return memoryFault(op, path)
 }
 
-// readIndexIn treats a missing index as empty, but does not hide other read errors.
+// readIndexIn treats a missing index as empty, but does not hide other read
+// errors. An entry that exists but is not a regular file carries
+// ErrIndexNotRegular's identity, so callers can tell that fault from a
+// transient one without reading the message.
 func readIndexIn(dir string) ([]byte, error) {
-	if err := fault("read-index", filepath.Join(dir, indexFile)); err != nil {
+	path := filepath.Join(dir, indexFile)
+	if err := fault("read-index", path); err != nil {
 		return nil, err
 	}
-	existing, err := fileencoding.ReadFileUTF8(filepath.Join(dir, indexFile))
+	existing, err := fileencoding.ReadFileUTF8(path)
+	if err == nil {
+		return existing, nil
+	}
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
-	return existing, err
+	if info, statErr := os.Stat(path); statErr == nil && !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: %q", ErrIndexNotRegular, path)
+	}
+	return nil, err
 }
 
 // indexLinesExceptIn returns the managed MEMORY.md lines keyed by filename stem,
@@ -55,18 +66,24 @@ func indexLinesExceptIn(dir, name string) (map[string]string, bool, error) {
 	return keep, contains, nil
 }
 
-// flushIndexIn rewrites MEMORY.md in the given directory from the managed lines,
-// preserving hand-written content. Managed lines are updated or removed, and
-// new managed entries are appended in sorted order.
+// flushIndexIn rewrites MEMORY.md from the managed lines, preserving the
+// hand-written content of the readable index.
 func flushIndexIn(dir string, lines map[string]string) error {
-	if err := fault("publish-index", filepath.Join(dir, indexFile)); err != nil {
-		return err
-	}
-	path := filepath.Join(dir, indexFile)
 	existing, err := readIndexIn(dir)
 	if err != nil {
 		return err
 	}
+	return flushIndexFrom(dir, existing, lines)
+}
+
+// flushIndexFrom publishes MEMORY.md from the managed lines and the existing
+// bytes. A nil existing means the old index could not be read, so the managed
+// lines are the whole index.
+func flushIndexFrom(dir string, existing []byte, lines map[string]string) error {
+	if err := fault("publish-index", filepath.Join(dir, indexFile)); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, indexFile)
 	processed := map[string]bool{}
 	var preserved strings.Builder
 	preservedEmpty := true

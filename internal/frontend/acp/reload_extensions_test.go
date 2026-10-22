@@ -37,14 +37,14 @@ func (f *reloadFactory) RebuildSession(_ context.Context, _ SessionParams, old *
 func reloadExtensionsSession(t *testing.T, id string, ctrl acpController, notifier *fakeNotifier) *acpSession {
 	t.Helper()
 	return &acpSession{
-		id:               id,
-		ctrl:             ctrl,
-		sink:             newUpdateSink(notifier, id),
-		cwd:              testenv.TempDir(t),
-		model:            "fast",
-		runtimeProfile:   "balanced",
-		toolApprovalMode: control.ToolApprovalAsk,
-		modeID:           sessionModeNormal,
+		id:             id,
+		ctrl:           ctrl,
+		sink:           newUpdateSink(notifier, id),
+		cwd:            testenv.TempDir(t),
+		model:          "fast",
+		runtimeProfile: "balanced",
+		posture:        approvalPosture{mode: control.ToolApprovalAsk},
+		modeID:         sessionModeNormal,
 	}
 }
 

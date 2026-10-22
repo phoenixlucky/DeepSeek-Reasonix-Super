@@ -29,6 +29,10 @@ var (
 	ErrUnauthorized = errors.New("wallet credential rejected")
 	ErrUnreachable  = errors.New("wallet endpoint unreachable")
 	ErrUnreadable   = errors.New("wallet response not in this endpoint's shape")
+	// ErrFormatNotDeclared is a balance_url on a host that is not a vendor's own,
+	// with no balance_format: nothing says which shape its answer is in, so the
+	// endpoint is not asked and the key is not sent to it.
+	ErrFormatNotDeclared = errors.New("wallet format not declared for this endpoint")
 )
 
 // Balance is a wallet balance normalized for display.
@@ -105,20 +109,21 @@ func positive(amount string) bool {
 // line; the per-call ctx still cancels it on shutdown.
 var httpClient = &http.Client{Timeout: 12 * time.Second, CheckRedirect: redirectguard.StayOnOrigin()}
 
-// Fetch queries url (a DeepSeek-style balance endpoint) with a Bearer apiKey and
-// returns the normalized balance. An empty url yields (nil, nil) — "not
-// configured", not an error — so callers can treat both the same and just omit
-// the readout.
-func Fetch(ctx context.Context, url, apiKey string) (*Balance, error) {
-	return FetchWithClient(ctx, httpClient, url, apiKey)
-}
-
-// FetchWithClient queries the balance endpoint using the caller-provided client.
-// A nil client falls back to the package default.
-func FetchWithClient(ctx context.Context, client *http.Client, url, apiKey string) (*Balance, error) {
+// FetchFormat queries url with a Bearer apiKey and reads the answer in the
+// declared format or the one the vendor's own hostname implies. An empty url
+// yields (nil, nil), "not configured". An address with no format is not asked at
+// all, so the key never goes to a host nothing vouches for.
+func FetchFormat(ctx context.Context, client *http.Client, url string, format Format, apiKey string) (*Balance, error) {
 	if strings.TrimSpace(url) == "" {
 		return nil, nil
 	}
+	if _, ok := Resolve(url, format); !ok {
+		return nil, ErrFormatNotDeclared
+	}
+	return fetch(ctx, client, url, format, apiKey)
+}
+
+func fetch(ctx context.Context, client *http.Client, url string, format Format, apiKey string) (*Balance, error) {
 	if client == nil {
 		client = httpClient
 	}
@@ -139,7 +144,7 @@ func FetchWithClient(ctx context.Context, client *http.Client, url, apiKey strin
 	if resp.StatusCode != http.StatusOK {
 		return nil, statusError(resp.StatusCode, body)
 	}
-	return decodeWallet(url, body)
+	return decodeWallet(url, format, body)
 }
 
 // statusError names which side has to act. A rejected credential is the user's

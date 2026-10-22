@@ -1,0 +1,37 @@
+name: acp-conformance
+
+# The agent is driven over stdio by the official ACP TypeScript SDK, and every
+# message it writes is held to the schema that SDK ships. Not a required check:
+# it runs when the ACP frontend or the harness changes, and on request.
+on:
+  pull_request:
+    branches: [main-v2, studio]
+    paths:
+      - "internal/frontend/acp/**"
+      - "tools/acp-conformance/**"
+      - ".github/workflows/acp-conformance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: acp-conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "22"
+      - run: make acp-conformance

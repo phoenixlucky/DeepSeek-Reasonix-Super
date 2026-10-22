@@ -5,7 +5,22 @@ import (
 	"strings"
 
 	"reasonix/internal/contract/provider"
+	"reasonix/internal/contract/walletformat"
 )
+
+// The in-memory stand-in for a config that lists no provider: never written
+// out or offered, it lets the kernel start so the window can ask to connect.
+const (
+	UnconfiguredKind  = "unconfigured"
+	UnconfiguredName  = "unconfigured"
+	UnconfiguredModel = "none"
+	UnconfiguredRef   = UnconfiguredName + "/" + UnconfiguredModel
+)
+
+// UnconfiguredEntry is the placeholder entry.
+func UnconfiguredEntry() ProviderEntry {
+	return ProviderEntry{Name: UnconfiguredName, Kind: UnconfiguredKind, Model: UnconfiguredModel}
+}
 
 // ProviderEntry declares a model provider instance. ContextWindow is the model's
 // token budget; the harness compacts older history as a turn's prompt approaches
@@ -38,8 +53,12 @@ type ProviderEntry struct {
 	resolvedAPIKey    string
 	resolvedSource    CredentialSource
 	roots             Roots
-	BalanceURL        string `toml:"balance_url"` // optional; a provider-specific wallet-balance endpoint (DeepSeek: https://api.deepseek.com/user/balance). Empty = no balance readout.
-	ContextWindow     int    `toml:"context_window"`
+	// BalanceFormat names the shape of the balance_url answer (billing.Formats).
+	// Empty is what the host implies, which only a vendor's own hostname does; any
+	// other host must declare one or its wallet is not read.
+	BalanceFormat string `toml:"balance_format"`
+	BalanceURL    string `toml:"balance_url"` // optional; a provider-specific wallet-balance endpoint (DeepSeek: https://api.deepseek.com/user/balance). Empty = no balance readout.
+	ContextWindow int    `toml:"context_window"`
 	// MaxOutputTokens is a protocol-neutral total output budget for one turn.
 	// Zero means automatic (ordinary 16K, reasoning 32K, high/max 64K); 32768
 	// suits cost control and 65536 heavy reasoning. Negative omits wire limits.
@@ -69,6 +88,10 @@ type ProviderEntry struct {
 	// provider, so one provider can expose text-only and multimodal chat models
 	// without enabling image payloads for every model.
 	VisionModels []string `toml:"vision_models"`
+	// VideoModels lists the models that read a video file natively and
+	// VideoProtocol how a file reaches them; nil is unsaid, an empty list a choice.
+	VideoModels   []string `toml:"video_models"`
+	VideoProtocol string   `toml:"video_protocol"`
 	// VisionDetail sets the openai image_url detail hint: low|high, plus DeepSeek's
 	// "original"; empty = auto. "low" caps an image at ~85 tokens for a cheap read.
 	VisionDetail string `toml:"vision_detail"`
@@ -158,6 +181,8 @@ func validateProvider(e ProviderEntry) error {
 		return fmt.Errorf("provider %q: model is required", e.Name)
 	case strings.TrimSpace(e.APIKeyEnv) != "" && !IsValidCredentialKey(e.APIKeyEnv):
 		return fmt.Errorf("provider %q: api_key_env %q is not a valid environment variable name", e.Name, e.APIKeyEnv)
+	case e.BalanceFormat != "" && !walletformat.Format(e.BalanceFormat).Valid():
+		return fmt.Errorf("provider %q: balance_format %q is not one of %s", e.Name, e.BalanceFormat, walletformat.List())
 	case e.IdleTimeoutSeconds != 0 && (e.IdleTimeoutSeconds < provider.MinIdleTimeoutSeconds || e.IdleTimeoutSeconds > provider.MaxIdleTimeoutSeconds):
 		return fmt.Errorf("provider %q: idle_timeout_seconds must be 0 (use the default) or between %d and %d", e.Name, provider.MinIdleTimeoutSeconds, provider.MaxIdleTimeoutSeconds)
 	}
@@ -174,4 +199,43 @@ func providerHasAnyModel(e ProviderEntry) bool {
 		}
 	}
 	return false
+}
+
+// emptyProvidersLine is what a user config says when it lists no provider: an
+// absent key reads as a fresh install and brings the built-in providers back.
+func emptyProvidersLine(providers []ProviderEntry) string {
+	if len(providers) > 0 {
+		return ""
+	}
+	return "providers = []   # every provider removed; without this line the built-in DeepSeek providers return\n"
+}
+
+// standIn resolves the reserved stand-in ref while no provider is listed.
+func standIn(c *Config, ref string) (*ProviderEntry, bool) {
+	if ref != UnconfiguredRef || c == nil || len(c.Providers) > 0 {
+		return nil, false
+	}
+	e := UnconfiguredEntry()
+	return &e, true
+}
+
+// noProviderStart is where a new session opens with nothing configured: there is
+// no stale default to preserve, so every caller gets the stand-in and the window
+// asks for a connection.
+func noProviderStart(c *Config) (string, bool, bool) {
+	if c == nil {
+		return "", false, false
+	}
+	return UnconfiguredRef, false, true
+}
+
+// kindError is what a selected entry that cannot be used answers.
+func kindError(e *ProviderEntry, model string) error {
+	switch e.Kind {
+	case UnconfiguredKind:
+		return fmt.Errorf("%w; run `reasonix setup` to add one", provider.ErrNoProvider)
+	case "":
+		return fmt.Errorf("provider %q: kind is required", model)
+	}
+	return nil
 }

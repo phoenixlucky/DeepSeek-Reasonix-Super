@@ -34,10 +34,16 @@ func reanchorPattern(line, relDir string) string {
 		neg = "!"
 		line = line[1:]
 	}
-	line = strings.TrimPrefix(line, `\`) // escaped leading '#' or '!'
 	if relDir == "" || relDir == "." {
+		// The pattern goes to the matcher as it is, so an escaped leading
+		// '#' or '!' must stay escaped: without the backslash "\!name"
+		// would be read as a negation and "\#name" as a comment.
+		if !strings.HasPrefix(line, `\!`) && !strings.HasPrefix(line, `\#`) {
+			line = strings.TrimPrefix(line, `\`)
+		}
 		return neg + line
 	}
+	line = strings.TrimPrefix(line, `\`) // escaped leading '#' or '!'
 	anchored := strings.HasPrefix(line, "/") || strings.Contains(strings.TrimSuffix(line, "/"), "/")
 	line = strings.TrimPrefix(line, "/")
 	if anchored {
@@ -94,6 +100,7 @@ func scanGitConfigExcludes(path string, read func(string) []string) string {
 	body := strings.Join(lines, "\n")
 	sc := bufio.NewScanner(strings.NewReader(body))
 	inCore := false
+	found := "" // git keeps the last value set in a file
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
@@ -108,10 +115,46 @@ func scanGitConfigExcludes(path string, read func(string) []string) string {
 			continue
 		}
 		if k, v, ok := strings.Cut(line, "="); ok && strings.EqualFold(strings.TrimSpace(k), "excludesfile") {
-			return strings.Trim(strings.TrimSpace(v), `"`)
+			found = gitConfigValue(v)
 		}
 	}
-	return ""
+	return found
+}
+
+// gitConfigValue decodes a git config value the way git reads one line of it:
+// an unquoted '#' or ';' starts a comment, double quotes are removed, and
+// unquoted whitespace around the value is dropped. \\ and \" are unescaped;
+// any other backslash is kept as written, so a Windows path such as
+// C:\Users\me\.gitignore still reads as that path.
+func gitConfigValue(raw string) string {
+	var b strings.Builder
+	inQuote := false
+	pending := "" // unquoted whitespace, kept only if more of the value follows
+	write := func(s string) {
+		if b.Len() > 0 || inQuote {
+			b.WriteString(pending)
+		}
+		pending = ""
+		b.WriteString(s)
+	}
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		switch {
+		case c == '\\' && i+1 < len(raw) && (raw[i+1] == '\\' || raw[i+1] == '"'):
+			i++
+			write(raw[i : i+1])
+		case c == '"':
+			write("")
+			inQuote = !inQuote
+		case !inQuote && (c == '#' || c == ';'):
+			return b.String()
+		case !inQuote && (c == ' ' || c == '\t'):
+			pending += string(c)
+		default:
+			write(raw[i : i+1])
+		}
+	}
+	return b.String()
 }
 
 func expandHome(p string) string {
@@ -129,12 +172,18 @@ func statFile(p string) bool {
 }
 
 // gitConfigExcludesFile reads core.excludesFile from the global git config files
-// directly (no git binary needed). Include directives are not followed.
+// directly (no git binary needed). Include directives are not followed. Like
+// git, it reads the files in order and lets a later one override an earlier
+// one, so ~/.gitconfig wins over $XDG_CONFIG_HOME/git/config.
 func gitConfigExcludesFile(read func(string) []string) string {
+	found := ""
 	for _, cfg := range gitConfigPaths() {
 		if p := scanGitConfigExcludes(cfg, read); p != "" {
-			return expandHome(p)
+			found = p
 		}
 	}
-	return ""
+	if found == "" {
+		return ""
+	}
+	return expandHome(found)
 }

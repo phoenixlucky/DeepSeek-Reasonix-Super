@@ -30,6 +30,9 @@ type Listing struct {
 	Parent    string
 	Folders   []Folder
 	Truncated bool
+	// Unlisted: the folder exists and is a directory, but the machine would not
+	// list what is inside. It can still be chosen.
+	Unlisted bool
 }
 
 // Folder is one directory inside a Listing. The name comes from the machine
@@ -59,21 +62,15 @@ func (p *Pool) Browse(ctx context.Context, host, dir string) (Listing, error) {
 	// Released on a timer, not at return — see browseLinger.
 	defer func() { time.AfterFunc(browseLinger, func() { p.dropLink(l) }) }()
 
-	fsys, err := l.client.SFTP()
-	if err != nil {
-		return Listing{}, err
-	}
 	if strings.TrimSpace(dir) == "" {
 		dir = "~"
 	}
-	// The far machine resolves it: ~ belongs to the account that logged in, and
-	// a symlinked project must be listed under the path it really has, or
-	// stepping up from it would leave the tree it was reached through.
-	at, err := fsys.RealPath(ctx, dir)
-	if err != nil {
-		return Listing{}, err
+	at, entries, err := l.client.Dirs(ctx, dir)
+	if errors.Is(err, sftpfs.ErrNotListable) {
+		out := listingOf(at, nil)
+		out.Unlisted = true
+		return out, nil
 	}
-	entries, err := fsys.List(ctx, at)
 	if err != nil {
 		return Listing{}, err
 	}

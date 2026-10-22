@@ -50,8 +50,10 @@ type appearanceView struct {
 	// bounds the save clamps to.
 	ZoomRange zoomRangeView `json:"zoomRange"`
 	ReadSize  float64       `json:"readSize,omitempty"`
-	FontUI    string        `json:"fontUi,omitempty"`
-	FontMono  string        `json:"fontMono,omitempty"`
+	// Interface text alone, held to config.TextSizeMin..TextSizeMax on save.
+	TextSize float64 `json:"textSize,omitempty"`
+	FontUI   string  `json:"fontUi,omitempty"`
+	FontMono string  `json:"fontMono,omitempty"`
 	// standard | full — how far the transcript's prose runs.
 	Width     string         `json:"width,omitempty"`
 	Wallpaper *wallpaperView `json:"wallpaper,omitempty"`
@@ -83,6 +85,7 @@ func viewOf(a config.AppearanceConfig, language, width string) appearanceView {
 		Zoom:      config.ClampZoom(a.Zoom),
 		ZoomRange: zoomRangeView{Min: config.ZoomMin, Max: config.ZoomMax, Step: config.ZoomStep},
 		ReadSize:  a.ReadSize,
+		TextSize:  config.ClampTextSize(a.TextSize),
 		FontUI:    a.FontUI,
 		FontMono:  a.FontMono,
 		Width:     width,
@@ -115,6 +118,7 @@ func (s *Server) saveAppearance(w http.ResponseWriter, r *http.Request) {
 		Language string  `json:"language"`
 		Zoom     float64 `json:"zoom"`
 		ReadSize float64 `json:"readSize"`
+		TextSize float64 `json:"textSize"`
 		FontUI   string  `json:"fontUi"`
 		FontMono string  `json:"fontMono"`
 		Width    string  `json:"width"`
@@ -143,6 +147,7 @@ func (s *Server) saveAppearance(w http.ResponseWriter, r *http.Request) {
 		a.Zoom = config.ClampZoom(body.Zoom)
 	}
 	a.ReadSize = clampOrZero(body.ReadSize, 10, 26)
+	a.TextSize = config.ClampTextSize(body.TextSize)
 	a.FontUI = sanitizeFamily(body.FontUI)
 	a.FontMono = sanitizeFamily(body.FontMono)
 	// Anything but the one named alternative is the default, the same way the

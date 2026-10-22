@@ -46,10 +46,15 @@ func (h *Hub) listedWorkspace(root string) (string, bool) {
 		if dir == root {
 			return dir, true
 		}
+		if project := projectRoot(dir); project == root {
+			return project, true
+		}
 	}
 	for _, rt := range h.panesWhere(func(rt *Runtime) bool { return rt.Local() }) {
 		if dir := rt.Server.Controller().WorkspaceRoot(); dir == root {
 			return dir, true
+		} else if project := projectRoot(dir); project == root {
+			return project, true
 		}
 	}
 	return "", false

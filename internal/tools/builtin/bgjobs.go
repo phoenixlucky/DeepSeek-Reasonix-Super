@@ -255,6 +255,9 @@ func (waitJob) Execute(ctx context.Context, args json.RawMessage) (string, error
 		return "", fmt.Errorf("background jobs are not available in this context")
 	}
 	opts := jobs.WaitOptions{Timeout: time.Duration(p.TimeoutSeconds) * time.Second}
+	if emit, ok := tool.ProgressFrom(ctx); ok {
+		opts.Echo = emit
+	}
 	if pattern := strings.TrimSpace(p.UntilMatches); pattern != "" {
 		re, err := regexp.Compile(pattern)
 		if err != nil {

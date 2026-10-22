@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -6,13 +6,15 @@ import os from "node:os";
 import fs from "node:fs";
 
 const require = createRequire(import.meta.url);
+const cuaContract = require("../../../internal/platform/computer/cua-driver.lock.json");
 const { parse, readActs, start } = require("../src/host.js");
 const { contextTemplate, editMenuTemplate, applicationMenuTemplate, menuInstaller } = require("../src/editmenu.js");
 const { uiLanguage } = require("../src/uilang.js");
 const { externalTarget } = require("../src/links.js");
 const { offerCleanup, ownBundle } = require("../src/legacy.js");
 const { stripPackageGrants, readReport, unpaintedWindowCause } = require("../src/packagegrants.js");
-const { groundFor, GROUND } = require("../src/ground.js");
+const { groundFor, themeSourceFor, GROUND } = require("../src/ground.js");
+const { folderAnswer } = require("../src/folderpanel.js");
 const { pick, loadPrefs, savePrefs, registerPrefs } = require("../src/prefs.js");
 
 const TOKEN = "a".repeat(64);
@@ -205,7 +207,7 @@ test("an unreachable kernel is an answer, not a crash", async () => {
   assert.equal(await dead.trayState(), null);
 });
 
-const { reveal, revealWorkspace, revealLogs } = require("../src/reveal.js");
+const { reveal, revealWorkspace, revealLogs, openWorkspace } = require("../src/reveal.js");
 
 // A kernel that answers /workspace/locate as the test says, and a shell that
 // only records what it was asked to open.
@@ -224,10 +226,120 @@ async function revealRig(answer, platform = process.platform) {
     openPath: async (p) => (opened.push(["open", p]), ""),
     showItemInFolder: (p) => opened.push(["select", p]),
   };
-  return { asked, opened, run: (base, rel) => reveal(client, shell, base, rel, platform), workspace: (root) => revealWorkspace(client, shell, root, platform), close: () => server.close() };
+  return {
+    asked, opened, close: () => server.close(),
+    run: (base, rel) => reveal(client, shell, base, rel, platform),
+    workspace: (root) => revealWorkspace(client, shell, root, platform),
+    open: (root, fsApi) => openWorkspace(client, shell, root, platform, fsApi),
+  };
 }
 
+// The sidebar's project entered rather than selected in its parent: the same
+// kernel answer revealWorkspace asks for, through the folder-opening verb.
+const folderFs = (over = {}) => ({
+  stat: async () => ({ isDirectory: () => true }),
+  access: async () => {
+    throw new Error("ENOENT");
+  },
+  ...over,
+});
+
+test("openWorkspace enters the folder the kernel named", async (t) => {
+  for (const [platform, target] of [[process.platform, ROOT], ["darwin", "/Users/studio/workspace"], ["linux", "/home/studio/workspace"], ["win32", "C:\\Studio\\workspace"]]) {
+    await t.test(`${platform}: ${target}`, async () => {
+      const rig = await revealRig(() => [200, { path: target, dir: true }], platform);
+      try {
+        assert.equal(await rig.open("/w", folderFs()), null);
+        assert.deepEqual(rig.opened, [["open", target]]);
+        assert.equal(rig.asked[0], "/host/workspaces/locate?root=%2Fw");
+      } finally {
+        rig.close();
+      }
+    });
+  }
+});
+
+// openPath launches an application bundle instead of showing it, so a root
+// that is one is only selected, and so is anything that is not a directory.
+test("openWorkspace only selects an application bundle", async () => {
+  const bundle = "/Applications/Workspace.app";
+  const rig = await revealRig(() => [200, { path: bundle, dir: true }], "darwin");
+  try {
+    assert.equal(await rig.open("/w", folderFs({ access: async () => {} })), null);
+    assert.deepEqual(rig.opened, [["select", bundle]]);
+  } finally {
+    rig.close();
+  }
+});
+
+test("openWorkspace only selects what is not a directory or cannot be read", async () => {
+  for (const fsApi of [folderFs({ stat: async () => ({ isDirectory: () => false }) }), folderFs({ stat: async () => { throw new Error("EACCES"); } })]) {
+    const rig = await revealRig(() => [200, { path: ROOT, dir: true }]);
+    try {
+      assert.equal(await rig.open("/w", fsApi), null);
+      assert.deepEqual(rig.opened, [["select", ROOT]]);
+    } finally {
+      rig.close();
+    }
+  }
+});
+
+test("openWorkspace refuses a folder the hub does not list", async () => {
+  const rig = await revealRig(() => [404, { code: "host.unknown_workspace", error: "not listed" }]);
+  try {
+    const why = await rig.open("/nope");
+    assert.equal(why.code, "host.unknown_workspace");
+    assert.deepEqual(rig.opened, []);
+  } finally {
+    rig.close();
+  }
+});
+
 const ROOT = path.resolve(os.tmpdir(), "rx-workspace");
+
+test("file opening refuses scripts, executables and unknown types on every platform", async () => {
+  const { openFile } = require("../src/reveal.js");
+  const opened = [];
+  const shell = { openPath: async (target) => { opened.push(target); return ""; } };
+  for (const platform of ["darwin", "win32", "linux"]) {
+    for (const name of ["task.command", "task.sh", "task.bat", "task.cmd", "task.ps1", "task.lnk", "task.jar", "task.desktop", "task.scpt", "task.exe", "task.EXE", "report.pdf.exe", "task", "task.unknown", "page.html", "image.svg"]) {
+      const target = platform === "win32" ? `C:\\work\\${name}` : `/work/${name}`;
+      const client = { request: async () => ({ status: 200, body: JSON.stringify({ path: target }) }) };
+      const why = await openFile(client, shell, "/rt/r1", "report.pdf", platform, { stat: async () => ({ isFile: () => true }) });
+      assert.ok(why?.error, `${platform}: ${name} must be refused`);
+    }
+  }
+  assert.deepEqual(opened, []);
+});
+
+test("file opening accepts kernel-located documents and media on every platform", async () => {
+  const { openFile } = require("../src/reveal.js");
+  for (const platform of ["darwin", "win32", "linux"]) {
+    for (const name of ["report.pdf", "notes.TXT", "report.docx", "table.xlsx", "slides.pptx", "data.csv", "notes.md", "image.PNG", "photo.jpg", "video.mp4", "audio.mp3"]) {
+      const target = platform === "win32" ? `C:\\work\\${name}` : `/work/${name}`;
+      const opened = [];
+      const shell = { openPath: async (p) => { opened.push(p); return ""; } };
+      const client = { request: async () => ({ status: 200, body: JSON.stringify({ path: target }) }) };
+      assert.equal(await openFile(client, shell, "/rt/r1", name, platform, { stat: async () => ({ isFile: () => true }) }), null);
+      assert.deepEqual(opened, [target]);
+    }
+  }
+});
+
+test("file opening uses only a kernel-located regular file and reports shell failures", async () => {
+  const { openFile } = require("../src/reveal.js");
+  const opened = [];
+  const shell = { openPath: async (target) => { opened.push(target); return "no application"; } };
+  const client = { request: async () => ({ status: 200, body: JSON.stringify({ path: path.join(ROOT, "report.pdf") }) }) };
+  assert.deepEqual(await openFile(client, shell, "/rt/r1", "report.pdf", process.platform, { stat: async () => ({ isFile: () => true }) }), { error: "no application", code: "" });
+  assert.deepEqual(opened, [path.join(ROOT, "report.pdf")]);
+  opened.length = 0;
+  assert.ok(await openFile(client, shell, "/rt/r1", "folder", process.platform, { stat: async () => ({ isFile: () => false }) }));
+  assert.ok(await openFile(client, shell, "https://attacker.test", "report.pdf"));
+  const refused = { request: async () => ({ status: 400, body: JSON.stringify({ code: "workspace.path_outside_tree", error: "outside" }) }) };
+  assert.equal((await openFile(refused, shell, "/rt/r1", "../secret.pdf")).code, "workspace.path_outside_tree");
+  assert.deepEqual(opened, []);
+});
 
 test("reveal opens only what the kernel located inside the pane's workspace", async () => {
   const rig = await revealRig((url) => {
@@ -324,7 +436,7 @@ test("on Windows a share or device path from the kernel is refused", async () =>
   }
 });
 
-const { hostBinary, computerHelper, pageDir } = require("../src/layout.js");
+const { hostBinary, computerDriver, pageDir } = require("../src/layout.js");
 
 // Packaged, both live in resources/ beside app.asar. Reading them from inside
 // it is the failure this pins: a child process cannot be spawned out of an
@@ -342,13 +454,13 @@ test("the kernel and the page are found in both layouts", () => {
   }
 });
 
-test("the computer-use helper is found beside the kernel on macOS and Windows, and nowhere else", () => {
+test("the CUA Driver is found beside the kernel on all supported platforms", () => {
   const mac = { packaged: true, resourcesPath: "/res", dirname: "/d/src", platform: "darwin" };
-  assert.equal(computerHelper(mac), path.join("/res", "bin", "reasonix-computer-helper"));
-  assert.equal(computerHelper({ ...mac, packaged: false, dirname: path.join("/repo", "electron", "src") }), path.join("/repo", "electron", "bin", "reasonix-computer-helper"));
-  assert.equal(computerHelper({ ...mac, platform: "win32" }), path.join("/res", "bin", "reasonix-computer-helper.exe"));
-  assert.equal(computerHelper({ ...mac, platform: "linux" }), "");
-  assert.equal(computerHelper({ ...mac, platform: "linux", env: { REASONIX_COMPUTER_HELPER: "/custom/helper" } }), "/custom/helper");
+  assert.equal(computerDriver(mac), path.join("/res", "bin", "cua-driver"));
+  assert.equal(computerDriver({ ...mac, packaged: false, dirname: path.join("/repo", "electron", "src") }), path.join("/repo", "electron", "bin", "cua-driver"));
+  assert.equal(computerDriver({ ...mac, platform: "win32" }), path.join("/res", "bin", "cua-driver.exe"));
+  assert.equal(computerDriver({ ...mac, platform: "linux" }), path.join("/res", "bin", "cua-driver"));
+  assert.equal(computerDriver({ ...mac, platform: "linux", env: { REASONIX_CUA_DRIVER: "/custom/cua-driver" } }), "/custom/cua-driver");
 });
 
 test("Windows gets the suffix spawn needs, and an override wins over both", () => {
@@ -908,7 +1020,7 @@ test("only the Studio window reads or writes the preferences", () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-function elf64(interpreter) {
+function elf64(interpreter, machine = 62) {
   const phoff = 64, phentsize = 56, phnum = interpreter ? 2 : 1;
   const dataOffset = phoff + phnum * phentsize;
   const path = Buffer.from(interpreter ? `${interpreter}\0` : "", "latin1");
@@ -918,7 +1030,7 @@ function elf64(interpreter) {
   bytes[5] = 1;
   bytes[6] = 1;
   bytes.writeUInt16LE(2, 16);
-  bytes.writeUInt16LE(62, 18);
+  bytes.writeUInt16LE(machine, 18);
   bytes.writeBigUInt64LE(BigInt(phoff), 32);
   bytes.writeUInt16LE(64, 52);
   bytes.writeUInt16LE(phentsize, 54);
@@ -949,6 +1061,26 @@ test("a Linux Go binary that needs the build host's dynamic loader is refused", 
     fs.writeFileSync(helper, elf64(null));
     assert.deepEqual(dynamicallyLinked([host, helper]), [{ file: host, interpreter: "/lib64/ld-linux-x86-64.so.2" }]);
     assert.deepEqual(dynamicallyLinked([helper]), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a Linux package's Go binaries must be built for the architecture the package is named for", () => {
+  const { elfArchitecture, assertArchitecture } = require("../packaging/elf.js");
+  assert.equal(elfArchitecture(elf64(null, 62)), "amd64");
+  assert.equal(elfArchitecture(elf64(null, 183)), "arm64");
+  assert.throws(() => elfArchitecture(elf64(null, 40)), /unsupported ELF machine/);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reasonix-elf-"));
+  try {
+    const host = path.join(dir, "reasonix-studio-host");
+    const helper = path.join(dir, "reasonix-studio-update-helper");
+    fs.writeFileSync(host, elf64(null, 62));
+    fs.writeFileSync(helper, elf64(null, 183));
+    assert.throws(() => assertArchitecture([host, helper], "arm64"), /is amd64, expected arm64/);
+    assert.throws(() => assertArchitecture([host, helper], "amd64"), /is arm64, expected amd64/);
+    assert.doesNotThrow(() => assertArchitecture([host], "amd64"));
+    assert.throws(() => assertArchitecture([host], "riscv64"), /unsupported release architecture/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -1441,6 +1573,155 @@ test("a host that exits before its handshake is logged and shown, not swallowed"
   }
 });
 
+test("a development shell leaves once the process that launched it is gone", () => {
+  const { watchLauncher } = require("../src/launcher.js");
+  mock.timers.enable({ apis: ["setInterval"] });
+  try {
+    // POSIX hands an orphan to another parent; Windows leaves the dead pid in place.
+    for (const [why, end] of [["reparented", (s) => { s.ppid = 1; }], ["died in place", (s) => { s.alive = false; }]]) {
+      const state = { ppid: 4242, alive: true };
+      let lost = 0;
+      watchLauncher({ packaged: false, env: {}, onLost: () => lost++, parent: () => state.ppid, alive: () => state.alive });
+      mock.timers.tick(5000);
+      assert.equal(lost, 0, `${why}: left while the launcher was still there`);
+      end(state);
+      mock.timers.tick(1000);
+      assert.equal(lost, 1, `${why}: stayed after its launcher was gone`);
+      mock.timers.tick(5000);
+      assert.equal(lost, 1, `${why}: told more than once`);
+    }
+
+    const state = { ppid: 4242 };
+    let lost = 0;
+    const watch = watchLauncher({ packaged: false, env: {}, onLost: () => lost++, parent: () => state.ppid, alive: () => true });
+    watch.dispose();
+    state.ppid = 1;
+    mock.timers.tick(5000);
+    assert.equal(lost, 0, "a disposed watch still acted");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("a packaged, handed-over or parentless shell belongs to no launcher", () => {
+  const { watchLauncher, handOver } = require("../src/launcher.js");
+  mock.timers.enable({ apis: ["setInterval"] });
+  try {
+    const handed = {};
+    handOver(handed);
+    for (const [why, options] of [
+      ["packaged", { packaged: true, env: {}, parent: () => 4242 }],
+      ["handed over by a relaunch", { packaged: false, env: handed, parent: () => 4242 }],
+      ["started by init", { packaged: false, env: {}, parent: () => 1 }],
+    ]) {
+      let lost = 0;
+      let ppid = options.parent();
+      watchLauncher({ ...options, onLost: () => lost++, parent: () => ppid, alive: () => false });
+      ppid = 7;
+      mock.timers.tick(5000);
+      assert.equal(lost, 0, why);
+    }
+    assert.deepEqual(handed, {}, "the hand-over mark reached this shell's own children");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("a relaunch hands the shell over before it asks for the restart", () => {
+  const { actHandler } = require("../src/acts.js");
+  const { relaunchForOzonePlatform } = require("../src/ozone.js");
+  const key = "REASONIX_STUDIO_HANDED_OVER";
+  const saved = process.env[key];
+  delete process.env[key];
+  try {
+    const seen = [];
+    actHandler({ app: { relaunch: () => seen.push(process.env[key]) }, showWindow: () => {} })("relaunch");
+    assert.deepEqual(seen, ["1"]);
+  } finally {
+    if (saved === undefined) delete process.env[key];
+    else process.env[key] = saved;
+  }
+  const env = { XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" };
+  const seen = [];
+  relaunchForOzonePlatform({ relaunch: () => seen.push(env[key]), exit: () => {} }, { platform: "linux", env, argv: ["x"] });
+  assert.deepEqual(seen, ["1"]);
+});
+
+test("output for a console the launcher closed is dropped, never thrown", () => {
+  const { EventEmitter } = require("node:events");
+  const { consoleEcho } = require("../src/launcher.js");
+  const stream = Object.assign(new EventEmitter(), { written: [], full: false, broken: false });
+  stream.write = (chunk) => {
+    if (stream.broken) throw Object.assign(new Error("write EIO"), { code: "EIO" });
+    stream.written.push(chunk);
+    return !stream.full;
+  };
+  const echo = consoleEcho(stream);
+  echo("a");
+  stream.full = true;
+  echo("b");
+  echo("c");
+  assert.deepEqual(stream.written, ["a", "b"], "a backed-up console kept queueing");
+  stream.emit("drain");
+  stream.full = false;
+  echo("d");
+  stream.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+  echo("e");
+  assert.deepEqual(stream.written, ["a", "b", "d"], "a failed console was written to again");
+
+  const sync = Object.assign(new EventEmitter(), { broken: true, calls: 0 });
+  sync.write = () => {
+    sync.calls++;
+    throw Object.assign(new Error("write EIO"), { code: "EIO" });
+  };
+  const echoSync = consoleEcho(sync);
+  assert.doesNotThrow(() => echoSync("x"));
+  echoSync("y");
+  assert.equal(sync.calls, 1);
+});
+
+test("a shell whose console pipe was closed keeps running", async () => {
+  const { spawn } = require("node:child_process");
+  const script = `
+    const { consoleEcho } = require(${JSON.stringify(require.resolve("../src/launcher.js"))});
+    const echo = consoleEcho(process.stderr);
+    process.stdin.once("data", () => {
+      let n = 0;
+      const timer = setInterval(() => {
+        echo("x".repeat(512) + "\\n");
+        if (++n === 50) { clearInterval(timer); process.stdout.write("survived\\n"); }
+      }, 2);
+    });`;
+  const child = spawn(process.execPath, ["-e", script], { stdio: ["pipe", "pipe", "pipe"] });
+  child.stderr.destroy();
+  let out = "";
+  child.stdout.on("data", (chunk) => { out += chunk; });
+  child.stdin.end("go\n");
+  const code = await new Promise((resolve) => child.on("exit", resolve));
+  assert.equal(code, 0);
+  assert.equal(out, "survived\n");
+});
+
+test("the launch credential cookie is put back when something removes it, and only then", async () => {
+  const { keepCredential } = require("../src/credential.js");
+  const { EventEmitter } = require("node:events");
+  const jar = new EventEmitter();
+  const sets = [];
+  const ses = { cookies: Object.assign(jar, { set: async (c) => void sets.push(c) }) };
+  const cookie = { url: "http://127.0.0.1:5000/", name: "reasonix_token", value: "t" };
+  const lines = [];
+  keepCredential(ses, cookie, (l) => lines.push(l));
+  const gone = { name: "reasonix_token", domain: "127.0.0.1" };
+  jar.emit("changed", {}, { ...gone, name: "other" }, "explicit", true);
+  jar.emit("changed", {}, { ...gone, domain: "example.com" }, "explicit", true);
+  jar.emit("changed", {}, gone, "overwrite", true);
+  jar.emit("changed", {}, gone, "explicit", false);
+  assert.equal(sets.length, 0, "an unrelated change must not touch the jar");
+  jar.emit("changed", {}, gone, "evicted", true);
+  assert.deepEqual(sets, [cookie]);
+  assert.match(lines[0], /evicted/);
+});
+
 test("the tray has a file for every Windows scale, at exactly 16 * scale pixels", () => {
   const { trayAsset, SCALES } = require("../src/trayimage.js");
   const dim = (f) => {
@@ -1456,6 +1737,25 @@ test("the tray has a file for every Windows scale, at exactly 16 * scale pixels"
   assert.equal(trayAsset(1.8).pixels, 32);
   assert.equal(trayAsset(5).pixels, 48);
   assert.equal(trayAsset(NaN).pixels, 16);
+});
+
+test("the macOS tray is a black-on-transparent Template pair, not the colour badge", () => {
+  const { trayImage } = require("../src/trayimage.js");
+  const asked = [];
+  const nativeImage = { createFromPath: (f) => (asked.push(f), { isEmpty: () => false }) };
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { value: "darwin" });
+  try {
+    trayImage(nativeImage, 2);
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+  }
+  assert.match(path.basename(asked[0]), /^trayTemplate\.png$/);
+  for (const [file, px] of [["trayTemplate.png", 18], ["trayTemplate@2x.png", 36]]) {
+    const b = fs.readFileSync(path.join(path.dirname(asked[0]), file));
+    assert.deepEqual([b.readUInt32BE(16), b.readUInt32BE(20)], [px, px], file);
+    assert.equal(b[25], 6, `${file} must carry an alpha channel`);
+  }
 });
 
 function pe(machine) {
@@ -1720,6 +2020,16 @@ test("the window ground follows the stored theme and, for auto, the system", () 
   assert.equal(groundFor({ "rx-theme": "auto" }, true), GROUND.dark);
   assert.equal(groundFor({}, false), GROUND.light);
   assert.equal(groundFor(undefined, true), GROUND.dark);
+});
+
+// Windows draws a frameless window's border from the frame's scheme, so a dark
+// page on a light system must set it, or the border is a light line.
+test("the window frame takes the stored theme, and auto follows the system", () => {
+  assert.equal(themeSourceFor({ "rx-theme": "dark" }), "dark");
+  assert.equal(themeSourceFor({ "rx-theme": "light" }), "light");
+  assert.equal(themeSourceFor({ "rx-theme": "auto" }), "system");
+  assert.equal(themeSourceFor({ "rx-theme": "midnight" }), "system");
+  assert.equal(themeSourceFor(undefined), "system");
 });
 
 const { accelerationOff, shouldDisableGpu, graphicsReport, graphicsHandler, PREF_KEY: GPU_PREF } = require("../src/graphics.js");
@@ -1987,6 +2297,44 @@ test("kernel acts: show brings the window forward, relaunch arms the restart, qu
   assert.deepEqual(calls, ["show", "relaunch", "quit"]);
 });
 
+test("kernel acts: a click that reaches the shell is written to its log, an unknown act is not", () => {
+  const { actHandler } = require("../src/acts.js");
+  const lines = [];
+  const handle = actHandler({ app: { relaunch() {}, quit() {} }, showWindow() {}, log: (line) => lines.push(line) });
+  for (const act of ["show", "unknown"]) handle(act);
+  assert.deepEqual(lines, ["kernel act: show"]);
+});
+
+test("raise: answers whether the window is focused once it has tried", () => {
+  const { raise } = require("../src/raise.js");
+  const make = (grants) => {
+    let focused = false;
+    return { show() {}, focus: () => { if (grants()) focused = true; }, isFocused: () => focused, setAlwaysOnTop() {} };
+  };
+  assert.equal(raise(make(() => true), "win32"), true);
+  assert.equal(raise(make(() => false), "win32"), false);
+});
+
+test("raise: a window the platform would not focus is lifted once and returned to normal stacking", () => {
+  const { raise } = require("../src/raise.js");
+  const run = (platform, focusedAfterFocus) => {
+    const calls = [];
+    let focused = false;
+    const win = {
+      show: () => calls.push("show"),
+      focus: () => { calls.push("focus"); if (focusedAfterFocus) focused = true; },
+      isFocused: () => focused,
+      setAlwaysOnTop: (on) => calls.push(on ? "top" : "untop"),
+    };
+    raise(win, platform);
+    return calls;
+  };
+  assert.deepEqual(run("win32", true), ["show", "focus"]);
+  assert.deepEqual(run("win32", false), ["show", "focus", "top", "focus", "untop"]);
+  assert.deepEqual(run("darwin", false), ["show", "focus"]);
+  assert.deepEqual(run("linux", false), ["show", "focus"]);
+});
+
 test("tray: the menu is replaced only when what it says changes, so an open menu is not torn down by the poll", async () => {
   const { installTray } = require("../src/tray.js");
   const menus = [];
@@ -2080,12 +2428,14 @@ test("a parked page is attached again when it is shown, and a page already on sc
   const win = {
     on() {},
     isDestroyed: () => false,
+    isFocused: () => false,
+    webContents: Object.assign(new EventEmitter(), { isFocused: () => false }),
     getContentBounds: () => ({ width: 1200, height: 800 }),
     contentView: { addChildView: () => calls.push("add"), removeChildView: () => calls.push("remove") },
   };
   const views = new BrowserViews({ win, kernelOrigin: "http://127.0.0.1:1" });
   const view = { setBounds: (b) => calls.push("bounds " + b.x), webContents: { isDestroyed: () => false } };
-  views.entries.set("t1", { view, at: null });
+  views.entries.set("t1", { view, at: null, attached: true });
   const rect = { x: 10, y: 20, width: 600, height: 400 };
 
   views.show("t1", rect);
@@ -2099,6 +2449,115 @@ test("a parked page is attached again when it is shown, and a page already on sc
   assert.deepEqual(calls, ["remove", "add", "bounds 10"], "a page put away and shown again is attached again");
 });
 
+test("a page laid out wider than the pane is scaled to fit it, and keeps the viewport the agent asked for", async () => {
+  const Module = require("node:module");
+  const load = Module._load;
+  Module._load = function (request, ...rest) {
+    if (request === "electron") return { WebContentsView: class {}, session: { fromPartition: () => ({}) } };
+    return load.call(this, request, ...rest);
+  };
+  let BrowserViews;
+  try {
+    ({ BrowserViews } = require("../src/browserviews.js"));
+  } finally {
+    Module._load = load;
+  }
+  const win = {
+    on() {},
+    isDestroyed: () => false,
+    isFocused: () => false,
+    webContents: Object.assign(new EventEmitter(), { isFocused: () => false }),
+    getContentBounds: () => ({ width: 1200, height: 800 }),
+    contentView: { addChildView() {}, removeChildView() {} },
+  };
+  const sent = [];
+  const view = {
+    setBounds() {},
+    webContents: { isDestroyed: () => false, debugger: { sendCommand: async (method, params) => sent.push([method, params]) } },
+  };
+  const views = new BrowserViews({ win, kernelOrigin: "http://127.0.0.1:1" });
+  const entry = { view, at: null, attached: true };
+  views.entries.set("t1", entry);
+  views.keepKeyboard = () => {};
+  entry.override = { width: 1440, height: 1000, deviceScaleFactor: 0, mobile: false };
+  views.show("t1", { x: 0, y: 0, width: 720, height: 800 });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0][1].scale, 0.5, "a 1440 wide layout in a 720 wide pane is halved");
+  assert.equal(sent[0][1].width, 1440, "the layout viewport is still the one the agent asked for");
+
+  views.show("t1", { x: 0, y: 0, width: 720, height: 800 });
+  assert.equal(sent.length, 1, "the same pane sends nothing again");
+
+  views.show("t1", { x: 0, y: 0, width: 360, height: 800 });
+  assert.equal(sent.at(-1)[1].scale, 0.25, "a narrower pane scales further");
+
+  views.show("t1", { x: 0, y: 0, width: 2000, height: 1200 });
+  assert.equal(sent.at(-1)[1].scale, 1, "a pane larger than the layout never enlarges it");
+
+  const settled = sent.length;
+  views.fit(entry);
+  assert.equal(sent.length, settled, "an unchanged scale is not sent again");
+  views.fit(entry, true);
+  assert.equal(sent.length, settled + 1, "a capture that dropped the scale gets it back");
+  assert.equal(sent.at(-1)[1].scale, 1);
+  entry.override = undefined;
+  const before = sent.length;
+  views.show("t1", { x: 0, y: 0, width: 500, height: 800 });
+  assert.equal(sent.length, before, "with no override there is nothing to fit");
+});
+
+test("a page given its own viewport is fitted whole into its panel, centred, and never enlarged", () => {
+  const Module = require("node:module");
+  const load = Module._load;
+  Module._load = function (request, ...rest) {
+    if (request === "electron") return { WebContentsView: class {}, session: { fromPartition: () => ({}) } };
+    return load.call(this, request, ...rest);
+  };
+  let placement;
+  try {
+    ({ placement } = require("../src/browserviews.js"));
+  } finally {
+    Module._load = load;
+  }
+  const panel = { x: 380, y: 60, width: 560, height: 620 };
+  assert.deepEqual(placement(panel, null), { at: panel, scale: 1 }, "a page without a viewport of its own fills the panel");
+  for (const none of [{ width: 0, height: 0 }, { width: 0, height: 600 }, { width: 390, height: 0 }, { width: NaN, height: 600 }, { width: 390, height: Infinity }, { width: -1, height: 600 }]) {
+    assert.deepEqual(placement(panel, none), { at: panel, scale: 1 }, `${JSON.stringify(none)} is no viewport at all`);
+  }
+  const wide = placement(panel, { width: 1280, height: 900 });
+  assert.equal(wide.scale, 0.4375);
+  assert.deepEqual(wide.at, { x: 380, y: 173, width: 560, height: 394 });
+  const phone = placement(panel, { width: 390, height: 844 });
+  assert.ok(phone.scale < 1 && phone.at.height <= panel.height && phone.at.width <= panel.width);
+  assert.deepEqual(placement({ x: 20, y: 20, width: 1400, height: 1000 }, { width: 1280, height: 900 }), { at: { x: 80, y: 70, width: 1280, height: 900 }, scale: 1 });
+});
+
+test("input that carries a point is scaled with the page or refused, never sent to the wrong place", () => {
+  const Module = require("node:module");
+  const load = Module._load;
+  Module._load = function (request, ...rest) {
+    if (request === "electron") return { WebContentsView: class {}, session: { fromPartition: () => ({}) } };
+    return load.call(this, request, ...rest);
+  };
+  let scaleInput;
+  try {
+    ({ scaleInput } = require("../src/browserviews.js"));
+  } finally {
+    Module._load = load;
+  }
+  const mouse = { type: "mousePressed", x: 1200, y: 800, button: "left" };
+  assert.equal(scaleInput("Input.dispatchMouseEvent", mouse, 1), mouse, "an unscaled page gets the point as it is");
+  assert.deepEqual(scaleInput("Input.dispatchMouseEvent", mouse, 0.5), { type: "mousePressed", x: 600, y: 400, button: "left" });
+  for (const method of ["Input.dispatchTouchEvent", "Input.dispatchDragEvent", "Input.emulateTouchFromMouseEvent", "Input.synthesizeTapGesture", "Input.synthesizeScrollGesture", "Input.synthesizePinchGesture"]) {
+    const params = { x: 10, y: 20, touchPoints: [{ x: 10, y: 20 }] };
+    assert.equal(scaleInput(method, params, 1), params, `${method} passes on an unscaled page`);
+    assert.throws(() => scaleInput(method, params, 0.5), { code: "input_unscaled" }, `${method} must not reach a scaled page unscaled`);
+  }
+  const key = { type: "keyDown", key: "a" };
+  assert.equal(scaleInput("Input.dispatchKeyEvent", key, 0.5), key, "keys carry no point");
+  assert.equal(scaleInput("Input.insertText", { text: "x" }, 0.5).text, "x");
+});
+
 test("rewind notice dismissal survives the desktop preference disk round trip", (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rewind-notice-prefs-"));
   const file = path.join(dir, "prefs.json");
@@ -2106,4 +2565,613 @@ test("rewind notice dismissal survives the desktop preference disk round trip", 
   const record = { "rx-rewind-notice-dismissed:tx-saved": "1" };
   savePrefs(file, record);
   assert.deepEqual(loadPrefs(file), record);
+});
+
+const { setUnreadBadge } = require("../src/badge.js");
+
+test("macOS marks and clears the application Dock badge", () => {
+  const badges = [];
+  const app = { dock: { setBadge: (text) => badges.push(text) } };
+  setUnreadBadge(true, {}, { app }, "darwin");
+  setUnreadBadge(false, {}, { app }, "darwin");
+  assert.deepEqual(badges, ["•", ""]);
+});
+
+test("Windows uses a red dot overlay and removes it when all sessions are read", () => {
+  const calls = [];
+  const win = { setOverlayIcon: (...args) => calls.push(args) };
+  let pixels;
+  const nativeImage = { createFromBitmap: (buffer, size) => { pixels = buffer; assert.deepEqual(size, { width: 16, height: 16 }); return "dot"; } };
+  setUnreadBadge(true, win, { nativeImage }, "win32");
+  setUnreadBadge(false, win, { nativeImage }, "win32");
+  const at = (x, y) => [...pixels.subarray((y * 16 + x) * 4, (y * 16 + x) * 4 + 4)];
+  assert.equal(pixels[3], 0);
+  assert.deepEqual(at(8, 8), [64, 64, 224, 255]);
+  assert.equal(at(1, 8)[3], 0, "the dot stays well inside the 16px canvas");
+  assert.deepEqual(at(12, 10), [255, 255, 255, 255], "a white ring separates it from the icon");
+  assert.ok(at(13, 8)[3] > 0 && at(13, 8)[3] < 255, "the rim is smoothed, not jagged");
+  assert.deepEqual(calls, [["dot", "Reasonix Studio"], [null, ""]]);
+});
+
+test("Linux clears its launcher badge without requiring Dock APIs", () => {
+  const counts = [];
+  const app = { setBadgeCount: (count) => counts.push(count) };
+  setUnreadBadge(true, {}, { app }, "linux");
+  setUnreadBadge(false, {}, { app }, "linux");
+  assert.deepEqual(counts, [1, 0]);
+});
+
+test("CUA readiness refuses a different process, host or driver version", () => {
+  const { accepts } = require("../src/cua");
+  const result = { pid: 123, embedded: true, host_bundle_id: "io.reasonix.studio", driver_version: "0.34.1", contract_version: "0.8.0", tools_list_schema_version: "1", capability_version: "1", mcp_protocol_version: "2025-06-18" };
+  assert.equal(accepts({ ok: true, result }, 123, cuaContract), true);
+  for (const [key, value] of Object.entries({ pid: 124, embedded: false, host_bundle_id: "other", driver_version: "0.35.0", contract_version: "0.9.0", mcp_protocol_version: "2026-07-28" })) {
+    assert.equal(accepts({ ok: true, result: { ...result, [key]: value } }, 123, cuaContract), false);
+  }
+  assert.equal(accepts({ ok: false, result }, 123), false);
+});
+
+
+test("CUA interruption waits for the owned service to stop", async () => {
+  const { spawn } = require("node:child_process");
+  const { stopProcess } = require("../src/cua");
+  const child = spawn(process.execPath, ["-e", "process.stdin.resume();setInterval(()=>{},1000);process.stdin.on('end',()=>setTimeout(()=>process.exit(0),80))"], { stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
+  await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+  await stopProcess(child, true);
+  assert.ok(child.exitCode !== null || child.signalCode !== null);
+});
+
+test("CUA embedded control stops the old service before admitting a fresh one", { skip: process.platform === "win32" }, async () => {
+  const { spawn } = require("node:child_process");
+  const net = require("node:net");
+  const { startEmbedded, metadata } = require("../src/cua");
+  const fake = path.join(path.dirname(require("node:url").fileURLToPath(import.meta.url)), "cua-service-fixture.js");
+  const owned = await startEmbedded(process.execPath, cuaContract, () => {}, (_exe, args, options) => spawn(process.execPath, [fake, ...args], options));
+  try {
+    const before = await metadata(owned.socket);
+    const reply = await new Promise((resolve, reject) => {
+      const peer = net.createConnection(owned.abortSocket);
+      let text = "";
+      peer.once("error", reject);
+      peer.on("connect", () => peer.write('{"op":"abort"}\n'));
+      peer.on("data", bytes => { text += bytes; if (text.includes("\n")) { peer.destroy(); resolve(JSON.parse(text)); } });
+    });
+    assert.equal(reply.ok, true);
+    const after = await metadata(owned.socket);
+    assert.notEqual(after.result.pid, before.result.pid);
+    assert.throws(() => process.kill(before.result.pid, 0));
+  } finally { await owned.stop(); }
+  assert.equal(fs.existsSync(owned.socket), false);
+  assert.equal(fs.existsSync(owned.abortSocket), false);
+});
+
+test("CUA waits for socket permissions on initial launch and abort restart", { skip: process.platform === "win32" }, async (t) => {
+  const { spawn } = require("node:child_process");
+  const net = require("node:net");
+  const promises = require("node:fs/promises");
+  const { startEmbedded, metadata, stopProcess } = require("../src/cua");
+  const fake = path.join(path.dirname(require("node:url").fileURLToPath(import.meta.url)), "cua-service-fixture.js");
+  const children = [];
+  const observed = new Set();
+  const ready = new Set();
+  let owned;
+  t.after(async () => {
+    await owned?.stop();
+    for (const child of children) await stopProcess(child);
+  });
+  const lstat = promises.lstat;
+  t.mock.method(promises, "lstat", async (...args) => {
+    const current = await lstat(...args);
+    if (path.basename(args[0]) === "driver.sock" && (current.mode & 0o777) !== 0o600) {
+      const child = children.at(-1);
+      if (!observed.has(child.pid)) {
+        observed.add(child.pid);
+        child.send("secure");
+      }
+    } else if (path.basename(args[0]) === "driver.sock") {
+      ready.add(children.at(-1).pid);
+    }
+    return current;
+  });
+  const connect = net.createConnection;
+  t.mock.method(net, "createConnection", (...args) => {
+    if (path.basename(args[0]) === "driver.sock") assert.ok(ready.has(children.at(-1).pid), "metadata was requested before private permissions were observed");
+    return connect(...args);
+  });
+  owned = await startEmbedded(process.execPath, cuaContract, () => {}, (_exe, args, options) => {
+    const child = spawn(process.execPath, [fake, ...args, "--defer-permissions"], { ...options, stdio: [...options.stdio, "ipc"] });
+    children.push(child);
+    return child;
+  });
+  const before = await metadata(owned.socket);
+  const reply = await new Promise((resolve, reject) => {
+    const peer = net.createConnection(owned.abortSocket);
+    let text = "";
+    peer.once("error", reject);
+    peer.on("connect", () => peer.write('{"op":"abort"}\n'));
+    peer.on("data", bytes => { text += bytes; if (text.includes("\n")) { peer.destroy(); resolve(JSON.parse(text)); } });
+  });
+  assert.equal(reply.ok, true);
+  const after = await metadata(owned.socket);
+  assert.notEqual(after.result.pid, before.result.pid);
+  assert.deepEqual([...observed], [before.result.pid, after.result.pid]);
+  assert.equal((await lstat(owned.socket)).mode & 0o777, 0o600);
+  assert.throws(() => process.kill(before.result.pid, 0));
+});
+
+test("CUA permission readiness remains bounded without connecting to a non-private socket", { skip: process.platform === "win32" }, async (t) => {
+  const { spawn } = require("node:child_process");
+  const promises = require("node:fs/promises");
+  const { startEmbedded, stopProcess } = require("../src/cua");
+  const fake = path.join(path.dirname(require("node:url").fileURLToPath(import.meta.url)), "cua-service-fixture.js");
+  let child;
+  t.after(async () => { if (child) await stopProcess(child); });
+  const now = Date.now();
+  let expired = false;
+  t.mock.method(Date, "now", () => now + (expired ? 10001 : 0));
+  const lstat = promises.lstat;
+  t.mock.method(promises, "lstat", async (...args) => {
+    const current = await lstat(...args);
+    if (path.basename(args[0]) === "driver.sock" && (current.mode & 0o777) !== 0o600) expired = true;
+    return current;
+  });
+  await assert.rejects(startEmbedded(process.execPath, cuaContract, () => {}, (_exe, args, options) => {
+    child = spawn(process.execPath, [fake, ...args, "--defer-permissions"], options);
+    return child;
+  }), /Embedded CUA failed readiness/);
+  assert.equal(expired, true);
+  assert.equal(child.exitCode, 0);
+});
+
+for (const kind of ["file", "symlink"]) {
+  test(`CUA readiness rejects a ${kind} instead of waiting for permissions`, { skip: process.platform === "win32" }, async (t) => {
+    const { spawn } = require("node:child_process");
+    const { startEmbedded, stopProcess } = require("../src/cua");
+    let child, socket;
+    t.after(async () => {
+      if (child) await stopProcess(child);
+      if (socket) fs.rmSync(path.dirname(socket), { recursive: true, force: true });
+    });
+    const script = `
+      const fs = require("node:fs");
+      const socket = process.argv[1];
+      if (process.argv[2] === "symlink") fs.symlinkSync("missing-target", socket);
+      else fs.writeFileSync(socket, "", { mode: 0o600 });
+      process.stdin.resume();
+      process.stdin.on("end", () => process.exit(0));`;
+    await assert.rejects(startEmbedded(process.execPath, cuaContract, () => {}, (_exe, args, options) => {
+      socket = args[args.indexOf("--socket") + 1];
+      child = spawn(process.execPath, ["-e", script, socket, kind], options);
+      return child;
+    }), /Invalid private CUA socket/);
+    assert.equal(child.exitCode, 0);
+  });
+}
+
+
+test("CUA repeated quit waits for owned driver cleanup", async () => {
+  const { createQuitGate } = require("../src/cua");
+  let resolveStop;
+  const stopped = new Promise(resolve => { resolveStop = resolve; });
+  let stops = 0, quits = 0, prevented = 0;
+  const gate = createQuitGate(() => ({ stop: () => { stops++; return stopped; } }), () => { quits++; }, assert.fail);
+  const event = { preventDefault: () => { prevented++; } };
+  gate(event);
+  gate(event);
+  await Promise.resolve();
+  assert.equal(stops, 1);
+  assert.equal(prevented, 2);
+  assert.equal(quits, 0);
+  resolveStop();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(quits, 1);
+  gate(event);
+  assert.equal(prevented, 2);
+});
+
+
+test("CUA extraction handles ZIP archives when GNU tar precedes the Windows reader", { skip: process.platform !== "win32" || !fs.existsSync("C:/Program Files/Git/usr/bin/tar.exe") }, () => {
+  const { spawnSync } = require("node:child_process");
+  const tar = "C:/Program Files/Git/usr/bin/tar.exe";
+  const stage = fs.mkdtempSync(path.join(os.tmpdir(), "reasonix-cua-extract-"));
+  try {
+    fs.writeFileSync(path.join(stage, "driver.zip"), Buffer.from("UEsDBBQAAAAIANomTV3uQOUFCQAAAAcAAAAOAAAAY3VhLWRyaXZlci5leGVLy6woKS1KBQBQSwECFAAUAAAACADaJk1d7kDlBQkAAAAHAAAADgAAAAAAAAAAAAAAgAEAAAAAY3VhLWRyaXZlci5leGVQSwUGAAAAAAEAAQA8AAAANQAAAAAA", "base64"));
+    const target = path.join(stage, "extracted");
+    fs.mkdirSync(target);
+    const script = `require(${JSON.stringify(require.resolve("../packaging/install-cua-driver"))}).extract(process.argv[1], process.argv[2])`;
+    const unpacked = spawnSync(process.execPath, ["-e", script, path.join(stage, "driver.zip"), target], { env: { ...process.env, PATH: path.dirname(tar) + path.delimiter + process.env.PATH } });
+    assert.equal(unpacked.status, 0, unpacked.stderr.toString());
+    assert.equal(fs.readFileSync(path.join(target, "cua-driver.exe"), "utf8"), "fixture");
+  } finally {
+    assert.ok(path.resolve(stage).startsWith(path.resolve(os.tmpdir()) + path.sep));
+    fs.rmSync(stage, { recursive: true, force: true });
+  }
+});
+
+
+test("CUA layout resolves one canonical contract in development and packaging", () => {
+ const { computerDriverContract } = require("../src/layout");
+ const dirname = path.dirname(require("node:url").fileURLToPath(import.meta.url));
+ const source = computerDriverContract({ packaged: false, dirname: path.join(dirname, "../src") });
+ assert.deepEqual(JSON.parse(fs.readFileSync(source, "utf8")), cuaContract);
+ assert.equal(computerDriverContract({ packaged: true, resourcesPath: "/res" }), path.join("/res", "bin", "cua-driver.lock.json"));
+});
+
+const { captureHandler, MAX_WIDTH } = require("../src/capture.js");
+
+function fakeImage(width, { empty = false } = {}) {
+  return {
+    isEmpty: () => empty,
+    getSize: () => ({ width, height: 10 }),
+    resize: (opts) => fakeImage(opts.width),
+    toPNG: () => Buffer.from(`png:${width}`),
+  };
+}
+
+test("the window capture answers only the studio window and takes no target", async () => {
+  let asked = 0;
+  const win = { webContents: { capturePage: async (...args) => (asked++, assert.equal(args.length, 0), fakeImage(800)) } };
+  const handle = captureHandler((event) => (event.sender === "studio" ? win : null));
+  const png = await handle({ sender: "studio" }, "some-other-window-id", { x: 0, y: 0 });
+  assert.equal(Buffer.from(png).toString(), "png:800");
+  assert.equal(await handle({ sender: "a browser page" }), null);
+  assert.equal(asked, 1);
+});
+
+test("the window capture is scaled down past the upload-friendly width and refuses an empty frame", async () => {
+  const wide = captureHandler(() => ({ webContents: { capturePage: async () => fakeImage(MAX_WIDTH * 2) } }));
+  assert.equal(Buffer.from(await wide({})).toString(), `png:${MAX_WIDTH}`);
+  const blank = captureHandler(() => ({ webContents: { capturePage: async () => fakeImage(0, { empty: true }) } }));
+  assert.equal(await blank({}), null);
+});
+
+test("a folder panel that closes before anyone could read it is reported as never drawn on Linux", () => {
+  const closed = { canceled: true, filePaths: [] };
+  assert.equal(folderAnswer(closed, 20, "linux"), null);
+  assert.equal(folderAnswer(closed, 5000, "linux"), "");
+  assert.equal(folderAnswer(closed, 20, "darwin"), "");
+  assert.equal(folderAnswer(closed, 20, "win32"), "");
+  assert.equal(folderAnswer({ canceled: false, filePaths: ["/home/a/p"] }, 20, "linux"), "/home/a/p");
+});
+
+// Who keeps the keyboard while the agent drives a page.
+const { KeyboardKeeper, PERSON_MS } = require("../src/keyboard.js");
+
+function keyboardWindow({ appFocused = true, windowFocused = true } = {}) {
+  const contents = Object.assign(new EventEmitter(), { focused: appFocused, focus() { this.focused = true; this.emit("focus"); }, isFocused() { return this.focused; } });
+  const win = { webContents: contents, isDestroyed: () => false, isFocused: () => windowFocused };
+  return { win, contents };
+}
+function keyboardPage() {
+  return new EventEmitter();
+}
+
+const turn = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+test("a page the agent opens does not take the keyboard from the app page", async () => {
+  const { win, contents } = keyboardWindow();
+  const keeper = new KeyboardKeeper({ win });
+  const page = keyboardPage();
+  page.isFocused = () => true;
+  keeper.watch(page);
+  contents.focused = false;
+  page.emit("focus");
+  assert.equal(contents.focused, false, "not from inside the platform's own focus event");
+  await turn();
+  assert.equal(contents.focused, true);
+  assert.equal(keeper.owner, "app");
+});
+
+test("a click or a key from the person into the page is theirs to have chosen", () => {
+  for (const arrive of [(page) => page.emit("before-input-event", {}, { type: "keyDown" }), (page) => page.emit("input-event", {}, { type: "mouseDown" })]) {
+    const { win, contents } = keyboardWindow();
+    const keeper = new KeyboardKeeper({ win });
+    const page = keyboardPage();
+    keeper.watch(page);
+    arrive(page);
+    contents.focused = false;
+    page.emit("focus");
+    assert.equal(contents.focused, false);
+    assert.equal(keeper.owner, "view");
+  }
+});
+
+test("a click the agent itself sent over the protocol is not the person's", async () => {
+  const { win, contents } = keyboardWindow();
+  const keeper = new KeyboardKeeper({ win });
+  const page = keyboardPage();
+  page.isFocused = () => true;
+  keeper.watch(page, () => true);
+  page.emit("input-event", {}, { type: "mouseDown" });
+  contents.focused = false;
+  page.emit("focus");
+  await turn();
+  assert.equal(contents.focused, true);
+});
+
+test("the person's choice stands until they go back to the app page", async () => {
+  const { win, contents } = keyboardWindow();
+  const keeper = new KeyboardKeeper({ win });
+  const page = keyboardPage();
+  page.isFocused = () => true;
+  keeper.watch(page);
+  page.emit("input-event", {}, { type: "mouseDown" });
+  page.emit("focus");
+  assert.equal(keeper.owner, "view");
+  contents.focused = false;
+  page.emit("focus");
+  await turn();
+  assert.equal(contents.focused, false, "the agent navigating again does not pull it back");
+  contents.focus();
+  assert.equal(keeper.owner, "app");
+});
+
+test("nothing is taken back when the app page did not have the keyboard, or the window is not in front", async () => {
+  let { win, contents } = keyboardWindow({ appFocused: false });
+  let keeper = new KeyboardKeeper({ win });
+  let page = keyboardPage();
+  page.isFocused = () => true;
+  keeper.watch(page);
+  page.emit("focus");
+  await turn();
+  assert.equal(contents.focused, false);
+  ({ win, contents } = keyboardWindow({ windowFocused: false }));
+  keeper = new KeyboardKeeper({ win });
+  page = keyboardPage();
+  page.isFocused = () => true;
+  keeper.watch(page);
+  contents.focused = false;
+  page.emit("focus");
+  await turn();
+  assert.equal(contents.focused, false);
+  ({ win, contents } = keyboardWindow());
+  keeper = new KeyboardKeeper({ win });
+  page = keyboardPage();
+  page.isFocused = () => true;
+  keeper.watch(page);
+  contents.focused = false;
+  page.emit("focus");
+  page.emit("before-input-event", {}, { type: "keyDown" });
+  await turn();
+  assert.equal(contents.focused, false, "a key from the person in the meantime is theirs");
+});
+
+test("reclaim hands the keyboard back only when nobody holds it and the app page owned it", () => {
+  const { win, contents } = keyboardWindow();
+  const keeper = new KeyboardKeeper({ win });
+  contents.focused = false;
+  keeper.reclaim();
+  assert.equal(contents.focused, true);
+  keeper.owner = "view";
+  contents.focused = false;
+  keeper.reclaim();
+  assert.equal(contents.focused, false);
+});
+
+test("a person's click is only a click for a moment", () => {
+  assert.ok(PERSON_MS > 0 && PERSON_MS < 2000);
+});
+
+function loadedViews() {
+  const Module = require("node:module");
+  const load = Module._load;
+  Module._load = function (request, ...rest) {
+    if (request === "electron") return { WebContentsView: class {}, session: { fromPartition: () => ({}) } };
+    return load.call(this, request, ...rest);
+  };
+  let BrowserViews;
+  let LEAVE_LIMIT_MS;
+  try {
+    ({ BrowserViews, LEAVE_LIMIT_MS } = require("../src/browserviews.js"));
+  } finally {
+    Module._load = load;
+  }
+  const calls = [];
+  const win = {
+    on() {},
+    isDestroyed: () => false,
+    isFocused: () => true,
+    webContents: Object.assign(new EventEmitter(), { isFocused: () => true }),
+    getContentBounds: () => ({ width: 1200, height: 800 }),
+    contentView: { addChildView: () => calls.push("add"), removeChildView: () => calls.push("remove") },
+  };
+  const views = new BrowserViews({ win, kernelOrigin: "http://127.0.0.1:1" });
+  const view = { setBounds: (b) => calls.push("bounds " + b.x), webContents: { isDestroyed: () => false } };
+  return { views, view, calls, LEAVE_LIMIT_MS };
+}
+
+test("a page navigating while the app page holds the keyboard is held out of the window, then put back where it was", () => {
+  const { views, view, calls } = loadedViews();
+  const entry = { view, at: { x: 10, y: 20, width: 600, height: 400 }, attached: true };
+  views.leave(entry);
+  assert.deepEqual(calls, ["remove"]);
+  assert.equal(entry.attached, false);
+  views.settle(entry);
+  assert.deepEqual(calls, ["remove", "add", "bounds 10"]);
+  assert.equal(entry.attached, true);
+  views.settle(entry);
+  assert.equal(calls.length, 3, "settling a page that is already attached does nothing");
+});
+
+test("a parked page comes back parked", () => {
+  const { views, view, calls } = loadedViews();
+  const entry = { view, at: null, attached: true };
+  views.leave(entry);
+  calls.length = 0;
+  views.settle(entry);
+  assert.equal(calls[0], "add");
+  assert.match(calls[1], /^bounds -?\d+$/);
+  assert.equal(entry.at, null);
+});
+
+test("a page is left where it is when the person, not the app page, holds the keyboard, or when it is not attached", () => {
+  const { views, view, calls } = loadedViews();
+  const entry = { view, at: null, attached: true };
+  views.keyboard.owner = "view";
+  views.leave(entry);
+  assert.deepEqual(calls, []);
+  assert.equal(entry.attached, true);
+  views.keyboard.owner = "app";
+  const loading = { view, at: null, attached: false };
+  views.leave(loading);
+  assert.deepEqual(calls, []);
+});
+
+test("a page still loading is not put back by a window event", () => {
+  const { views, view, calls } = loadedViews();
+  views.entries.set("t1", { view, at: null, attached: false });
+  views.reattach();
+  assert.deepEqual(calls, []);
+});
+
+test("a navigation that never finishes does not keep the page out of the window for good", () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { views, view, calls, LEAVE_LIMIT_MS } = loadedViews();
+    const entry = { view, at: { x: 10, y: 20, width: 600, height: 400 }, attached: true };
+    views.leave(entry);
+    assert.deepEqual(calls, ["remove"]);
+    mock.timers.tick(LEAVE_LIMIT_MS - 1);
+    assert.equal(entry.attached, false, "still out just before the limit");
+    mock.timers.tick(1);
+    assert.deepEqual(calls, ["remove", "add", "bounds 10"]);
+    assert.equal(entry.attached, true);
+    mock.timers.tick(LEAVE_LIMIT_MS * 3);
+    assert.equal(calls.length, 3, "and it is put back once");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("a navigation that does finish cancels the limit, and a second one gets a fresh one", () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { views, view, calls, LEAVE_LIMIT_MS } = loadedViews();
+    const entry = { view, at: null, attached: true };
+    views.leave(entry);
+    mock.timers.tick(LEAVE_LIMIT_MS - 100);
+    views.settle(entry);
+    const back = calls.length;
+    mock.timers.tick(LEAVE_LIMIT_MS * 2);
+    assert.equal(calls.length, back, "the limit did not fire after the page came back");
+    views.leave(entry);
+    mock.timers.tick(LEAVE_LIMIT_MS);
+    assert.equal(entry.attached, true, "the second navigation was bounded by its own limit");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+// Input to a page in a minimized window.
+const { InputWake } = require("../src/inputwake.js");
+
+function wakeWindow({ minimized = true, focused = false } = {}) {
+  const calls = [];
+  const win = {
+    destroyed: false,
+    isDestroyed() { return this.destroyed; },
+    isMinimized: () => minimized,
+    isFocused: () => focused,
+    setOpacity: (v) => calls.push(`opacity ${v}`),
+    setIgnoreMouseEvents: (v) => calls.push(`ignore ${v}`),
+    showInactive: () => { minimized = false; calls.push("showInactive"); },
+    minimize: () => { minimized = true; calls.push("minimize"); },
+  };
+  return { win, calls, focus: () => { focused = true; } };
+}
+const wakeOf = (win) => new InputWake({ win, platform: "win32", settleMs: 5, holdMs: 20 });
+const later = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("input to a minimized window is sent with the window raised unseen, then it is minimized again", async () => {
+  const { win, calls } = wakeWindow();
+  const sent = [];
+  await wakeOf(win).run(async () => sent.push([...calls]));
+  assert.deepEqual(sent[0], ["opacity 0", "ignore true", "showInactive"]);
+  await later(60);
+  assert.deepEqual(calls.slice(3), ["ignore false", "opacity 1", "minimize"]);
+});
+
+test("several inputs in a row raise the window once", async () => {
+  const { win, calls } = wakeWindow();
+  const wake = wakeOf(win);
+  await Promise.all([wake.run(async () => {}), wake.run(async () => {}), wake.run(async () => {})]);
+  await later(60);
+  assert.equal(calls.filter((c) => c === "showInactive").length, 1);
+  assert.equal(calls.filter((c) => c === "minimize").length, 1);
+});
+
+test("a window that is not minimized, or not on Windows, is left alone", async () => {
+  const open = wakeWindow({ minimized: false });
+  await wakeOf(open.win).run(async () => {});
+  const mac = wakeWindow();
+  await new InputWake({ win: mac.win, platform: "darwin", settleMs: 5, holdMs: 20 }).run(async () => {});
+  await later(40);
+  assert.deepEqual([...open.calls, ...mac.calls], []);
+});
+
+test("a window the person focused meanwhile is not minimized under them", async () => {
+  const { win, calls, focus } = wakeWindow();
+  await wakeOf(win).run(async () => focus());
+  await later(60);
+  assert.ok(!calls.includes("minimize"));
+  assert.deepEqual(calls.slice(-2), ["ignore false", "opacity 1"]);
+});
+
+test("a failed input still lets the window go back", async () => {
+  const { win, calls } = wakeWindow();
+  await assert.rejects(wakeOf(win).run(async () => { throw new Error("gone"); }), /gone/);
+  await later(60);
+  assert.ok(calls.includes("minimize"));
+});
+
+test("a window destroyed during the hold is not touched", async () => {
+  const { win, calls } = wakeWindow();
+  await wakeOf(win).run(async () => {});
+  win.destroyed = true;
+  const before = calls.length;
+  await later(60);
+  assert.equal(calls.length, before);
+});
+
+test("a window that fails to raise is given its opacity and mouse back", async () => {
+  const { win, calls } = wakeWindow();
+  win.showInactive = () => { throw new Error("no window"); };
+  await assert.rejects(wakeOf(win).run(async () => {}), /no window/);
+  assert.deepEqual(calls.slice(-3), ["ignore false", "opacity 1", "minimize"]);
+});
+
+const { processMemoryRows, processMemoryHandler } = require("../src/procmem.js");
+
+test("the shell's process memory is only a fixed type and two whole numbers per process", () => {
+  const metrics = [
+    { pid: 4740, type: "Tab", name: "C:\\Users\\someone\\x", cmd: "--user-data-dir=/home/someone", memory: { workingSetSize: 3992908, privateBytes: 3900000, peakWorkingSetSize: 9 } },
+    { pid: 11, type: "Browser", memory: { workingSetSize: 120000, privateBytes: 90000 } },
+    { pid: 12, type: "GPU", memory: { workingSetSize: 76000 } },
+    { pid: 13, type: "Utility", memory: { workingSetSize: 6000, privateBytes: 5000 } },
+    { pid: 14, type: "Zygote", memory: { workingSetSize: 1000, privateBytes: 900 } },
+    { pid: 15, type: "Tab", memory: { workingSetSize: Number.NaN, privateBytes: -4 } },
+  ];
+  const rows = processMemoryRows(metrics);
+  assert.deepEqual(rows, [
+    { process: "renderer", workingSetKB: 3992908, privateKB: 3900000 },
+    { process: "browser", workingSetKB: 120000, privateKB: 90000 },
+    { process: "gpu", workingSetKB: 76000, privateKB: 0 },
+    { process: "utility", workingSetKB: 6000, privateKB: 5000 },
+    { process: "utility", workingSetKB: 1000, privateKB: 900 },
+    { process: "renderer", workingSetKB: 0, privateKB: 0 },
+  ]);
+  assert.ok(rows.every((r) => Object.keys(r).sort().join() === "privateKB,process,workingSetKB"));
+  assert.doesNotMatch(JSON.stringify(rows), /Users|pid|user-data|cmd/i);
+});
+
+test("the shell reports at most eleven processes, since the kernel adds its own row to a dozen", () => {
+  const many = Array.from({ length: 30 }, (_, i) => ({ pid: i, type: "Utility", memory: { workingSetSize: 1, privateBytes: 1 } }));
+  assert.equal(processMemoryRows(many).length, 11);
+});
+
+test("only the app's own window is answered, and nothing is read from the asker", () => {
+  const app = { getAppMetrics: () => [{ type: "Tab", memory: { workingSetSize: 5, privateBytes: 4 } }] };
+  assert.deepEqual(processMemoryHandler(app, () => true)({}), [{ process: "renderer", workingSetKB: 5, privateKB: 4 }]);
+  assert.deepEqual(processMemoryHandler(app, () => null)({}), []);
+  assert.deepEqual(processMemoryHandler({ getAppMetrics: () => { throw new Error("x"); } }, () => true)({}), []);
 });

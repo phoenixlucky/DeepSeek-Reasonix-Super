@@ -205,6 +205,7 @@ func TestBuildCatalogUnavailableServerOverridesRegistryCachedTool(t *testing.T) 
 			cat := BuildCatalog(CatalogOptions{
 				Tools: []tool.ContractEntry{{
 					Name:        plugin.ModelToolName(server, "search_issues"),
+					MCP:         &tool.MCPBinding{Server: server, RawName: "search_issues", CapabilityID: "mcp-tool:" + server + "/search_issues"},
 					Description: "search issues",
 					ReadOnly:    true,
 				}},
@@ -299,7 +300,8 @@ func TestCatalogKeepsProxyToolsAfterConnect(t *testing.T) {
 	}
 	// When the same server's tools are already on the registry, no duplicates.
 	cat = BuildCatalog(CatalogOptions{
-		Tools:      []tool.ContractEntry{{Name: plugin.ModelToolName("gh", "search_issues")}},
+		Tools: []tool.ContractEntry{{Name: plugin.ModelToolName("gh", "search_issues"),
+			MCP: &tool.MCPBinding{Server: "gh", RawName: "search_issues", CapabilityID: "mcp-tool:gh/search_issues"}}},
 		Plugins:    []config.PluginEntry{{Name: "gh", AutoStart: new(false)}},
 		Profile:    ProfileDelivery,
 		Connected:  map[string]bool{"gh": true},

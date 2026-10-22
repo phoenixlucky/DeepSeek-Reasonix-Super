@@ -36,13 +36,13 @@ func (t *TaskTool) acquireRequestFor(spec *ProfileExecSpec) (writeclaim.AcquireR
 		WritePaths: spec.Grant.WritePaths,
 		Nested:     spec.Sched.Nested,
 		Priority:   spec.Sched.Priority,
-		OnQueued:   spec.Sched.OnQueued,
+		OnQueued:   queuedHook(spec.Sched),
 		Label:      firstNonEmpty(spec.Task.Description, spec.Worker.Name, "task"),
 	}
 	if !req.Writer || !spec.Grant.WritePaths.Empty() || !spec.Sched.RunInBackground {
 		return req, nil
 	}
-	whole, err := writeclaim.WholeWorkspaceWriteClaim(t.workspaceRoot)
+	whole, err := t.UndeclaredWriteClaim()
 	if err != nil {
 		return writeclaim.AcquireRequest{}, err
 	}
@@ -56,4 +56,24 @@ func (p SchedulerPolicy) started() error {
 		return nil
 	}
 	return p.OnStart()
+}
+
+// queuedHook adapts the policy's two hooks to the scheduler's one: the cause
+// goes to OnQueued first, because the durable record is written before anything
+// observes the wait, and the claim's holder to OnHeld only once that succeeded.
+func queuedHook(p SchedulerPolicy) func(writeclaim.Held) error {
+	if p.OnQueued == nil && p.OnHeld == nil {
+		return nil
+	}
+	return func(h writeclaim.Held) error {
+		if p.OnQueued != nil {
+			if err := p.OnQueued(h.Cause); err != nil {
+				return err
+			}
+		}
+		if p.OnHeld != nil {
+			p.OnHeld(h)
+		}
+		return nil
+	}
 }

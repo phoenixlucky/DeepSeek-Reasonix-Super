@@ -52,9 +52,9 @@ func stopFailing(dir string) {
 	_ = os.Chmod(dir, 0o755)
 }
 
-func namesInListForID(store Store, id string) []string {
+func namesInListForID(t *testing.T, store Store, id string) []string {
 	var names []string
-	for _, m := range store.List() {
+	for _, m := range mustStore(t, store).List() {
 		if m.ID == id {
 			names = append(names, m.Name)
 		}
@@ -78,13 +78,13 @@ func TestStoreV2RenameKeepsOneActiveIdentityWhenOldFileCleanupFails(t *testing.T
 	}
 	stopFailing(store.Dir)
 
-	oldFact, oldOK := store.Read("alpha")
-	newFact, newOK := store.Read("beta")
-	byID, _ := store.Read(first.Memory.ID)
+	oldFact, oldOK := mustStore(t, store).Read("alpha")
+	newFact, newOK := mustStore(t, store).Read("beta")
+	byID, _ := mustStore(t, store).Read(first.Memory.ID)
 	if oldOK && newOK {
 		t.Fatalf("one id became two active facts after %v: Read(alpha)=rev%d %q / Read(beta)=rev%d %q / Read(id)=rev%d %q; List() names for %s = %v; MEMORY.md =\n%s",
 			saveErr, oldFact.Revision, oldFact.Body, newFact.Revision, newFact.Body,
-			byID.Revision, byID.Body, first.Memory.ID, namesInListForID(store, first.Memory.ID),
+			byID.Revision, byID.Body, first.Memory.ID, namesInListForID(t, store, first.Memory.ID),
 			mustReadString(t, filepath.Join(store.Dir, indexFile)))
 	}
 }
@@ -109,8 +109,8 @@ func TestStoreV2RenameLeavesNoDanglingIndexEntry(t *testing.T) {
 	stopFailing(store.Dir)
 
 	index := mustReadString(t, indexPath)
-	_, oldOK := store.Read("alpha")
-	active, newOK := store.Read(first.Memory.ID)
+	_, oldOK := mustStore(t, store).Read("alpha")
+	active, newOK := mustStore(t, store).Read(first.Memory.ID)
 	if strings.Contains(index, "alpha.md") && !oldOK && newOK {
 		t.Fatalf("after %v the index still names the removed file: active=%+v; Read(alpha)=%v; MEMORY.md =\n%s", saveErr, active, oldOK, index)
 	}
@@ -140,7 +140,7 @@ func TestStoreV2RetriedRenameLeavesOneActiveName(t *testing.T) {
 	if retryErr != nil {
 		t.Fatalf("the failed rename left the fact unretryable: retry = %v (first failure was %v)", retryErr, saveErr)
 	}
-	names := namesInListForID(store, first.Memory.ID)
+	names := namesInListForID(t, store, first.Memory.ID)
 	if len(names) != 1 || names[0] != "beta" {
 		t.Fatalf("the retry returned revision %d but the id still has active names %v; MEMORY.md =\n%s",
 			retried.Memory.Revision, names, mustReadString(t, filepath.Join(store.Dir, indexFile)))
@@ -172,8 +172,8 @@ func TestStoreV2CrossScopeMoveKeepsTheIndexInStep(t *testing.T) {
 
 	projectIndex := mustReadString(t, filepath.Join(store.Dir, indexFile))
 	global := mustReadString(t, globalIndex)
-	_, oldActive := store.Read("project/alpha.md")
-	_, newActive := store.Read("global/beta.md")
+	_, oldActive := mustStore(t, store).Read("project/alpha.md")
+	_, newActive := mustStore(t, store).Read("global/beta.md")
 	oldListed := strings.Contains(projectIndex, "alpha.md")
 	newListed := strings.Contains(global, "beta.md")
 
@@ -214,10 +214,10 @@ func TestStoreV2FailedWriteAfterSnapshotKeepsTheStoreConsistent(t *testing.T) {
 	if saveErr == nil {
 		t.Skip("this user can write into a 0555 directory; the write fault cannot be injected")
 	}
-	if got, ok := store.Read("project/alpha.md"); !ok || got.Body != "v1" || got.Revision != 1 {
+	if got, ok := mustStore(t, store).Read("project/alpha.md"); !ok || got.Body != "v1" || got.Revision != 1 {
 		t.Fatalf("failed write changed the old identity: %+v, ok=%v (save error %v)", got, ok, saveErr)
 	}
-	if later, ok := store.Read("global/beta.md"); ok {
+	if later, ok := mustStore(t, store).Read("global/beta.md"); ok {
 		t.Fatalf("failed write left a second active file: %+v (save error %v)", later, saveErr)
 	}
 }
@@ -243,7 +243,7 @@ func TestStoreV2CommittedRenameSurvivesRetiredCopyCleanupFailure(t *testing.T) {
 	if saveErr != nil {
 		t.Fatalf("a committed rename reported failure because the retired copy could not be deleted: %v", saveErr)
 	}
-	active, ok := store.Read(first.Memory.ID)
+	active, ok := mustStore(t, store).Read(first.Memory.ID)
 	if !ok || active.Name != "beta" || active.Body != "v2" {
 		t.Fatalf("the committed rename is not readable as the new fact: %+v ok=%v", active, ok)
 	}
@@ -259,12 +259,12 @@ func TestStoreV2CommittedRenameSurvivesRetiredCopyCleanupFailure(t *testing.T) {
 	if len(retired) == 0 {
 		t.Fatal("the injection removed nothing, so the cleanup failure was never exercised")
 	}
-	for _, name := range namesInListForID(store, first.Memory.ID) {
+	for _, name := range namesInListForID(t, store, first.Memory.ID) {
 		if strings.HasPrefix(name, ".retired-") {
 			t.Fatalf("a retired copy is visible as an active fact: %q", name)
 		}
 	}
-	if _, ok := store.Read("alpha"); ok {
+	if _, ok := mustStore(t, store).Read("alpha"); ok {
 		t.Fatal("the retired name is still readable as an active fact")
 	}
 	if index := mustReadString(t, filepath.Join(store.Dir, indexFile)); strings.Contains(index, ".retired-") {
@@ -302,8 +302,8 @@ func TestStoreV2CommittedMoveFinishesForwardsWhenWithdrawalFails(t *testing.T) {
 	}, SaveOptions{ExpectedRevision: 1, RequireExpectedRevision: true})
 	stopFailing(store.GlobalDir)
 
-	_, oldActive := store.Read("project/alpha.md")
-	active, newActive := store.Read("global/beta.md")
+	_, oldActive := mustStore(t, store).Read("project/alpha.md")
+	active, newActive := mustStore(t, store).Read("global/beta.md")
 	if !newActive || oldActive {
 		t.Fatalf("the move did not end as the new identity: err=%v new=%+v oldActive=%v", saveErr, active, oldActive)
 	}

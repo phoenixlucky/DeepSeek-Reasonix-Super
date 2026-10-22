@@ -221,8 +221,10 @@ func TestServeGoalFailedLabelKeepsTheGoalRunning(t *testing.T) {
 	prompt := func(text string) {
 		t.Helper()
 		ch := client.callAsync("session/prompt", SessionPromptParams{SessionID: sid, Prompt: []ContentBlock{{Type: "text", Text: text}}})
-		if _, resp := drainPrompt(t, client, ch); resp.Error != nil {
-			t.Fatalf("prompt %q: %+v", text, resp.Error)
+		_, resp := drainPrompt(t, client, ch)
+		var data TurnErrorData
+		if resp.Error == nil || resp.Error.Code != ErrInternal || json.Unmarshal(resp.Error.Data, &data) != nil || data.Code != TurnFailed {
+			t.Fatalf("prompt %q: %+v, want the failed turn as a %q error", text, resp.Error, TurnFailed)
 		}
 		<-seen
 	}
@@ -235,8 +237,8 @@ func TestServeGoalFailedLabelKeepsTheGoalRunning(t *testing.T) {
 	}
 
 	ch := client.callAsync("session/prompt", SessionPromptParams{SessionID: sid, Prompt: []ContentBlock{{Type: "text", Text: "continue"}}})
-	if _, resp := drainPrompt(t, client, ch); resp.Error != nil {
-		t.Fatalf("continuation prompt: %+v", resp.Error)
+	if _, resp := drainPrompt(t, client, ch); resp.Error == nil || resp.Error.Code != ErrInternal {
+		t.Fatalf("continuation prompt: %+v, want the failed turn as an error", resp.Error)
 	}
 	if got := <-seen; got.goal != objective || got.status != control.GoalStatusRunning {
 		t.Fatalf("plain prompt after failure saw %+v, want the same goal running", got)

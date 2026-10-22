@@ -61,7 +61,7 @@ func deliveryLeaseTestAgent(t *testing.T, owner *workspacelease.Owner, tools ...
 	for _, candidate := range tools {
 		reg.Add(candidate)
 	}
-	a := New(nil, reg, sessionstore.NewSession(""), Options{DeliveryProfile: true, WorkspaceLease: owner}, event.Discard)
+	a := New(nil, reg, sessionstore.NewSession(""), Options{DeliveryProfile: true, WorkspaceLease: owner, CheckTargetAccess: allowTestFileAccess}, event.Discard)
 	a.turn.deliveryCriteriaEstablished = true
 	a.setTodoState([]evidence.TodoItem{{Content: "mutate", Status: "in_progress"}})
 	return a
@@ -145,12 +145,19 @@ type yieldingWriter struct {
 	workspaceLeaseTestTool
 	owner      *workspacelease.Owner
 	heldDuring bool
+	// asking makes the yield the call's own question to a person, made from the
+	// context the call runs under; otherwise it is some other wait.
+	asking bool
 }
 
 func (w *yieldingWriter) Execute(ctx context.Context, args json.RawMessage) (string, error) {
-	resume := w.owner.Yield()
+	yieldCtx := context.Background()
+	if w.asking {
+		yieldCtx = ctx
+	}
+	resume := w.owner.Yield(yieldCtx)
 	w.heldDuring = w.owner.State().Acquired
-	_ = resume(ctx)
+	_, _ = resume(ctx)
 	return w.workspaceLeaseTestTool.Execute(ctx, args)
 }
 
@@ -170,9 +177,30 @@ func TestWriterKeepsItsClaimAgainstAYieldWhileItExecutes(t *testing.T) {
 	if !w.heldDuring {
 		t.Fatal("a yield gave the claim back under a tool that was still writing")
 	}
-	resume := owner.Yield()
+	resume := owner.Yield(context.Background())
 	if owner.State().Acquired {
 		t.Fatal("the claim stayed counted as in flight after the call returned")
 	}
-	_ = resume(context.Background())
+	_, _ = resume(context.Background())
+}
+
+func TestWriterThatAsksBeforeWritingGivesItsClaimBackWhileItWaits(t *testing.T) {
+	root, locks := testenv.TempDir(t), testenv.TempDir(t)
+	owner, err := workspacelease.New(root, locks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &yieldingWriter{workspaceLeaseTestTool: workspaceLeaseTestTool{name: "asking_writer"}, owner: owner, asking: true}
+	a := deliveryLeaseTestAgent(t, owner, w)
+	owner.BeginRun()
+	defer owner.EndRun()
+	if outcome := a.executeOne(context.Background(), &a.turn, providerToolCall("w", w.Name())); outcome.errMsg != "" {
+		t.Fatalf("writer outcome = %+v", outcome)
+	}
+	if w.heldDuring {
+		t.Fatal("a call waiting on a person before it wrote kept the workspace claim from every other session")
+	}
+	if !owner.State().Acquired {
+		t.Fatal("the call was not put back under the claim once it was answered")
+	}
 }

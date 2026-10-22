@@ -37,6 +37,36 @@ func TestAcquireHonorsDeadlineAndRecoversAfterRelease(t *testing.T) {
 	secondRelease()
 }
 
+// The deadline bounds a wait. A caller whose budget was spent before it got
+// here, by its own slow writes, still takes a lock that nobody holds.
+func TestAcquireTakesAFreeLockAfterTheDeadline(t *testing.T) {
+	path := filepath.Join(testenv.TempDir(t), "state.lock")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for range 32 {
+		release, err := Acquire(ctx, path)
+		if err != nil {
+			t.Fatalf("a free lock was refused because the deadline had passed: %v", err)
+		}
+		release()
+	}
+}
+
+// A lock that is held still fails at once when the deadline has passed.
+func TestAcquireRefusesAHeldLockAfterTheDeadline(t *testing.T) {
+	path := filepath.Join(testenv.TempDir(t), "state.lock")
+	release, err := Acquire(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := Acquire(ctx, path); !errors.Is(err, context.Canceled) {
+		t.Fatalf("held lock after the deadline: %v, want context.Canceled", err)
+	}
+}
+
 func TestExternalTimeoutBoundsOnlyFileLockRetries(t *testing.T) {
 	path := filepath.Join(testenv.TempDir(t), "state.lock")
 	releaseExternal, err := tryLockFile(path)

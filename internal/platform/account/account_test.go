@@ -184,3 +184,32 @@ func TestClientWithoutAUserAgentFallsBackToTheClientIdentity(t *testing.T) {
 		t.Fatalf("User-Agent = %q", got)
 	}
 }
+
+func TestFeedbackAssertionIsMintedPerCallWithTheSessionToken(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/me/feedback-assertion" || r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer tok" {
+			t.Errorf("unexpected request %s %s %q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		}
+		writeJSON(t, w, 200, map[string]string{"assertion": "v1.p.s", "expiresAt": "2026-10-15T00:05:00Z"})
+	})
+	got, err := c.FeedbackAssertion(context.Background(), "tok")
+	if err != nil || got != "v1.p.s" {
+		t.Fatalf("assertion %q %v", got, err)
+	}
+	if _, err := c.FeedbackAssertion(context.Background(), ""); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("signed out: %v", err)
+	}
+}
+
+func TestFeedbackAssertionSeparatesAnExpiredSessionFromAnUnavailableLink(t *testing.T) {
+	expired := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { apiError(t, w, 401, "unauthorized", "no") })
+	if _, err := expired.FeedbackAssertion(context.Background(), "tok"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expired: %v", err)
+	}
+	off := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { apiError(t, w, 503, "feedback_unavailable", "off") })
+	_, err := off.FeedbackAssertion(context.Background(), "tok")
+	var apiErr *Error
+	if err == nil || errors.Is(err, ErrUnauthorized) || !errors.As(err, &apiErr) || apiErr.Code != "feedback_unavailable" {
+		t.Fatalf("unavailable must stay itself: %v", err)
+	}
+}

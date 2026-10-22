@@ -67,6 +67,8 @@ drops the observation with a warning instead of stalling the Agent.
   priority ascending (manifest `priority`, -1000..1000, default 0), then
   plugin ID, then registration order.
 - Decisions per call: `continue` (pass the payload along), `block` (abort the operation with a user-visible reason), `replace` (substitute the payload — the host re-validates it against the point's DTO and schema before use), and `allow`/`deny` (only legal at `permission.decision`).
+- A `block` at `tool.before` may carry an `answer`: the tool does not run and the text stands in for its output, labelled by the host as external data from the extension. An answer anywhere else is a contract violation.
+- At `input.receive` a replacement may add `context` blocks (`label`, `text`). They follow the input on the turn's tail under a host-written header naming the plugin that added them, bounded by the user's ceilings; a later extension may add blocks but not change an earlier one's.
 - A full-trust `allow` overrides a host deny and is audited.
 - Replacement **strategy slots** (`system_prompt`, `context`, `provider_request`, `provider_response`, `compaction`, `session_policy`, `permission`, `frontend_events`, `tool:<name>`, `provider:<ref>`) have exactly one owner across all installed plugins.
 - The chain runs first; the slot owner gets the final say. A strategy owner's timeout or error always fails the operation.
@@ -101,6 +103,10 @@ Streams follow `extension/provider/stream/open` → `stream/chunk` →
   triggers fallback to a different model.
 
 ## Structured UI
+
+Extensions with the `session.read` capability read the session (`host/session/read`: `usage` or `messages`, redacted and bounded by the user's ceilings) and those with `session.submit` queue a prompt (`host/prompt/submit`); neither implies the other.
+
+A queued prompt is the host's message about the extension, labelled with its source, never the user's words; the host may refuse it with a `refused` identity in the result (`submit_per_turn`, `submit_bytes`, `no_session`).
 
 Extensions with the `ui` capability publish `status`, `card`, `form`, `notification`, `panel`, and `view` payloads (`host/ui/publish`) and ask questions (`host/ui/request`: confirm, input, select, multiselect).
 

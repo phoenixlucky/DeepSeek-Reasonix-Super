@@ -2,19 +2,20 @@ package control
 
 import "fmt"
 
-// GoalRuntimeView is the host-side runtime summary exposed to frontends.
+// GoalRuntimeView is the host-side runtime summary exposed to frontends. The
+// limit fields and BudgetExtensions are always zero and stay off the wire.
 type GoalRuntimeView struct {
-	TurnsUsed        int
-	TurnsLimit       int
-	TokensUsed       int
-	RequestsUsed     int
-	WorkDurationMs   int64
-	TokensLimit      int
-	NoProgressTurns  int
-	NoProgressLimit  int
-	LastReason       string
-	StopCause        string
-	BudgetExtensions int
+	TurnsUsed        int    `json:"turnsUsed"`
+	TurnsLimit       int    `json:"-"`
+	TokensUsed       int    `json:"tokensUsed"`
+	RequestsUsed     int    `json:"requestsUsed"`
+	WorkDurationMs   int64  `json:"workDurationMs"`
+	TokensLimit      int    `json:"-"`
+	NoProgressTurns  int    `json:"noProgressTurns"`
+	NoProgressLimit  int    `json:"-"`
+	LastReason       string `json:"lastReason,omitempty"`
+	StopCause        string `json:"stopCause,omitempty"`
+	BudgetExtensions int    `json:"-"`
 }
 
 func (g *goalMachine) runtimeView() GoalRuntimeView {

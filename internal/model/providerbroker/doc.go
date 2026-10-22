@@ -21,4 +21,8 @@
 // the code inside its body, and a failure flattened to a string classifies as
 // nothing. encodeError/decode round-trip the four provider error types so
 // errors.As on the remote matches what the local provider actually returned.
+//
+// Schema-bearing summaries require a fresh authenticated catalog capability.
+// A missing or unreadable capability refuses the POST; the agent uses its
+// independent, schema-free summary shape. Ordinary requests keep their path.
 package providerbroker

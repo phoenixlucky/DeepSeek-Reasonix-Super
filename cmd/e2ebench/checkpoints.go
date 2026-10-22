@@ -195,7 +195,7 @@ func renderSolveProfiles(results []result) string {
 	}
 	line := "**Solve profile**: "
 	parts := []string{}
-	regressed, withCorrect := 0, 0
+	regressed, withCorrect, split := 0, 0, 0
 	var roundsBefore, roundsAfter, verifyAfter, mutationsBefore []int64
 	for _, r := range results {
 		if len(r.Checkpoints) == 0 {
@@ -203,10 +203,16 @@ func renderSolveProfiles(results []result) string {
 		}
 		if r.FirstCorrectMs > 0 {
 			withCorrect++
-			roundsBefore = append(roundsBefore, int64(r.RoundsBeforeCorrect))
-			roundsAfter = append(roundsAfter, int64(r.RoundsAfterCorrect))
-			verifyAfter = append(verifyAfter, int64(r.VerifyAfterCorrect))
+			// Fold in only runs whose trajectory was read and split (Trajectory
+			// is set exactly when -trajectories ran): a run without one has no
+			// measurement, and its zeros are absence, not a zero.
 			mutationsBefore = append(mutationsBefore, int64(r.MutationsBeforeCorrect))
+			if r.Trajectory != nil {
+				split++
+				roundsBefore = append(roundsBefore, int64(r.RoundsBeforeCorrect))
+				roundsAfter = append(roundsAfter, int64(r.RoundsAfterCorrect))
+				verifyAfter = append(verifyAfter, int64(r.VerifyAfterCorrect))
+			}
 		}
 		if r.RegressedAfterCorrect {
 			regressed++
@@ -247,9 +253,15 @@ func renderSolveProfiles(results []result) string {
 				ttfum = append(ttfum, r.FirstUsefulMs)
 			}
 		}
-		line += fmt.Sprintf("\n\n**Correct boundary** (medians): **mutations before** %d · **rounds before** %d · **rounds after** %d · **verifications after** %d · **regression-after-correct** %s",
-			median(mutationsBefore), median(roundsBefore), median(roundsAfter), median(verifyAfter),
-			pct(regressed, withCorrect))
+		if split == 0 {
+			// The split counts are absent; the checkpoint-derived ones are not.
+			line += fmt.Sprintf("\n\n**Correct boundary**: **mutations before** %d · **regression-after-correct** %s — nothing to average: the runs reached a correct state, but none recorded a trajectory, so the boundary was never split",
+				median(mutationsBefore), pct(regressed, withCorrect))
+		} else {
+			line += fmt.Sprintf("\n\n**Correct boundary** (medians): **mutations before** %d · **rounds before** %d · **rounds after** %d · **verifications after** %d · **regression-after-correct** %s",
+				median(mutationsBefore), median(roundsBefore), median(roundsAfter), median(verifyAfter),
+				pct(regressed, withCorrect))
+		}
 		if len(ttfum) > 0 {
 			line += fmt.Sprintf(" · **TTFUM median** %s", dur(median(ttfum)))
 		}

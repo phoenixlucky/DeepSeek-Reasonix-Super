@@ -537,3 +537,56 @@ func TestCheckReportsTheCompletedBaseWithoutWritingIt(t *testing.T) {
 		t.Fatal("a check rewrote the saved config")
 	}
 }
+
+// The connection test reads what is on the form, not only what is saved: an
+// address or key being edited has to be testable before it is written, and the
+// saved entry is the same afterwards.
+func TestCheckProviderUsesTheUnsavedAddressAndKeyAndPersistsNothing(t *testing.T) {
+	var authorization string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		authorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"data":[{"id":"draft-model"}]}`)
+	}))
+	defer upstream.Close()
+
+	s := newProviderEditServer(t)
+	s.AllowProviderEdit()
+	srv := httptest.NewServer(operatorHandler(s))
+	defer srv.Close()
+	body := fmt.Sprintf(`{"name":"existing","baseUrl":%q,"apiKey":"draft-key"}`, upstream.URL+"/v1")
+	resp := postProvider(t, srv.URL, "/providers/check", body)
+	defer resp.Body.Close()
+	var got providerCheck
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.OK || len(got.Models) != 1 || got.Models[0] != "draft-model" {
+		t.Fatalf("check of the unsaved address = %+v, want ok with its model", got)
+	}
+	if authorization != "Bearer draft-key" {
+		t.Fatalf("the endpoint saw %q, want the key typed on the form", authorization)
+	}
+	saved, ok := config.LoadForEdit(config.UserConfigPath()).Provider("existing")
+	if !ok || saved.BaseURL != "https://example.invalid/v1" {
+		t.Fatalf("the saved entry changed to %+v; a check must not edit what it tests", saved)
+	}
+}
+
+func TestCheckProviderRefusesAnUnsupportedDraftKind(t *testing.T) {
+	s := newProviderEditServer(t)
+	s.AllowProviderEdit()
+	srv := httptest.NewServer(operatorHandler(s))
+	defer srv.Close()
+	resp := postProvider(t, srv.URL, "/providers/check", `{"name":"existing","kind":"nonsense"}`)
+	defer resp.Body.Close()
+	var reason Reason
+	_ = json.NewDecoder(resp.Body).Decode(&reason)
+	if resp.StatusCode != http.StatusBadRequest || reason.Code != "provider.kind_unsupported" {
+		t.Fatalf("status %d code %q, want 400 provider.kind_unsupported", resp.StatusCode, reason.Code)
+	}
+}

@@ -17,7 +17,7 @@ const SOURCES = import.meta.glob(["../**/*.tsx", "!../**/*.test.*"], {
 }) as Record<string, string>;
 
 // Monospace earns these: they are marks and identifiers, not sentences. The
-// welcome screen is the one deliberate exception — the wordmark and its eyebrow
+// welcome screen is the one deliberate exception — its STUDIO line and tagline
 // are set in the terminal's own face because that is the product's vernacular.
 const MARKS: Record<string, string> = {
   x: "× — the close mark, sized to hold its cell beside ✓",
@@ -25,8 +25,8 @@ const MARKS: Record<string, string> = {
   ah: "› — the affordance arrow",
   prompt: "› — the composer's own prompt character",
   esc: "Esc — a keycap, which is lettering on a key rather than prose",
-  "oobe-brand": "the wordmark, deliberately set in the terminal's face",
-  "oobe-sub": "the wordmark's eyebrow, set with it",
+  "oobe-brand": "the lockup's STUDIO line, deliberately set in the terminal's face",
+  "oobe-sub": "the lockup's tagline, set with it",
   "oobe-skip": "the third line of that same screen",
 };
 
@@ -37,7 +37,7 @@ const MARKS: Record<string, string> = {
 const MIXED = new Set([
   "c", "cnt", "cost", "cur", "d", "delta", "dt", "fail", "isolab", "k",
   "lb", "meta", "mk", "n", "nm", "ntimes", "path", "pill", "pt", "r", "rmtcand", "rt",
-  "sc", "sessmeta", "st", "sym", "sz", "tag", "u", "uspan", "v", "wsmeta",
+  "sc", "st", "sym", "sz", "tag", "u", "uspan", "v",
 ]);
 
 const TRANSLATORS = ["t", "tx", "plural"];

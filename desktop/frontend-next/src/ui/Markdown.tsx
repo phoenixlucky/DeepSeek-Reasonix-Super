@@ -1,9 +1,11 @@
-import { isValidElement, memo, useEffect, useState, type ReactNode } from "react";
-import ReactMarkdown from "react-markdown";
+import { createElement, isValidElement, memo, useEffect, useState, type JSX, type ReactNode, type MouseEvent, type KeyboardEvent } from "react";
+import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown";
+import { t } from "../i18n";
 import { CodeBlock } from "./CodeBlock";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { remarkCodeSpanLink, remarkTrimAutolink } from "./autolink";
+import { OUTSIDE_IMAGE, remarkFileLinks, remarkLocalImages } from "./filelinks";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import { useRevealed } from "./reveal";
@@ -155,14 +157,45 @@ function textOf(node: ReactNode): string {
   return "";
 }
 
-/** How a document shown from the workspace reads its own references: a link to
- *  another file there, and an image stored beside it. Absent for a reply. */
+/** File navigation for a workspace document or a conversation. */
 export interface LocalRefs {
+  file?(ref: import("../port/workspace").FileRef): () => void;
   /** An action for href, or null when it is not a file in the workspace. */
   link(href: string): (() => void) | null;
   /** Where to load src from, or null to leave it as written. */
   image(src: string): string | null;
+  path?(href: string): string | null;
+  /** What a bare path in text may become a link to: the workspace's own file or one in a granted folder. */
+  linkable?(href: string): string | null;
+  /** The same for a local picture in a folder the user granted, spelled as GRANTED/<n>/<path>. */
+  granted?(src: string): string | null;
+  title?(href: string): string;
+  menu?(event: MouseEvent<HTMLElement> | KeyboardEvent<HTMLElement>, href: string): void;
 }
+
+// Each block takes its direction from its own first strong character, so a
+// Persian or Arabic paragraph reads right to left beside an English one. Code
+// keeps the document's direction: pre is not in this list.
+function directed<T extends "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol" | "blockquote" | "td" | "th">(tag: T) {
+  return function Directed({ node: _node, ...props }: JSX.IntrinsicElements[T] & ExtraProps) {
+    return createElement(tag, { ...props, dir: "auto" });
+  };
+}
+
+const DIRECTED: Components = {
+  p: directed("p"),
+  h1: directed("h1"),
+  h2: directed("h2"),
+  h3: directed("h3"),
+  h4: directed("h4"),
+  h5: directed("h5"),
+  h6: directed("h6"),
+  ul: directed("ul"),
+  ol: directed("ol"),
+  blockquote: directed("blockquote"),
+  td: directed("td"),
+  th: directed("th"),
+};
 
 // live is the tail of a message still arriving; tail alone is only the last
 // block, which a settled message has too.
@@ -171,9 +204,10 @@ const Block = memo(function Block({ src, math, emoji, code, tail, live, local, i
   const body = normalizeMath(tail ? balanceFences(src) : src);
   return (
     <ReactMarkdown
-      remarkPlugins={(emoji ? [...BASE_REMARK, emoji] : BASE_REMARK) as never}
+      remarkPlugins={([...BASE_REMARK, [remarkFileLinks, local?.linkable ?? local?.path], [remarkLocalImages, local?.path, local?.granted], ...(emoji ? [emoji] : [])]) as never}
       rehypePlugins={([...BASE_REHYPE, math, code].filter(Boolean)) as never}
       components={{
+        ...DIRECTED,
         // Every link here comes from model output; a webview navigating away
         // would replace the app with the page.
         a: ({ children, href }) => {
@@ -182,6 +216,15 @@ const Block = memo(function Block({ src, math, emoji, code, tail, live, local, i
             return (
               <a
                 href={href}
+                title={local?.title?.(href!)}
+                data-action-click="workbench.file" data-target={local?.path?.(href!) ?? href}
+                data-action-contextmenu={local?.menu ? "workbench.menu" : undefined}
+                data-action-keydown={local?.menu ? "workbench.menu" : undefined}
+                onContextMenu={(e) => local?.menu?.(e, href!)}
+                onKeyDown={(e) => {
+                  if (e.key !== "ContextMenu" && !(e.key === "F10" && e.shiftKey)) return;
+                  local?.menu?.(e, href!);
+                }}
                 onClick={(e) => {
                   e.preventDefault();
                   open();
@@ -200,12 +243,18 @@ const Block = memo(function Block({ src, math, emoji, code, tail, live, local, i
             </a>
           );
         },
-        img: ({ src, alt, title }) =>
-          images ? (
-            <img src={(local && typeof src === "string" && local.image(src)) || (src as string | undefined)} alt={alt} title={title} />
+        img: ({ src, alt, title }) => {
+          const at = local && typeof src === "string" ? local.image(src) : null;
+          if (images && src === OUTSIDE_IMAGE) {
+            return <span className="md-noimg md-outside-image" title={t("这张图片在工作区之外，不会加载")}>{alt}</span>;
+          }
+          if (images && !at && typeof src !== "string") return <span className="md-noimg">{alt}</span>;
+          return images ? (
+            <img src={at || (src as string | undefined)} alt={alt} title={title} />
           ) : (
             <span className="md-noimg">{alt}</span>
-          ),
+          );
+        },
         pre: ({ children }) => (
           <CodeBlock lang={langOf(children)} source={textOf(children)} live={live}>{children}</CodeBlock>
         ),

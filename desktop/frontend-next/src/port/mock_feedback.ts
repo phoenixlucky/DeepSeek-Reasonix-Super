@@ -1,12 +1,13 @@
 import { HttpError } from "./http_error";
 import { MockCommit } from "./mock_commit";
-import { FEEDBACK_CODE, type FeedbackEnv, type FeedbackItem, type FeedbackMine, type FeedbackProfile, type FeedbackReceipt, type FeedbackReply, type FeedbackReplyReceipt, type FeedbackRequest } from "./feedback";
+import { FEEDBACK_CODE, canWithdraw, type FeedbackBoard, type FeedbackBoardEntry, type FeedbackBoardMe, type FeedbackEnv, type FeedbackImage, type FeedbackItem, type FeedbackLinkedInstall, type FeedbackMine, type FeedbackProfile, type FeedbackReceipt, type FeedbackReply, type FeedbackReplyReceipt, type FeedbackRequest } from "./feedback";
 
 const LIMITS = { bodyBytes: 8192, nameChars: 40, contactChars: 120, images: 3, imageBytes: 2 << 20, uploadBytes: 10 << 20, replyBytes: 4096 };
 
 const ENV = {
   version: "v2.24.0", commit: "7ee4bbb", surface: "studio", os: "windows", osVersion: "10.0.19045",
   arch: "amd64", locale: "en-US", channel: "stable", providerKind: "deepseek",
+  memory: [{ process: "kernel" as const, workingSetKB: 196608, privateKB: 150000 }],
 };
 
 const DAY = 86_400_000;
@@ -28,6 +29,8 @@ const SEEDED: FeedbackItem[] = [
   item({ receipt: "FB-3F6G-2KV9", category: "idea", titleSnippet: "Fixed in the next build: quieter update banner", status: "fixed", issueNumber: 11390, issueUrl: "https://github.com/esengine/DeepSeek-Reasonix/issues/11390", resolvedVersion: "next", createdAt: ago(8), updatedAt: ago(0.5) }),
   item({ receipt: "FB-8Q2J-6PW4", category: "other", titleSnippet: "Please support a monorepo layout", status: "wontfix", issueNumber: 11288, issueUrl: "https://github.com/esengine/DeepSeek-Reasonix/issues/11288", createdAt: ago(12), updatedAt: ago(5) }),
   item({ receipt: "FB-4T7V-3ZH1", category: "bug", titleSnippet: "Crash when opening settings on a small window", status: "duplicate", issueNumber: 11301, issueUrl: "https://github.com/esengine/DeepSeek-Reasonix/issues/11301", duplicateOf: 11299, createdAt: ago(15), updatedAt: ago(9) }),
+  item({ receipt: "FB-2D8K-4HQ6", category: "idea", titleSnippet: "Sent by mistake, please ignore", status: "withdrawn", createdAt: ago(6), updatedAt: ago(5.5) }),
+  item({ receipt: "FB-7L3Q-2DM8", category: "idea", titleSnippet: "Filed from my other laptop: a calmer sidebar", status: "recorded", issueNumber: 11402, issueUrl: "https://github.com/esengine/DeepSeek-Reasonix/issues/11402", otherInstall: true, createdAt: ago(3), updatedAt: ago(2) }),
   item({ receipt: "FB-5R2T-6VB3", category: "bug", titleSnippet: "Settings sheet flickers when the window is dragged", status: "received", underReview: true, createdAt: ago(0.3), updatedAt: ago(0.3) }),
   item({ receipt: "FB-6M9R-5CE8", category: "question", titleSnippet: "How do I move my sessions to another disk?", status: "received", statusUnavailable: true, createdAt: ago(40), updatedAt: ago(40) }),
   item({ receipt: "FB-1C5W-7NB2", category: "bug", titleSnippet: "Terminal output is cut off after a resize", status: "needs_info", needsInput: true, createdAt: ago(2), updatedAt: ago(0.2),
@@ -55,6 +58,7 @@ function fault(key = FAULT): string {
 // the same reason: "l0".."l6", "legacy", "lapsed", "revoked", or "none" for a
 // service that states no profile.
 const STANDING = "rx-mock-feedback-standing";
+const PROMOTION = "rx-mock-feedback-promotion";
 
 const THRESHOLDS = [0, 1, 3, 6, 12, 24, 48];
 const LEVEL_LIMITS = [[3, 10, 3], [5, 15, 4], [6, 20, 5], [8, 25, 6], [10, 30, 8], [12, 40, 10], [12, 60, 10]] as const;
@@ -80,6 +84,7 @@ const STATUS: Record<string, number> = {
   [FEEDBACK_CODE.tooLarge]: 413, [FEEDBACK_CODE.rateLimited]: 429, [FEEDBACK_CODE.disabled]: 503,
   [FEEDBACK_CODE.duplicate]: 409, [FEEDBACK_CODE.badToken]: 409, [FEEDBACK_CODE.offline]: 502, [FEEDBACK_CODE.unavailable]: 502, [FEEDBACK_CODE.internal]: 500, [FEEDBACK_CODE.busy]: 503, [FEEDBACK_CODE.imageMetadata]: 400,
   [FEEDBACK_CODE.replyLimit]: 429, [FEEDBACK_CODE.notReplyable]: 409, [FEEDBACK_CODE.challengeRequired]: 403,
+  [FEEDBACK_CODE.accountRequired]: 401, [FEEDBACK_CODE.linkConflict]: 409, [FEEDBACK_CODE.linkLimit]: 409, [FEEDBACK_CODE.noInstall]: 409,
 };
 
 // A fault is a code, optionally followed by "@" and the window it names:
@@ -126,7 +131,19 @@ export class MockFeedback extends MockCommit {
       return { ...i, needsInput: i.statusUnavailable ? false : i.needsInput, unreadReplies };
     });
     const unread = items.filter((i) => i.unreadReplies > 0 || i.needsInput).length;
-    return { items, offline: code === "mine_offline", unread, hasNew: unread > 0, profile: standing(fault(STANDING)) };
+    return { items, offline: code === "mine_offline", unread, hasNew: unread > 0, profile: standing(fault(STANDING)), promotion: this.promotion() };
+  }
+
+  // A tab's own sessionStorage ("2:3") stages a level-up for a dev page, until it is acknowledged.
+  private promotion(): { from: number; to: number } | null {
+    const [from, to] = fault(PROMOTION).split(":").map(Number);
+    return Number.isInteger(from) && Number.isInteger(to) && to > from && !this.acked.has(to) ? { from, to } : null;
+  }
+
+  private acked = new Set<number>();
+
+  async ackFeedbackPromotion(level: number): Promise<void> {
+    this.acked.add(level);
   }
 
   announced = 0;
@@ -135,7 +152,10 @@ export class MockFeedback extends MockCommit {
     this.announced += 1;
   }
 
-  async replyFeedback(receipt: string, body: string): Promise<FeedbackReplyReceipt> {
+  readonly replyImages: number[] = [];
+
+  async replyFeedback(receipt: string, body: string, images: FeedbackImage[] = []): Promise<FeedbackReplyReceipt> {
+    this.replyImages.push(images.length);
     const code = fault(REPLY_FAULT);
     if (code === "feedback.invalid") {
       throw new HttpError(400, "invalid", { code, error: "invalid", params: { field: "body", reason: "empty" } });
@@ -151,6 +171,91 @@ export class MockFeedback extends MockCommit {
     row.needsInput = false;
     if (row.status === "needs_info") row.status = "received";
     return { replyId, createdAt };
+  }
+
+  // The demo keeps its links in the tab: signed-in is the same switch account() reads.
+  private links: FeedbackLinkedInstall[] = [{ id: "ba9876543210", linkedAt: ago(9), current: false }];
+
+  private requireAccount(): void {
+    if (!localStorage.getItem("reasonix.mock.account")) throw refusal(FEEDBACK_CODE.accountRequired);
+  }
+
+  async feedbackLinks(): Promise<FeedbackLinkedInstall[]> {
+    this.requireAccount();
+    return this.links.map((l) => ({ ...l }));
+  }
+
+  async linkFeedbackAccount(): Promise<void> {
+    this.requireAccount();
+    if (!this.links.some((l) => l.current)) this.links = [...this.links, { id: "0123456789ab", linkedAt: new Date().toISOString(), current: true }];
+  }
+
+  async unlinkFeedbackAccount(): Promise<void> {
+    this.requireAccount();
+    this.links = this.links.filter((l) => !l.current);
+  }
+
+  // The demo board: a handful of people, credits spread over three releases.
+  private board: FeedbackBoardEntry[] = [
+    { displayName: "Sample Alpha", credits: 7, rank: null, releases: [{ version: "v2.45.0", count: 3 }, { version: "v2.44.0", count: 2 }, { version: "v2.43.0", count: 2 }] },
+    { displayName: "示例用户", credits: 5, rank: null, releases: [{ version: "v2.45.0", count: 2 }, { version: "v2.44.0", count: 3 }] },
+    { displayName: "sample_beta", credits: 3, rank: null, releases: [{ version: "v2.45.0", count: 2 }, { version: "v2.43.0", count: 1 }] },
+    { displayName: "Sample-Gamma", credits: 2, rank: null, releases: [{ version: "v2.44.0", count: 1 }, { version: "v2.43.0", count: 1 }] },
+    { displayName: "Sample Delta", credits: 1, rank: null, releases: [{ version: "v2.45.0", count: 1 }] },
+  ];
+  private chosen: string | null = null;
+
+  private boardMe(): FeedbackBoardMe {
+    return { listed: this.chosen !== null, displayName: this.chosen, delisted: false };
+  }
+
+  async feedbackBoard(release?: string): Promise<FeedbackBoard> {
+    if (!release) {
+      const all = [...this.board].sort((a, b) => a.displayName.localeCompare(b.displayName));
+      return { available: true, view: "all", release: null, entries: all };
+    }
+    const rows = this.board
+      .map((e) => ({ ...e, releases: e.releases.filter((r) => r.version === release) }))
+      .filter((e) => e.releases.length > 0)
+      .map((e) => ({ ...e, credits: e.releases.reduce((n, r) => n + r.count, 0) }))
+      .sort((a, b) => b.credits - a.credits || a.displayName.localeCompare(b.displayName));
+    let rank = 0;
+    const entries = rows.map((e, i) => {
+      if (i === 0 || e.credits !== rows[i - 1].credits) rank = i + 1;
+      return { ...e, rank };
+    });
+    return { available: true, view: "release", release, entries };
+  }
+
+  async feedbackBoardMe(): Promise<FeedbackBoardMe> {
+    this.requireAccount();
+    return this.boardMe();
+  }
+
+  async joinFeedbackBoard(displayName: string): Promise<FeedbackBoardMe> {
+    this.requireAccount();
+    this.chosen = displayName.trim();
+    return this.boardMe();
+  }
+
+  async leaveFeedbackBoard(): Promise<FeedbackBoardMe> {
+    this.requireAccount();
+    this.chosen = null;
+    return this.boardMe();
+  }
+
+  async unlinkFeedbackInstall(id: string): Promise<void> {
+    this.requireAccount();
+    this.links = this.links.filter((l) => l.id !== id);
+  }
+
+  async withdrawFeedback(receipt: string): Promise<void> {
+    const row = this.rows.find((i) => i.receipt === receipt);
+    if (!row) throw refusal(FEEDBACK_CODE.notFound);
+    if (!canWithdraw(row)) throw refusal(FEEDBACK_CODE.notWithdrawable);
+    row.status = "withdrawn";
+    row.needsInput = false;
+    row.updatedAt = new Date().toISOString();
   }
 
   async feedbackSeen(receipt: string, upTo: number): Promise<void> {

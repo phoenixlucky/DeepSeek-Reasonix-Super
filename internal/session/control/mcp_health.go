@@ -1,6 +1,9 @@
 package control
 
-import "reasonix/internal/ext/mcpsetup"
+import (
+	"reasonix/internal/ext/mcpsetup"
+	"reasonix/internal/ext/plugin"
+)
 
 const (
 	MCPHealthReady      = "ready"
@@ -47,6 +50,8 @@ type MCPHealth struct {
 	HTTPStatus int
 	Tools      int
 	Reason     MCPApprovalReason // set only when Status is pending
+	// ScopeUpgrade is what the server asked to be allowed, in its own words.
+	ScopeUpgrade []string
 }
 
 // MCPServerHealth combines declarations, the callable catalog, and live host
@@ -95,6 +100,11 @@ func (c *Controller) MCPServerHealth() []MCPHealth {
 			}
 		}
 		out = append(out, health)
+	}
+	for i := range out {
+		if entry, err := c.configuredMCPServer(out[i].Name); err == nil {
+			out[i].ScopeUpgrade = plugin.PendingScopeUpgrade(c.mcpSpec(entry).StateDir)
+		}
 	}
 	if out == nil {
 		return []MCPHealth{}

@@ -71,10 +71,13 @@ fleet(tasks=[
 - The profile body becomes the **full** child system prompt — no implicit
   concise default is stacked on top.
 - `write_paths` declares non-overlapping write targets so parallel writers can
-  share one workspace. Writer tasks that omit `write_paths` claim the whole
-  workspace (serializing against every other writer claim). In `fleet`,
-  multiple whole-workspace claims or any path overlap fail preflight and start
-  nothing.
+  share one workspace.
+- A writer that omits `write_paths` claims the whole workspace, serializing
+  against every other writer claim. With `[agent] write_lease = optimistic` in
+  the user config it reserves nothing up front and holds only the path it is
+  writing.
+- In `fleet`, multiple whole-workspace claims or any path overlap fail
+  preflight and start nothing.
 - Session defaults: `agent.max_subagent_concurrency = 6`,
   `agent.max_parallel_writers = 3` (both configurable 1–32; writers ≤ total).
 

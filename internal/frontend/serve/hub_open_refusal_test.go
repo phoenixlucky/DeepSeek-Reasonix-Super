@@ -77,8 +77,8 @@ func TestOpenPaneOnADeletedSessionSaysItIsGoneNotHeld(t *testing.T) {
 	if status == http.StatusConflict {
 		t.Errorf("a deleted session opens as 409 Conflict, which reads as in-use: %s", body)
 	}
-	if got := refusalCodeOf(t, body); got != codeSessionBadPath {
-		t.Errorf("refusal code = %q, want %q (body %s)", got, codeSessionBadPath, body)
+	if got := refusalCodeOf(t, body); got != codeSessionUnknown {
+		t.Errorf("refusal code = %q, want %q (body %s)", got, codeSessionUnknown, body)
 	}
 }
 

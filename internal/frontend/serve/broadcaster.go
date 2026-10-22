@@ -2,6 +2,7 @@ package serve
 
 import (
 	"encoding/json"
+	"fmt"
 	"reasonix/internal/contract/pricing"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ type Broadcaster struct {
 	subs            map[*subscriber]struct{}
 	ledger          *pricing.Ledger
 	displayCurrency string
+	workMs          int64
 	// The transport's, not the session's: numbering outlives /new and /resume, so
 	// resuming across one is told to rebuild rather than handed another
 	// conversation's frames under numbers it already has.
@@ -35,13 +37,14 @@ func NewBroadcaster() *Broadcaster {
 }
 
 // droppable reports whether losing this frame degrades the view rather than
-// breaking it. A streaming delta is superseded by the text after it and the
-// full version is in /history; a prompt, a result or a turn boundary has no
-// successor carrying it, and a frontend that misses one waits forever on a
-// state that already changed.
-func droppable(k event.Kind) bool {
-	switch k {
-	case event.Text, event.Reasoning, event.ToolProgress, event.CompactionProgress:
+// breaking it. A streaming delta is superseded by the text after it; a prompt,
+// a result, a turn boundary or a sub-agent's terminal status has no successor,
+// and a frontend that misses one waits forever on a state that already changed.
+func droppable(e event.Event) bool {
+	switch e.Kind {
+	case event.ToolProgress:
+		return e.Tool.Name != event.SubagentProgressStatusName
+	case event.Text, event.Reasoning, event.CompactionProgress:
 		return true
 	}
 	return false
@@ -81,6 +84,7 @@ func (b *Broadcaster) ResetSession() {
 	}
 	b.mu.Lock()
 	b.ledger = pricing.NewLedger()
+	b.workMs = 0
 	b.replay.reset()
 	b.initialNoticesReplayed = false
 	b.mu.Unlock()
@@ -105,7 +109,7 @@ func (b *Broadcaster) SessionCostQuote() pricing.CostQuote {
 // and ask for them back. A marshal failure is dropped silently — one bad event
 // shouldn't stall the stream.
 func (b *Broadcaster) Emit(e event.Event) {
-	drop := droppable(e.Kind)
+	drop := droppable(e)
 	b.mu.Lock()
 	defer func() {
 		observer := b.onTreeChanged
@@ -139,6 +143,9 @@ func (b *Broadcaster) Emit(e event.Event) {
 	if e.Kind == event.Notice && e.Code == event.NoticeCodeDisplayCurrency {
 		b.displayCurrency = pricing.NormalizeCurrency(e.Detail)
 	}
+	if e.Kind == event.TurnDone && e.WorkDurationMs > 0 {
+		b.workMs += e.WorkDurationMs
+	}
 	if e.Kind == event.Usage && e.Usage != nil && e.CostQuote != nil {
 		if b.ledger == nil {
 			b.ledger = pricing.NewLedger()
@@ -164,7 +171,7 @@ func (b *Broadcaster) EmitTo(target <-chan Frame, e event.Event) {
 	if err != nil {
 		return
 	}
-	drop := droppable(e.Kind)
+	drop := droppable(e)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for s := range b.subs {
@@ -187,7 +194,7 @@ func (b *Broadcaster) Subscribe() (<-chan Frame, func()) {
 // before Emit can see the subscriber, so the resume has no seam. A gap the log
 // cannot close is announced instead: the first sequence the client can trust.
 func (b *Broadcaster) SubscribeFrom(after int64) (<-chan Frame, func()) {
-	return b.subscribeFrom(after, false)
+	return b.subscribeFrom(after, false, false)
 }
 
 // SubscribeInitialNotices attaches a window without a resume cursor. Only the
@@ -195,10 +202,25 @@ func (b *Broadcaster) SubscribeFrom(after int64) (<-chan Frame, func()) {
 // They are unnumbered copies: skipped non-notice history must not look like a
 // gap that prompts the client to replay it.
 func (b *Broadcaster) SubscribeInitialNotices() (<-chan Frame, func()) {
-	return b.subscribeFrom(0, true)
+	return b.subscribeFrom(0, true, false)
 }
 
-func (b *Broadcaster) subscribeFrom(after int64, initialNotices bool) (<-chan Frame, func()) {
+// SubscribeAttached is SubscribeInitialNotices that also states where it
+// attached, as an unnumbered watermark ahead of every later frame. A client with
+// that number resumes from it, so a connection lost before its first numbered
+// frame costs nothing the log cannot return.
+func (b *Broadcaster) SubscribeAttached() (<-chan Frame, func()) {
+	return b.subscribeFrom(0, true, true)
+}
+
+// SubscribeResume resumes a window that stated its own position, so a cursor of
+// zero means it holds no numbered frame and is owed the whole log. SubscribeFrom
+// keeps zero as "no cursor", which the per-pane stream relies on.
+func (b *Broadcaster) SubscribeResume(after int64) (<-chan Frame, func()) {
+	return b.subscribeFrom(after, false, true)
+}
+
+func (b *Broadcaster) subscribeFrom(after int64, initialNotices, attached bool) (<-chan Frame, func()) {
 	s := newSubscriber()
 	b.mu.Lock()
 	if initialNotices && !b.initialNoticesReplayed {
@@ -217,7 +239,7 @@ func (b *Broadcaster) subscribeFrom(after int64, initialNotices bool) (<-chan Fr
 				s.push(Frame{Data: data}, false)
 			}
 		}
-	} else if after > 0 && after < b.seq {
+	} else if !initialNotices && (after > 0 || attached) && after < b.seq {
 		missed, complete := b.replay.since(after)
 		if gap, from := b.gapFrame(missed); !complete && gap != nil {
 			s.push(Frame{Seq: from, Data: gap}, false)
@@ -225,6 +247,9 @@ func (b *Broadcaster) subscribeFrom(after int64, initialNotices bool) (<-chan Fr
 		for _, f := range missed {
 			s.push(Frame{Seq: f.seq, Data: f.data}, false)
 		}
+	}
+	if attached {
+		s.push(Frame{Data: fmt.Appendf(nil, `{"kind":"stream_watermark","seq":%d}`, b.seq)}, false)
 	}
 	b.subs[s] = struct{}{}
 	b.mu.Unlock()

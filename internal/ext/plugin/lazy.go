@@ -147,15 +147,23 @@ func (s *lazySpawn) run() {
 	s.broadcastReady()
 	// Save cache outside the critical path of tool dispatch. Register the write
 	// before this deferred spawn ends so Host.Close observes and drains it.
-	s.host.queueBackgroundWrite(func() {
-		saveLazyCachedSchema(s.spec, cacheTools, s.host.serverInstructions(s.spec.Name))
-	})
+	s.host.queueBackgroundWrite(s.cacheWrite(cacheTools))
 }
 
-func saveLazyCachedSchema(spec Spec, real []tool.Tool, instructions string) {
+func (s *lazySpawn) cacheWrite(real []tool.Tool) func() {
+	// Capture the live handshake before this spawn releases deferredWG. Close
+	// may clear the clients before the queued persistence callback can run.
+	instructions := s.host.serverInstructions(s.spec.Name)
+	capabilities := s.host.cachedCapabilities(s.spec.Name, len(real) > 0)
+	return func() {
+		saveLazyCachedSchema(s.spec, real, instructions, capabilities)
+	}
+}
+
+func saveLazyCachedSchema(spec Spec, real []tool.Tool, instructions string, capabilities map[string]bool) {
 	_ = SaveCachedSchema(spec.Name, CachedSchema{
 		CacheKey:     SchemaCacheKey(spec),
-		Capabilities: map[string]bool{"tools": len(real) > 0},
+		Capabilities: capabilities,
 		Instructions: instructions,
 		Tools:        cacheableToolsOf(real),
 	})
@@ -277,6 +285,9 @@ func (lt *lazyTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 				return fmt.Sprintf("MCP server %q is connected; its real tools are now available on the next turn", sp.spec.Name), nil
 			}
 			real := sp.real[lt.name]
+			if meta, ok := real.(tool.MCPMetadata); !ok || meta.MCPServerName() != sp.spec.Name || meta.MCPRawToolName() != lt.rawName {
+				real = nil
+			}
 			safetyErr := lt.reconcileLiveSafety(real)
 			sp.mu.Unlock()
 			if real == nil {
@@ -432,6 +443,9 @@ func LazyToolset(spec Spec, cs *CachedSchema, host *Host, reg *tool.Registry, se
 	}
 	shared.generation = host.registerDeferredCancel(spec.Name, cancel)
 
+	if cs != nil && !cachedToolNamesUsable(spec, cs.Tools) {
+		cs = nil
+	}
 	var out []tool.Tool
 	// A snapshot with zero tools presents nothing the model could call, so it
 	// gets the same connect stub as a cache miss — otherwise the live tools

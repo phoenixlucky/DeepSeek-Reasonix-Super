@@ -21,6 +21,7 @@ import (
 	"reasonix/internal/platform/remote"
 	"reasonix/internal/platform/remote/bootstrap"
 	"reasonix/internal/platform/remote/forward"
+	"reasonix/internal/platform/wsl"
 )
 
 // Broker is this machine's provider broker: the loopback address it listens on
@@ -51,6 +52,9 @@ type Options struct {
 	// which is the only part of an attach that needs a configured machine, so
 	// substituting it is what lets the rest be exercised against a real one.
 	Dial func(host string, prompts Prompts) (*remote.Client, error)
+	// DialWSL builds a WSL machine's connection. Nil binds the distribution the
+	// entry names through the system wsl.exe.
+	DialWSL func(entry config.RemoteHostEntry) (Link, error)
 }
 
 // Call is what one attach decides for itself: where the progress of a first
@@ -120,7 +124,7 @@ func (g *gate) wait(ctx context.Context) error {
 type link struct {
 	gate
 	host    string
-	client  *remote.Client
+	client  Link
 	install string // the host entry's own strategy, read once at dial
 	// provider is where this host's model credentials come from, read at dial
 	// beside install. A host set to resolve its own gets no broker forward.
@@ -170,7 +174,7 @@ func (p *Pool) broker(l *link) (string, error) {
 }
 
 // boundBroker is the remote address the broker forward is listening on.
-func boundBroker(client *remote.Client) (string, bool) {
+func boundBroker(client Link) (string, bool) {
 	for _, e := range client.Forwards().List() {
 		if e.Spec.Name == brokerForwardName && e.Up && e.BoundAddr != "" {
 			return e.BoundAddr, true
@@ -181,7 +185,7 @@ func boundBroker(client *remote.Client) (string, bool) {
 
 // followBroker points every kernel on l at the broker's forward after the link
 // comes back. The kernels outlive the link; the port they were told may not.
-func (p *Pool) followBroker(l *link, client *remote.Client) {
+func (p *Pool) followBroker(l *link, client Link) {
 	if !p.brokers(l) {
 		return
 	}
@@ -349,15 +353,17 @@ func (p *Pool) dial(l *link, call Call) (unsubscribe func()) {
 		fail(err)
 		return nil
 	}
-	if entry, ok := cfg.RemoteHost(l.host); ok {
+	entry, configured := cfg.RemoteHost(l.host)
+	if configured {
 		l.install = entry.ServeInstallMode()
 		l.provider = entry.ProviderMode()
 	}
-	build := p.opts.Dial
-	if build == nil {
-		build = func(host string, prompts Prompts) (*remote.Client, error) { return Dial(cfg, host, prompts) }
+	var client Link
+	if configured && entry.HostKind() == config.RemoteKindWSL {
+		client, err = p.openWSL(entry)
+	} else {
+		client, err = p.openSSH(cfg, l.host)
 	}
-	client, err := build(l.host, p.opts.Prompts)
 	if err != nil {
 		fail(err)
 		return nil
@@ -385,6 +391,25 @@ func (p *Pool) dial(l *link, call Call) (unsubscribe func()) {
 	}
 	l.client = client
 	return unsubscribe
+}
+
+func (p *Pool) openSSH(cfg *config.Config, host string) (Link, error) {
+	build := p.opts.Dial
+	if build == nil {
+		build = func(host string, prompts Prompts) (*remote.Client, error) { return Dial(cfg, host, prompts) }
+	}
+	c, err := build(host, p.opts.Prompts)
+	if err != nil {
+		return nil, err
+	}
+	return sshLink{c}, nil
+}
+
+func (p *Pool) openWSL(entry config.RemoteHostEntry) (Link, error) {
+	if p.opts.DialWSL != nil {
+		return p.opts.DialWSL(entry)
+	}
+	return newWSLLink(p.ctx, entry, wsl.System(), wsl.SystemCommand())
 }
 
 func (p *Pool) forgetLink(l *link) {
@@ -430,6 +455,15 @@ func (p *Pool) holdSpace(l *link, workspace string) (*space, bool) {
 // that reaches it.
 func (p *Pool) serve(ctx context.Context, l *link, s *space, workspace string, call Call) {
 	defer close(s.ready)
+	if m, ok := l.client.(workspaceMapper); ok {
+		mapped, err := m.Workspace(ctx, workspace)
+		if err != nil {
+			s.err = err
+			p.forgetSpace(l, s)
+			return
+		}
+		workspace = mapped
+	}
 	install := p.opts.Install
 	if install == "" {
 		install = l.install

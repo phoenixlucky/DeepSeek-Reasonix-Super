@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -87,5 +88,57 @@ func TestWorkspaceImageRefusesWhatIsNotAnImageInTheTree(t *testing.T) {
 		if resp.StatusCode != want {
 			t.Errorf("%s: status %d, want %d", path, resp.StatusCode, want)
 		}
+	}
+}
+
+// A folder the user granted this workspace can show its pictures too: the
+// grant is the authority, named by its own path, and nothing else is reachable.
+func TestWorkspaceImageServesFromAGrantedFolderOnly(t *testing.T) {
+	t.Setenv("REASONIX_HOME", testenv.TempDir(t))
+	work := testenv.TempDir(t)
+	library := testenv.TempDir(t)
+	other := testenv.TempDir(t)
+	for dir, name := range map[string]string{library: "wall/moon.png", other: "secret.png"} {
+		path := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("\x89PNG "+name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bc := NewBroadcaster()
+	ctrl := control.New(control.Options{Runner: fakeRunner{}, Sink: bc, WorkspaceRoot: work})
+	granted := library
+	if err := config.NewProjectGrantStore(config.Roots{}.Home()).Update(work, func(g config.ProjectGrant) (config.ProjectGrant, error) {
+		g.AllowWrite = append(g.AllowWrite, library)
+		return g, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(operatorHandler(New(ctrl, bc, config.ServeConfig{})))
+	t.Cleanup(srv.Close)
+
+	get := func(root, path string) (int, string) {
+		u := srv.URL + "/workspace/image?path=" + url.QueryEscape(path)
+		if root != "" {
+			u += "&root=" + url.QueryEscape(root)
+		}
+		resp, err := http.Get(u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body)
+	}
+	if code, body := get(granted, "wall/moon.png"); code != http.StatusOK || !strings.Contains(body, "wall/moon.png") {
+		t.Fatalf("a granted folder's picture: %d %q", code, body)
+	}
+	if code, _ := get(other, "secret.png"); code != http.StatusForbidden {
+		t.Fatalf("a folder nobody granted: status %d, want 403", code)
+	}
+	if code, _ := get(granted, "../"+filepath.Base(other)+"/secret.png"); code == http.StatusOK {
+		t.Fatalf("a path climbing out of the granted folder was served")
 	}
 }

@@ -146,12 +146,6 @@ export function pageInFlight(port: AgentPort): Promise<BrowserTab> | null {
   return current?.pending && current.started ? newestPage(port, current.page) : null;
 }
 
-/** A page for a column that has none: the one already on its way, else a blank. */
-export function pageForEmptyColumn(port: AgentPort): Promise<BrowserTab> {
-  const current = opening.get(port);
-  return newestPage(port, current?.pending && current.started ? current.page : openPage(port, "about:blank"));
-}
-
 async function newestPage(port: AgentPort, page: Promise<BrowserTab>): Promise<BrowserTab> {
   try {
     const tab = await page;

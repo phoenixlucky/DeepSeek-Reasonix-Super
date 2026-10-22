@@ -313,6 +313,28 @@ func (r Roots) ScheduleDir() string {
 	return filepath.Join(dir, "schedules")
 }
 
+// SandboxDir holds the Windows sandbox's record of the folders it has granted. It
+// is the user's, under the state root, and never inside a project.
+func (r Roots) SandboxDir() string {
+	dir := r.userSupportDir()
+	if strings.TrimSpace(dir) == "" {
+		return ""
+	}
+	return filepath.Join(dir, "sandbox")
+}
+
+// PeersDir is where sessions on this machine leave messages for one another:
+// machine-wide, under the state root beside the sessions, and never inside a
+// project. Runtime sandboxes deny reading it, because its files are other
+// sessions' words.
+func (r Roots) PeersDir() string {
+	dir := r.userSupportDir()
+	if strings.TrimSpace(dir) == "" {
+		return ""
+	}
+	return filepath.Join(dir, "peers")
+}
+
 // RemoteStateDir is <home>/remote under these roots. A serve launched over SSH
 // keeps its launch token there, so runtime sandboxes deny reading it.
 func (r Roots) RemoteStateDir() string {
@@ -362,6 +384,13 @@ func WorkspaceLeaseDir() string {
 // can still repair the same project reasonix.toml, so their locks must converge.
 func RepairMutationLockDir() string {
 	return joinRoot(storageRootDir(RootLocks), "repair-mutation-locks")
+}
+
+// MemoryLockDir stores one mutation lock per memory store directory, keyed by
+// that directory's absolute path. It follows the locks root for the same reason
+// the repair locks do: two instances sharing a memory directory must converge.
+func MemoryLockDir() string {
+	return joinRoot(storageRootDir(RootLocks), "memory-store-locks")
 }
 
 // DeliveryWorktreeDir is durable storage for user-visible isolated Delivery
@@ -456,7 +485,11 @@ func ProjectSessionDir(workspaceRoot string) string {
 	if abs, err := filepath.Abs(root); err == nil {
 		root = abs
 	}
-	return filepath.Join(base, "projects", WorkspaceSlug(root), "sessions")
+	slug := WorkspaceSlug(root)
+	if !filepath.IsLocal(slug) {
+		return ""
+	}
+	return filepath.Join(base, "projects", slug, "sessions")
 }
 
 // WorkspaceSlug flattens an absolute workspace path into the directory name
@@ -638,12 +671,27 @@ func (r Roots) SourcePathForRoot(root string) string {
 // project root.
 const projectConfigFile = "reasonix.toml"
 
-// ProjectConfigPath returns the project config file for root: the bare
-// filename when root resolves to ".", otherwise reasonix.toml under root.
-func ProjectConfigPath(root string) string {
+// ProjectConfigPaths returns project config candidates in precedence order.
+func ProjectConfigPaths(root string) []string {
 	root = resolveRoot(root)
-	if root == "." {
-		return projectConfigFile
+	return []string{filepath.Join(root, projectConfigFile), filepath.Join(root, ".reasonix", projectConfigFile)}
+}
+
+// ProjectConfigPath selects an existing project config, or the root-level
+// creation target. Only absence permits fallback; broken links and access
+// errors remain attached to the higher-priority path. Probes are confined to
+// the workspace even when .reasonix is a symlink.
+func ProjectConfigPath(root string) string {
+	paths := ProjectConfigPaths(root)
+	dir, err := os.OpenRoot(resolveRoot(root))
+	if err != nil {
+		return paths[0]
 	}
-	return filepath.Join(root, projectConfigFile)
+	defer dir.Close()
+	for i, name := range []string{projectConfigFile, filepath.Join(".reasonix", projectConfigFile)} {
+		if _, err := dir.Lstat(name); !os.IsNotExist(err) {
+			return paths[i]
+		}
+	}
+	return paths[0]
 }

@@ -95,3 +95,4 @@ scripts/official-theme-art/__pycache__/
 # running, which on Windows is every rebuild while Studio is open.
 *.exe
 *.exe~
+/relayfake

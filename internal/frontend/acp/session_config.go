@@ -54,15 +54,15 @@ func (s *acpSession) isGoalDraftMode() bool {
 
 func (s *acpSession) setToolApprovalMode(mode string) {
 	s.mu.Lock()
-	s.toolApprovalMode = normalizeACPToolApprovalMode(mode)
+	s.posture = approvalPosture{mode: normalizeACPToolApprovalMode(mode)}
 	s.mu.Unlock()
 }
 
 func (s *acpSession) swapToolApprovalMode(mode string) (old string) {
 	mode = normalizeACPToolApprovalMode(mode)
 	s.mu.Lock()
-	old = normalizeACPToolApprovalMode(s.toolApprovalMode)
-	s.toolApprovalMode = mode
+	old = normalizeACPToolApprovalMode(s.posture.mode)
+	s.posture.mode = mode
 	s.mu.Unlock()
 	return old
 }
@@ -141,7 +141,7 @@ func (s *service) resolveSessionConfigDeltas(ctx context.Context, sess *acpSessi
 	if err != nil {
 		return SessionConfigState{}, err
 	}
-	return withToolApprovalConfig(cfgState, sess.currentToolApprovalMode()), nil
+	return s.withToolApprovalConfig(cfgState, sess.currentToolApprovalMode()), nil
 }
 
 // sessionConfigMatchesRuntime reports whether cfgState names the running
@@ -310,6 +310,12 @@ func (s *service) switchSessionConfig(ctx context.Context, sess *acpSession, del
 		sess.stateChangeMu.Unlock()
 		return cfgState, nil
 	}
+	if effortAppliedInPlace(sess, cfgState, deltas) {
+		sess.storeConfigState(cfgState)
+		sess.stateChangeMu.Unlock()
+		sess.sink.send(configOptionUpdate{SessionUpdate: "config_option_update", ConfigOptions: cfgState.ConfigOptions})
+		return cfgState, nil
+	}
 	didMaintenance := false
 	err = s.rebuildSessionLocked(ctx, sess, cfgState, deltas, &didMaintenance)
 	sess.stateChangeMu.Unlock()
@@ -335,6 +341,9 @@ func (s *service) switchSessionToolApproval(ctx context.Context, sess *acpSessio
 	sess.stateChangeMu.Lock()
 	defer sess.stateChangeMu.Unlock()
 	mode = normalizeACPToolApprovalMode(mode)
+	if ceiling := s.postureCeiling(); !withinCeiling(mode, ceiling) {
+		return SessionConfigState{}, aboveCeilingError("session/set_config_option", mode, ceiling)
+	}
 	ctrl := sess.currentCtrl()
 	ctrl.SetToolApprovalMode(mode)
 	sess.setToolApprovalMode(mode)
@@ -447,7 +456,8 @@ func (s *service) configStateForSession(ctx context.Context, sess *acpSession) (
 	// Fold in the live controller's extension catalog so plugin/... models
 	// are discoverable on every config-state read, not only when current.
 	state = enrichStateWithExtensionModels(state, sess.currentCtrl().ProviderCatalog())
-	return withToolApprovalConfig(state, sess.currentToolApprovalMode()), nil
+	state = withCompositionConfig(state, sess.currentCtrl())
+	return s.withToolApprovalConfig(state, sess.currentToolApprovalMode()), nil
 }
 
 func (s *acpSession) configStateParams() SessionConfigStateParams {
@@ -473,7 +483,7 @@ func (s *acpSession) storeConfigState(cfgState SessionConfigState) {
 func (s *acpSession) currentToolApprovalMode() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return normalizeACPToolApprovalMode(s.toolApprovalMode)
+	return normalizeACPToolApprovalMode(s.posture.mode)
 }
 
 func normalizeACPToolApprovalMode(mode string) string {
@@ -482,6 +492,10 @@ func normalizeACPToolApprovalMode(mode string) string {
 		return control.ToolApprovalAuto
 	case control.ToolApprovalYolo:
 		return control.ToolApprovalYolo
+	case strings.ToLower(control.ToolApprovalReadOnly):
+		return control.ToolApprovalReadOnly
+	case strings.ToLower(control.ToolApprovalDontAsk):
+		return control.ToolApprovalDontAsk
 	default:
 		return control.ToolApprovalAsk
 	}
@@ -498,19 +512,29 @@ func normalizeACPCollaborationMode(mode string) string {
 	}
 }
 
-func withToolApprovalConfig(state SessionConfigState, mode string) SessionConfigState {
+func (s *service) withToolApprovalConfig(state SessionConfigState, mode string) SessionConfigState {
 	mode = normalizeACPToolApprovalMode(mode)
+	ceiling := s.postureCeiling()
 	option := SessionConfigOption{
 		ID:           "tool_approval",
 		Name:         "Tool Approval",
 		Category:     "tool_approval",
 		Type:         "select",
 		CurrentValue: mode,
-		Options: []SessionConfigSelectOption{
-			{Value: control.ToolApprovalAsk, Name: "Ask", Description: "Ask before permission-gated tool calls"},
-			{Value: control.ToolApprovalAuto, Name: "Auto", Description: "Follow configured permission rules without fallback prompts"},
-			{Value: control.ToolApprovalYolo, Name: "Yolo", Description: "Approve tool calls except protected decisions"},
-		},
+	}
+	for _, choice := range []SessionConfigSelectOption{
+		{Value: control.ToolApprovalReadOnly, Name: "Read only", Description: "Refuse every call that is not a read"},
+		{Value: control.ToolApprovalDontAsk, Name: "Don't ask", Description: "Refuse permission-gated calls instead of asking"},
+		{Value: control.ToolApprovalAsk, Name: "Ask", Description: "Ask before permission-gated tool calls"},
+		{Value: control.ToolApprovalAuto, Name: "Auto", Description: "Follow configured permission rules without fallback prompts"},
+		{Value: control.ToolApprovalYolo, Name: "Yolo", Description: "Approve tool calls except protected decisions"},
+	} {
+		if ceiling == "" && toolApprovalRank(choice.Value) < toolApprovalRank(control.ToolApprovalAsk) {
+			continue
+		}
+		if withinCeiling(choice.Value, ceiling) {
+			option.Options = append(option.Options, choice)
+		}
 	}
 	for i := range state.ConfigOptions {
 		if normalizeConfigID(state.ConfigOptions[i].ID) == option.ID {

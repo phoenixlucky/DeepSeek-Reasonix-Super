@@ -12,7 +12,8 @@ import (
 )
 
 // switchEffort persists a new reasoning-effort level for the active provider and
-// rebuilds via switchModel (which serializes on bindMu).
+// applies it: in place when the provider takes a depth on each request, else by
+// rebuilding via switchModel (which serializes on bindMu).
 func (s *Server) switchEffort(ctx context.Context, level string) error {
 	cur := s.ctl()
 	cfg, err := runtimeConfig(cur)
@@ -48,7 +49,11 @@ func (s *Server) switchEffort(ctx context.Context, level string) error {
 		ProviderFingerprint: identity.Fingerprint,
 	}
 	alreadyRunning := runtimeSelectionMatches(cur, target)
-	if !alreadyRunning && controllerHasActiveRuntimeWork(cur) {
+	// A depth the provider takes on each request needs no rebuild, so a busy
+	// session is not a reason to refuse it.
+	placer, _ := cur.(control.EffortInPlacer)
+	inPlace := !alreadyRunning && placer != nil && placer.EffortInPlaceEligible(effort)
+	if !alreadyRunning && !inPlace && controllerHasActiveRuntimeWork(cur) {
 		return busyErr("busy.change_effort", "cannot change effort while active work or background jobs are running")
 	}
 	editPath := config.UserConfigPath()
@@ -72,6 +77,9 @@ func (s *Server) switchEffort(ctx context.Context, level string) error {
 		return err
 	}
 	if alreadyRunning {
+		return nil
+	}
+	if inPlace && placer.SetEffortInPlace(effort, target) {
 		return nil
 	}
 	return s.switchModel(ctx, targetRef)

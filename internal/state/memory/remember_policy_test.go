@@ -78,7 +78,7 @@ func TestRememberAutoWriteClaimRemainsCreateOnlyAtExecution(t *testing.T) {
 	if _, err := NewRememberTool(store).Execute(ctx, args); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("auto-approved create became an overwrite: %v", err)
 	}
-	got, ok := store.Read("release-target")
+	got, ok := mustStore(t, store).Read("release-target")
 	if !ok || got.Body != "Do not overwrite." {
 		t.Fatalf("concurrent memory was overwritten: %+v, ok=%v", got, ok)
 	}
@@ -89,7 +89,7 @@ type fakeAutoWriteQueue struct {
 	claim bool
 }
 
-func (q *fakeAutoWriteQueue) QueueMemory(note string) { q.notes = append(q.notes, note) }
+func (q *fakeAutoWriteQueue) QueueMemory(note string, _ ...Memory) { q.notes = append(q.notes, note) }
 func (q *fakeAutoWriteQueue) ClaimAutoMemoryWrite(json.RawMessage) bool {
 	claimed := q.claim
 	q.claim = false

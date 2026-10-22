@@ -55,7 +55,7 @@ func (s *Server) workspaceLocate(w http.ResponseWriter, r *http.Request) {
 	}
 	info, err := os.Stat(target)
 	if err != nil {
-		refuse(w, http.StatusNotFound, "workspace.file_missing", err.Error(), nil)
+		refuseOpen(w, err)
 		return
 	}
 	writeJSON(w, workspaceLocation{Path: target, Dir: info.IsDir()})

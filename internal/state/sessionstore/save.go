@@ -411,7 +411,7 @@ func (s *Session) saveLocked(path string, mode sessionSaveMode) error {
 		if err := compactSessionEventLog(path, msgs, digest, baseRevision, reason); err != nil {
 			return err
 		}
-	case repairLog, sessionEventLogOversized(logSize, contentBytes, msgs):
+	case repairLog, compositionRemoved(probe.schemaVersion, msgs), sessionEventLogOversized(logSize, contentBytes, msgs):
 		if err := compactSessionEventLog(path, msgs, digest, baseRevision, reason); err != nil {
 			return err
 		}
@@ -1105,9 +1105,16 @@ func messageForSessionIdentity(m provider.Message) provider.Message {
 // digestAndSizeSessionMessages also reports the encoded transcript size, which
 // the save path uses to bound the event log relative to the live content.
 func digestAndSizeSessionMessages(msgs []provider.Message) ([sha256.Size]byte, int64, error) {
+	return digestAndSizeSessionMessagesContext(context.Background(), msgs)
+}
+
+func digestAndSizeSessionMessagesContext(ctx context.Context, msgs []provider.Message) ([sha256.Size]byte, int64, error) {
 	h := sha256.New()
 	size := int64(0)
 	for _, m := range msgs {
+		if err := ctx.Err(); err != nil {
+			return [sha256.Size]byte{}, 0, err
+		}
 		m = messageForSessionIdentity(m)
 		b, err := json.Marshal(m)
 		if err != nil {
@@ -1392,7 +1399,13 @@ func LoadSession(path string) (*Session, error) {
 }
 
 func loadSessionUnlocked(path string) (*Session, error) {
-	msgs, _, damaged, err := loadSessionMessages(path)
+	return loadSessionUnlockedContext(context.Background(), path)
+}
+
+func loadSessionUnlockedContext(ctx context.Context, path string) (*Session, error) {
+	limits := defaultSessionReplayLimits
+	limits.ctx = ctx
+	msgs, _, damaged, err := loadSessionMessagesWithLimits(path, limits)
 	if err != nil {
 		return nil, err
 	}
@@ -1418,7 +1431,10 @@ func loadSessionUnlocked(path string) (*Session, error) {
 		s.rawMessages = msgs
 	}
 	s.Messages = normalized
-	if digest, err := DigestSessionMessages(s.Messages); err == nil {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if digest, _, err := digestAndSizeSessionMessagesContext(ctx, s.Messages); err == nil {
 		if meta, ok, metaErr := loadBranchMetaRetry(path); metaErr != nil {
 			// The sidecar exists but is unreadable even after retries (torn or
 			// corrupt). The session must still open, but revision 0 must not
@@ -1434,6 +1450,9 @@ func loadSessionUnlocked(path string) (*Session, error) {
 			}
 			s.markPersistedFromLoad(path, digest, s.version, revision, s.rewriteVersion)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return s, nil
 }
@@ -1573,7 +1592,7 @@ func ReconcileCleanupPending(dir string, cleanup func(CleanupPendingInfo) error)
 		return errors.Join(errs...)
 	}
 	for _, item := range pending {
-		handled, err := reconcileRecoveryTrashPending(item)
+		handled, err := reconcilePending(dir, item, cleanup)
 		if !handled {
 			if cleanup == nil {
 				continue
@@ -1913,117 +1932,18 @@ func reparentSessionBranches(dir string, renamed map[string]string) error {
 	return errors.Join(errs...)
 }
 
-// ListSessionOrder returns every *.jsonl session under dir in the same
-// most-recently-active order used by ListSessions, using only file metadata and
-// branch sidecars. A missing directory is not an error.
-func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
-	entries, err := os.ReadDir(dir)
+// ListSessions returns complete listing metadata, replaying uncached foreign
+// sessions. Interactive callers use ListNativeSessions and LegacyListings.
+func ListSessions(dir string) ([]SessionInfo, error) {
+	out, err := ListNativeSessions(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
-	var out []SessionOrderInfo
-	for _, e := range entries {
-		if e.IsDir() || !store.IsSessionTranscriptName(e.Name()) {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		full := filepath.Join(dir, e.Name())
-		if !IsVisibleSession(full) {
-			continue
-		}
-		contentMod := SessionContentModTime(full)
-		if contentMod.IsZero() {
-			contentMod = info.ModTime()
-		}
-		createdAt := info.ModTime()
-		lastActivityAt := contentMod
-		scope := "global"
-		workspaceRoot := ""
-		topicID := ""
-		topicTitle := ""
-		customTitle := ""
-		archived, unread, recovered, pinned := false, false, false, false
-		recoveryReason, recoveryDigest, parentID, recoveryRootID := "", "", "", ""
-		turns := 0
-		preview := ""
-		schemaVersion := 0
-		revision := int64(0)
-		contentDigest := ""
-		if meta, ok, err := LoadBranchMeta(full); err == nil && ok {
-			if meta.Superseded {
-				continue
-			}
-			if !meta.CreatedAt.IsZero() {
-				createdAt = meta.CreatedAt
-			}
-			if !meta.UpdatedAt.IsZero() {
-				lastActivityAt = meta.UpdatedAt
-			}
-			scope = meta.DefaultScope()
-			workspaceRoot = meta.WorkspaceRoot
-			topicID = meta.TopicID
-			topicTitle = meta.TopicTitle
-			customTitle = meta.CustomTitle
-			archived = meta.Archived
-			pinned = meta.Pinned
-			unread = meta.Unread()
-			recovered = meta.Recovered
-			recoveryReason = meta.RecoveryReason
-			recoveryDigest = meta.RecoveryDigest
-			parentID = meta.ParentID
-			recoveryRootID = meta.RecoveryRootID
-			turns = meta.Turns
-			preview = meta.Preview
-			schemaVersion = meta.SchemaVersion
-			revision = meta.Revision
-			contentDigest = meta.ContentDigest
-		}
-		out = append(out, SessionOrderInfo{
-			Path:           full,
-			CreatedAt:      createdAt,
-			LastActivityAt: lastActivityAt,
-			ModTime:        lastActivityAt,
-			Scope:          scope,
-			WorkspaceRoot:  workspaceRoot,
-			TopicID:        topicID,
-			TopicTitle:     topicTitle,
-			CustomTitle:    customTitle,
-			Archived:       archived,
-			Pinned:         pinned,
-			Unread:         unread,
-			Recovered:      recovered,
-			RecoveryReason: recoveryReason,
-			RecoveryDigest: recoveryDigest,
-			ParentID:       parentID,
-			RecoveryRootID: recoveryRootID,
-			Turns:          turns,
-			Preview:        preview,
-			SchemaVersion:  schemaVersion,
-			Revision:       revision,
-			ContentDigest:  contentDigest,
-		})
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].LastActivityAt.Equal(out[j].LastActivityAt) {
-			return out[i].Path < out[j].Path
-		}
-		return out[i].LastActivityAt.After(out[j].LastActivityAt)
-	})
-	return out, nil
+	return withV4Sessions(dir, out), nil
 }
 
-// ListSessions returns every non-empty *.jsonl session under dir,
-// most-recently-active first, each with a preview line so the picker can show
-// something the user recognises. It never decodes a transcript: legacy counts
-// remain explicitly unknown until the session catalog's single repair worker
-// validates them. A missing directory is not an error.
-func ListSessions(dir string) ([]SessionInfo, error) {
+// ListNativeSessions reads metadata without consulting foreign transcript stores.
+func ListNativeSessions(dir string) ([]SessionInfo, error) {
 	ordered, err := ListSessionOrder(dir)
 	if err != nil {
 		return nil, err
@@ -2048,7 +1968,7 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 		}
 		out = append(out, sessionInfoFromOrder(session, preview, turns, true))
 	}
-	return withV4Sessions(dir, out), nil
+	return out, nil
 }
 
 // ContinueSessionPath returns where a conversation carried into a rebuilt

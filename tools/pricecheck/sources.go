@@ -35,6 +35,12 @@ func sources() []source {
 			Read:   readDeepSeek,
 		},
 		{
+			Provider: "deepseek", Currency: "CNY",
+			Models: []string{"deepseek-flash", "deepseek-v4-pro"},
+			URL:    pricing.DocDeepSeekPricingCNY,
+			Read:   readDeepSeekCNY,
+		},
+		{
 			Provider: "longcat", Currency: "USD",
 			Models: []string{"LongCat-2.0"},
 			URL:    pricing.DocLongCatPricingUSD,
@@ -47,6 +53,12 @@ func sources() []source {
 			Read:   readLongCat,
 		},
 		{
+			Provider: "google", Currency: "USD",
+			Models: []string{"gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview"},
+			URL:    pricing.DocGeminiPricing,
+			Unread: "no reader yet: the page lists several tiers and a dated step per model, so a person re-reads it and moves CheckedOn",
+		},
+		{
 			Provider: "mimo", Currency: "CNY",
 			Models: []string{"mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.6-pro-ultraspeed", "mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-flash"},
 			URL:    pricing.DocMiMoPAYG,
@@ -55,10 +67,30 @@ func sources() []source {
 	}
 }
 
-// readDeepSeek reads the model columns off the pricing table. The wanted rates
-// are the off-peak ones, which sit on the row that names them; the peak row
-// below carries no label of its own and is never asked for.
+// deepSeekLabels are the cell labels one language of DeepSeek's page uses. The
+// off-peak marker is what picks the wanted row: the peak row below it carries no
+// label of its own and is never asked for.
+type deepSeekLabels struct {
+	cacheHit, cacheMiss, output, offPeak string
+}
+
+var (
+	deepSeekEnglish = deepSeekLabels{"cache hit", "cache miss", "output tokens", "off-peak"}
+	deepSeekChinese = deepSeekLabels{"（缓存命中）", "（缓存未命中）", "输出", "空闲时段"}
+)
+
+// readDeepSeek reads the model columns off the English pricing table.
 func readDeepSeek(t table, models []string) ([]published, error) {
+	return readDeepSeekIn(t, models, deepSeekEnglish)
+}
+
+// readDeepSeekCNY reads the yuan page, which states its own rates rather than a
+// conversion of the dollar ones.
+func readDeepSeekCNY(t table, models []string) ([]published, error) {
+	return readDeepSeekIn(t, models, deepSeekChinese)
+}
+
+func readDeepSeekIn(t table, models []string, l deepSeekLabels) ([]published, error) {
 	// Matched on the names themselves: "deepseek-" alone also picks up the
 	// model-version row, which spells the same models a different way.
 	stated, ok := t.rowContaining(models...)
@@ -68,15 +100,15 @@ func readDeepSeek(t table, models []string) ([]published, error) {
 	if named := modelNames(stated); !equalStrings(named, models) {
 		return nil, fmt.Errorf("page prices %v, the local table expects %v", named, models)
 	}
-	cacheHit, err := amountsIn(t, models, "cache hit", "off-peak")
+	cacheHit, err := amountsIn(t, models, l.cacheHit, l.offPeak)
 	if err != nil {
 		return nil, err
 	}
-	input, err := amountsIn(t, models, "cache miss", "off-peak")
+	input, err := amountsIn(t, models, l.cacheMiss, l.offPeak)
 	if err != nil {
 		return nil, err
 	}
-	output, err := amountsIn(t, models, "output tokens", "off-peak")
+	output, err := amountsIn(t, models, l.output, l.offPeak)
 	if err != nil {
 		return nil, err
 	}

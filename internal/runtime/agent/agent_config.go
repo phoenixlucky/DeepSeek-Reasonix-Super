@@ -37,10 +37,13 @@ type agentConfig struct {
 	renderRoot string
 	// workspaceVCS rides the turn block; in the prefix it would diverge it.
 	workspaceVCS string
+	// workspaceUnversioned: the host found no version-control root around the workspace.
+	workspaceUnversioned bool
 	// subagentDepth caps delegation; at maxSubagentDepth the recursive
 	// agent/skill tools are excluded.
 	subagentDepth    int
 	maxSubagentDepth int
+	providerRetries  int
 	// contextWindow and compactRatio decide when at most one provider-visible
 	// checkpoint is installed; recentKeep and archiveDir shape what it keeps.
 	contextWindow int

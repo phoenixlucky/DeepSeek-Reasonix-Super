@@ -334,3 +334,29 @@ func TestReadOnlyCompoundAgreesAcrossApprovalAndPolicy(t *testing.T) {
 		}
 	}
 }
+
+// find -exec of a known reader is a read for every consumer of the shared
+// rule, while the explicit-approval rule for -exec is a separate decision and
+// stays as it was.
+func TestFindExecOfAReaderIsReadOnlyButStillAsksFirst(t *testing.T) {
+	cases := []struct {
+		command  string
+		readOnly bool
+	}{
+		{`find . -exec wc -c {} +`, true},
+		{`find /x -type f -execdir stat {} \;`, true},
+		{`find . -exec touch {} \;`, false},
+		{`find . -exec sh -c 'wc -c "$1"' _ {} \;`, false},
+		{`find . -exec wc {} \; -delete`, false},
+		{`find . -ok wc {} \;`, false},
+	}
+	for _, tc := range cases {
+		args, _ := json.Marshal(map[string]string{"command": tc.command})
+		if got := BashCommandIsReadOnly(args); got != tc.readOnly {
+			t.Errorf("BashCommandIsReadOnly(%q) = %v, want %v", tc.command, got, tc.readOnly)
+		}
+		if !BashSubjectRequiresExplicitApproval(tc.command) {
+			t.Errorf("%q no longer asks for explicit approval; that rule is not part of this change", tc.command)
+		}
+	}
+}

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "./testkit";
 import { t } from "../i18n";
@@ -15,7 +15,8 @@ describe("a copy button", () => {
   it("on a code block, offers to copy the code rather than the response", () => {
     render(<CodeBlock lang="go" source={"x := 1\n"}><code>x := 1</code></CodeBlock>);
     const button = screen.getByRole("button", { name: t("复制这段代码") });
-    expect(button.getAttribute("title")).toBe(t("复制这段代码"));
+    fireEvent.focus(button);
+    expect(screen.getByRole("tooltip").textContent).toBe(t("复制这段代码"));
   });
 
   it("with a label and visible text, says that label instead of the response's", () => {
@@ -27,7 +28,8 @@ describe("a copy button", () => {
 
   it("without a label, still offers to copy the response", () => {
     render(<CopyButton text="an answer" iconOnly />);
-    expect(screen.getByRole("button").getAttribute("title")).toBe(t("复制回复"));
+    fireEvent.focus(screen.getByRole("button"));
+    expect(screen.getByRole("tooltip").textContent).toBe(t("复制回复"));
   });
 });
 

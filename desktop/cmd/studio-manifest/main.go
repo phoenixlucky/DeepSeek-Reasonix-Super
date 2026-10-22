@@ -135,14 +135,16 @@ func releaseAsset(repo, tag, name string, mirrored bool) update.Asset {
 	}
 }
 
-// installable reports whether an artifact installs itself rather than expecting
-// the reader to place it: a disk image to drag from, an installer to run, a
-// package for dpkg.
+// installable reports whether an artifact is a download a person is offered: a
+// disk image to drag from, an installer to run, a package for dpkg or rpm, or an
+// AppImage to run in place. The AppImage is a download only; no native_packages
+// key names it, so no client replaces one.
 func installable(name string) bool {
 	return strings.HasSuffix(name, ".dmg") ||
 		strings.HasSuffix(name, "-installer.exe") ||
 		strings.HasSuffix(name, ".deb") ||
-		strings.HasSuffix(name, ".rpm")
+		strings.HasSuffix(name, ".rpm") ||
+		strings.HasSuffix(name, ".AppImage")
 }
 
 // macArchiveKeys maps a macOS archive to the platforms it can install. The

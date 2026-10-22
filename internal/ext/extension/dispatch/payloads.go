@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
+	"strings"
 
 	"reasonix/internal/ext/extension"
 	"reasonix/internal/ext/extension/protocol"
@@ -17,9 +19,34 @@ import (
 // re-decoded against before it may substitute the live value. JSON field
 // names are camelCase, matching the protocol package's DTO convention.
 
-// InputPayload is the input.receive payload: one user input line.
+// InputPayload is the input.receive payload: one user input line, and the
+// context blocks extensions have added to the turn. ContextFrom credits each
+// block to the plugin that added it; the host writes it, so it never travels.
 type InputPayload struct {
-	Text string `json:"text,omitempty"`
+	Text        string         `json:"text,omitempty"`
+	Context     []ContextBlock `json:"context,omitempty"`
+	ContextFrom []string       `json:"-"`
+}
+
+// ContextBlock is text an extension adds to the turn's tail. The host frames it
+// as data from the extension and bounds it with the user's ceilings.
+type ContextBlock struct {
+	Label string `json:"label"`
+	Text  string `json:"text"`
+}
+
+// AdoptInputContext checks a replacement's context against the one it replaces:
+// the earlier blocks must be unchanged (each belongs to the plugin that added
+// it) and the new ones are credited to plugin.
+func AdoptInputContext(old, fresh *InputPayload, plugin string) error {
+	if len(fresh.Context) < len(old.Context) || !slices.Equal(fresh.Context[:len(old.Context)], old.Context) {
+		return errors.New("context blocks of an earlier extension may not be changed or removed")
+	}
+	fresh.ContextFrom = slices.Clone(old.ContextFrom)
+	for range fresh.Context[len(old.Context):] {
+		fresh.ContextFrom = append(fresh.ContextFrom, plugin)
+	}
+	return nil
 }
 
 // Point returns the intercept point this payload serves.
@@ -30,6 +57,11 @@ func (InputPayload) Point() extension.InterceptorPoint { return extension.PointI
 func (p *InputPayload) Validate() error {
 	if p.Text == "" {
 		return errors.New("text must be non-empty")
+	}
+	for _, b := range p.Context {
+		if strings.TrimSpace(b.Text) == "" {
+			return errors.New("a context block must have text")
+		}
 	}
 	return nil
 }

@@ -79,6 +79,9 @@ type Options struct {
 	Request    RequestFunc
 	Warn       func(string)
 	Resolve    ClientResolver
+	// Session serves the extensions that declared the session capability; nil
+	// answers every such call as unavailable.
+	Session SessionAccess
 }
 
 // ActionView is one registered extension action for frontend enumeration.
@@ -102,9 +105,11 @@ type Hub struct {
 	emit       func(event.Event)
 	requestFn  RequestFunc
 	warn       func(string)
+	session    SessionAccess
 	resolve    ClientResolver
 	known      map[string]bool
 	crashed    map[string]bool
+	surfaces   map[string]surfaceRecord
 	actions    map[string]map[string]protocol.UIActionDecl
 }
 
@@ -122,8 +127,10 @@ func New(opts Options) *Hub {
 		requestFn:  opts.Request,
 		warn:       opts.Warn,
 		resolve:    opts.Resolve,
+		session:    opts.Session,
 		known:      map[string]bool{},
 		crashed:    map[string]bool{},
+		surfaces:   map[string]surfaceRecord{},
 		actions:    map[string]map[string]protocol.UIActionDecl{},
 	}
 }
@@ -148,6 +155,11 @@ func (h *Hub) Generation() uint64 {
 func (h *Hub) BindGeneration(sessionID string, gen uint64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.sessionID != strings.TrimSpace(sessionID) {
+		h.surfaces = map[string]surfaceRecord{}
+	} else if h.generation != gen {
+		h.expireSurfacesLocked("")
+	}
 	h.sessionID = strings.TrimSpace(sessionID)
 	h.generation = gen
 }
@@ -178,6 +190,7 @@ func (h *Hub) ClientCrashed(pluginID string) {
 	defer h.mu.Unlock()
 	if h.known[pluginID] {
 		h.crashed[pluginID] = true
+		h.expireSurfacesLocked(pluginID)
 	}
 }
 
@@ -252,6 +265,13 @@ func (h *Hub) publish(pluginID string, _ context.Context, p protocol.UIPublishPa
 	payload, err := decodePublishEvent(pluginID, p)
 	if err != nil {
 		return protocol.UIPublishResult{}, err
+	}
+	accepted, err := h.rememberSurface(payload)
+	if err != nil {
+		return protocol.UIPublishResult{}, err
+	}
+	if !accepted {
+		return protocol.UIPublishResult{Accepted: false}, nil
 	}
 	kind := event.ExtensionSurface
 	if p.Kind == protocol.UISurfaceStatus {

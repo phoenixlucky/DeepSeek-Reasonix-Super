@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"reasonix/internal/state/sessionstore"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -304,5 +305,77 @@ func TestResolveBranchAcceptsDisplayedShortID(t *testing.T) {
 	}
 	if got.ID != branches[0].ID {
 		t.Fatalf("branch = %q, want %q", got.ID, branches[0].ID)
+	}
+}
+
+func TestBranchUsesBranchAtCheckpointsAndSettingsWhileSwitching(t *testing.T) {
+	c, _, _ := runTwoTurns(t)
+	defer c.Close()
+	c.SetAgentPreset("delivery")
+	c.SetPlanMode(true)
+	parent := c.SessionPath()
+	history, checkpoints := c.History(), c.Checkpoints()
+	path, err := c.Branch("same creation path")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path == parent || c.SessionPath() != path {
+		t.Fatal("Branch did not switch to its child")
+	}
+	if !reflect.DeepEqual(history, c.History()) {
+		t.Fatal("Branch did not retain the whole history")
+	}
+	copied := c.Checkpoints()
+	if len(copied) != len(checkpoints) {
+		t.Fatalf("copied %d checkpoints, want %d", len(copied), len(checkpoints))
+	}
+	for i, cp := range copied {
+		if !cp.ForkCopied || cp.Turn != checkpoints[i].Turn || cp.MsgIndex != checkpoints[i].MsgIndex || len(cp.Paths) != 0 {
+			t.Fatalf("wrong copied checkpoint: %+v", cp)
+		}
+	}
+	meta, _, err := sessionstore.LoadBranchMeta(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Model != c.ModelRef() || meta.AgentPreset != "delivery" || meta.Mode != "plan" {
+		t.Fatalf("branch did not use BranchAt settings: %+v", meta)
+	}
+	original, err := sessionstore.LoadSession(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(history, original.Snapshot()) {
+		t.Fatal("switch changed the parent history")
+	}
+}
+
+func TestBranchRebindsWriteAuthorityAfterSharedCreation(t *testing.T) {
+	c, _, _ := runTwoTurns(t)
+	leases := NewSessionLeaseKeeper()
+	defer func() { c.Close(); leases.Release() }()
+	if err := leases.Rebind(c.SessionPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := leases.BindControllerAuthority(c); err != nil {
+		t.Fatal(err)
+	}
+	c.SetOnSessionPathChanged(func(path string) {
+		if err := leases.Rebind(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := leases.BindControllerAuthority(c); err != nil {
+			t.Fatal(err)
+		}
+	})
+	path, err := c.Branch("with writer lease")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leases.HeldPath() != sessionstore.CanonicalSessionPath(path) {
+		t.Fatal("writer lease did not follow the branch")
+	}
+	if err := c.Run(context.Background(), "continue in the branch"); err != nil {
+		t.Fatalf("new branch cannot accept its next turn: %v", err)
 	}
 }

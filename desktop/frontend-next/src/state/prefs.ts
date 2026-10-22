@@ -160,16 +160,51 @@ export function setNavRailMode(mode: NavRailMode): void {
   navRailListeners.forEach((fn) => fn());
 }
 
+// How long a session that finished its turn stays in the sidebar's running list,
+// in minutes. Off (0) unless this machine chose a value: leaving the list the
+// moment a turn ends is the long-standing behaviour, and keeping a row there is
+// the reader's call. Only the offered values are read back.
+const LIVE_GRACE_KEY = "rx-live-grace";
+export const LIVE_GRACE_CHOICES: readonly number[] = [0, 10, 30, 60, 240];
+
+const liveGraceListeners = new Set<() => void>();
+
+export function liveGraceMinutes(): number {
+  try {
+    const raw = localStorage.getItem(LIVE_GRACE_KEY);
+    const minutes = raw === null ? 0 : Number(raw);
+    return LIVE_GRACE_CHOICES.includes(minutes) && String(minutes) === raw ? minutes : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function onLiveGraceChange(fn: () => void): () => void {
+  liveGraceListeners.add(fn);
+  return () => {
+    liveGraceListeners.delete(fn);
+  };
+}
+
+export function setLiveGraceMinutes(minutes: number): void {
+  try {
+    localStorage.setItem(LIVE_GRACE_KEY, String(minutes));
+  } catch {
+    /* a private window keeps the default, which is the same answer it gives */
+  }
+  liveGraceListeners.forEach((fn) => fn());
+}
+
 // How each foldable part of the transcript starts. "live" opens while the part
 // is still being written and folds once it is done; "failed" opens only a step
 // that failed; "changed" opens only what wrote a file. A block the reader opened
 // or closed keeps that choice.
 export type Fold = "thinking" | "activity" | "steps" | "output" | "compaction";
-export type FoldMode = "folded" | "live" | "failed" | "changed" | "open";
+export type FoldMode = "folded" | "peek" | "live" | "failed" | "changed" | "open";
 export type FoldModes = Readonly<Record<Fold, FoldMode>>;
 
 export const FOLD_CHOICES: Readonly<Record<Fold, readonly FoldMode[]>> = {
-  thinking: ["folded", "live", "open"],
+  thinking: ["folded", "peek", "live", "open"],
   activity: ["folded", "live", "changed", "open"],
   steps: ["folded", "failed", "changed", "open"],
   output: ["folded", "open"],
@@ -231,67 +266,84 @@ export function setFoldModes(patch: Partial<FoldModes>): void {
   foldListeners.forEach((fn) => fn());
 }
 
-// Service order is a display choice, independent of the provider configuration.
-export const PROVIDER_ORDER_KEY = "rx-provider-order";
-let providerOrderRaw: string | null | undefined;
-let providerOrderValue: readonly string[] = [];
-const providerOrderListeners = new Set<() => void>();
+// A list of names this window remembers: the one place the read-through cache,
+// the write, the cross-window refresh and the change listeners are written, so
+// each list preference is one declaration rather than another copy of them.
+function stringListPref(key: string) {
+  let cachedRaw: string | null | undefined;
+  let cached: readonly string[] = [];
+  const listeners = new Set<() => void>();
 
-export function normalizeProviderOrder(value: unknown): string[] {
+  const read = (): readonly string[] => {
+    let raw: string | null = null;
+    try {
+      raw = localStorage.getItem(key);
+    } catch {
+      /* storage is unavailable; keep the default */
+    }
+    if (raw !== cachedRaw) {
+      cachedRaw = raw;
+      try {
+        cached = normalizeNames(JSON.parse(raw ?? "[]"));
+      } catch {
+        cached = [];
+      }
+    }
+    return cached;
+  };
+  const write = (list: readonly string[]): boolean => {
+    const next = normalizeNames(list);
+    const raw = JSON.stringify(next);
+    try {
+      localStorage.setItem(key, raw);
+    } catch {
+      return false;
+    }
+    if (raw !== cachedRaw) {
+      cachedRaw = raw;
+      cached = next;
+      listeners.forEach((fn) => fn());
+    }
+    return true;
+  };
+  const refresh = (event: StorageEvent): void => {
+    if (event.key !== key && event.key !== null) return;
+    const before = cachedRaw;
+    cachedRaw = undefined;
+    read();
+    if (cachedRaw !== before) listeners.forEach((fn) => fn());
+  };
+  const on = (fn: () => void): (() => void) => {
+    listeners.add(fn);
+    if (listeners.size === 1) window.addEventListener("storage", refresh);
+    return () => {
+      listeners.delete(fn);
+      if (listeners.size === 0) window.removeEventListener("storage", refresh);
+    };
+  };
+  return { read, write, on };
+}
+
+function normalizeNames(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return [...new Set(value.filter((item): item is string => typeof item === "string" && item.trim() !== "").map((item) => item.trim()))];
 }
 
-export function readProviderOrder(): readonly string[] {
-  let raw: string | null = null;
-  try {
-    raw = localStorage.getItem(PROVIDER_ORDER_KEY);
-  } catch {
-    /* storage is unavailable; keep the default order */
-  }
-  if (raw !== providerOrderRaw) {
-    providerOrderRaw = raw;
-    try {
-      providerOrderValue = normalizeProviderOrder(JSON.parse(raw ?? "[]"));
-    } catch {
-      providerOrderValue = [];
-    }
-  }
-  return providerOrderValue;
-}
+// Service order is a display choice, independent of the provider configuration.
+export const PROVIDER_ORDER_KEY = "rx-provider-order";
+const providerOrder = stringListPref(PROVIDER_ORDER_KEY);
+export const normalizeProviderOrder = normalizeNames;
+export const readProviderOrder = providerOrder.read;
+export const writeProviderOrder = providerOrder.write;
+export const onProviderOrderChange = providerOrder.on;
 
-export function writeProviderOrder(order: readonly string[]): boolean {
-  const next = normalizeProviderOrder(order);
-  const raw = JSON.stringify(next);
-  try {
-    localStorage.setItem(PROVIDER_ORDER_KEY, raw);
-  } catch {
-    return false;
-  }
-  if (raw !== providerOrderRaw) {
-    providerOrderRaw = raw;
-    providerOrderValue = next;
-    providerOrderListeners.forEach((fn) => fn());
-  }
-  return true;
-}
-
-function refreshProviderOrder(event: StorageEvent): void {
-  if (event.key !== PROVIDER_ORDER_KEY && event.key !== null) return;
-  const before = providerOrderRaw;
-  providerOrderRaw = undefined;
-  readProviderOrder();
-  if (providerOrderRaw !== before) providerOrderListeners.forEach((fn) => fn());
-}
-
-export function onProviderOrderChange(fn: () => void): () => void {
-  providerOrderListeners.add(fn);
-  if (providerOrderListeners.size === 1) window.addEventListener("storage", refreshProviderOrder);
-  return () => {
-    providerOrderListeners.delete(fn);
-    if (providerOrderListeners.size === 0) window.removeEventListener("storage", refreshProviderOrder);
-  };
-}
+// Which accounts the model menu is narrowed to; empty shows them all. Keyed by
+// the account's own key, so a removed account simply stops matching.
+export const MODEL_FILTER_KEY = "rx-model-filter";
+const modelFilter = stringListPref(MODEL_FILTER_KEY);
+export const readModelFilter = modelFilter.read;
+export const writeModelFilter = modelFilter.write;
+export const onModelFilterChange = modelFilter.on;
 
 // Off unless this machine turned it on. Dot folders hold tool state and local
 // configuration, so the explorer lists them only for a reader who asked.
@@ -311,6 +363,79 @@ export function setShowsHiddenFiles(on: boolean): void {
   } catch {
     /* the choice holds for this window and is forgotten on the next */
   }
+}
+
+// Whether sessions Reasonix 1.x wrote stay out of the sidebar lists. Off unless
+// this machine turned it on; the lists show everything otherwise.
+const HIDE_LEGACY_KEY = "rx-hide-legacy-sessions";
+const hideLegacyListeners = new Set<() => void>();
+
+export function hidesLegacySessions(): boolean {
+  try {
+    return localStorage.getItem(HIDE_LEGACY_KEY) === "on";
+  } catch {
+    return false;
+  }
+}
+
+export function setHidesLegacySessions(on: boolean): void {
+  try {
+    localStorage.setItem(HIDE_LEGACY_KEY, on ? "on" : "off");
+  } catch {
+    /* the choice holds for this window and is forgotten on the next */
+  }
+  hideLegacyListeners.forEach((fn) => fn());
+}
+
+export function onHidesLegacySessionsChange(fn: () => void): () => void {
+  hideLegacyListeners.add(fn);
+  const storage = (event: StorageEvent) => {
+    if (event.key === HIDE_LEGACY_KEY || event.key === null) fn();
+  };
+  window.addEventListener("storage", storage);
+  return () => {
+    hideLegacyListeners.delete(fn);
+    window.removeEventListener("storage", storage);
+  };
+}
+
+// How many sessions stay open as tabs before the oldest idle one is folded away.
+// Zero is never: folding closes a pane on its own, so it is something the person
+// asks for. Whatever is missing, corrupt or out of range reads as zero too.
+const OPEN_SESSION_LIMIT_KEY = "rx-open-session-limit";
+const openSessionLimitListeners = new Set<() => void>();
+
+export function openSessionLimit(): number {
+  try {
+    const raw = localStorage.getItem(OPEN_SESSION_LIMIT_KEY);
+    if (raw === null || !/^(0|[1-9][0-9]*)$/.test(raw)) return 0;
+    const n = Number(raw);
+    return Number.isSafeInteger(n) ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function setOpenSessionLimit(n: number): void {
+  try {
+    if (Number.isSafeInteger(n) && n > 0) localStorage.setItem(OPEN_SESSION_LIMIT_KEY, String(n));
+    else localStorage.removeItem(OPEN_SESSION_LIMIT_KEY);
+  } catch {
+    /* the choice holds for this window and is forgotten on the next */
+  }
+  openSessionLimitListeners.forEach((fn) => fn());
+}
+
+export function onOpenSessionLimitChange(fn: () => void): () => void {
+  openSessionLimitListeners.add(fn);
+  const storage = (event: StorageEvent) => {
+    if (event.key === OPEN_SESSION_LIMIT_KEY || event.key === null) fn();
+  };
+  window.addEventListener("storage", storage);
+  return () => {
+    openSessionLimitListeners.delete(fn);
+    window.removeEventListener("storage", storage);
+  };
 }
 
 // The send key is local to this machine, never read from project settings.
@@ -377,5 +502,47 @@ export function onShowsSessionTabsChange(fn: () => void): () => void {
   sessionTabListeners.add(fn);
   return () => {
     sessionTabListeners.delete(fn);
+  };
+}
+
+// How many panes may hold a live event stream at once. Unset is automatic: the
+// most the browser's connection limit leaves room for. A browser opens six
+// connections to one origin and the session list holds one, so the number is held
+// between one and four; anything else reads as automatic.
+const LIVE_STREAM_BUDGET_KEY = "rx-live-stream-budget";
+export const MAX_LIVE_STREAM_BUDGET = 4;
+const liveStreamBudgetListeners = new Set<() => void>();
+
+/** The chosen number, or null for automatic. */
+export function liveStreamBudget(): number | null {
+  try {
+    const raw = localStorage.getItem(LIVE_STREAM_BUDGET_KEY);
+    if (raw === null || !/^[1-9][0-9]*$/.test(raw)) return null;
+    const n = Number(raw);
+    return n >= 1 && n <= MAX_LIVE_STREAM_BUDGET ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setLiveStreamBudget(n: number | null): void {
+  try {
+    if (n !== null && Number.isSafeInteger(n) && n >= 1 && n <= MAX_LIVE_STREAM_BUDGET) localStorage.setItem(LIVE_STREAM_BUDGET_KEY, String(n));
+    else localStorage.removeItem(LIVE_STREAM_BUDGET_KEY);
+  } catch {
+    /* the choice holds for this window and is forgotten on the next */
+  }
+  liveStreamBudgetListeners.forEach((fn) => fn());
+}
+
+export function onLiveStreamBudgetChange(fn: () => void): () => void {
+  liveStreamBudgetListeners.add(fn);
+  const storage = (event: StorageEvent) => {
+    if (event.key === LIVE_STREAM_BUDGET_KEY || event.key === null) fn();
+  };
+  window.addEventListener("storage", storage);
+  return () => {
+    liveStreamBudgetListeners.delete(fn);
+    window.removeEventListener("storage", storage);
   };
 }

@@ -48,6 +48,7 @@ func (m *model) bottomLines() bottom {
 	if w := m.workingLine(); w != "" {
 		rows = append(rows, w)
 	}
+	rows = append(rows, m.queueRows()...)
 	at := -1
 	if m.composerShown() {
 		at = len(rows)
@@ -74,6 +75,7 @@ func (m *model) View() tea.View {
 		v.Content = splitClusters(v.Content)
 	}
 	v.Content = m.glyphs.apply(v.Content)
+	v.ReportFocus = true
 	return v
 }
 
@@ -120,6 +122,7 @@ func (m *model) liveLinesRail(hideRail bool) []string {
 			continue
 		}
 		switch {
+		case it.Kind == ItemUser && it.Pending && m.queued(it):
 		case it.Kind == ItemUser && it.Pending:
 			out = append(out, termrender.Dim("  ⧗ "+oneLine(it.Text, width-6)))
 		case it.Kind == ItemSay:

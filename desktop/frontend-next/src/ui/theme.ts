@@ -19,12 +19,14 @@ const SURFACE: Record<string, string[]> = {
   fgStrong: ["--text-strong"],
   accent: ["--accent"],
   accentFg: ["--accent-fg"],
+  accentInk: ["--accent-ink"],
   link: ["--link"],
   brand: ["--brand"],
   halo: ["--halo"],
   labelAgent: ["--label-agent"],
   float: ["--float"],
   floatHi: ["--float-hi"],
+  shadowFloat: ["--shadow-float", "--shadow-pack"],
   codeBg: ["--face-code"],
   sunkBg: ["--face-sunk"],
   synKeyword: ["--syn-key"],
@@ -42,6 +44,7 @@ const SURFACE: Record<string, string[]> = {
 
 // What a pack's own surfaces imply for the grounds it did not name.
 const DERIVED: [string, { source: string; paint: (t: Record<string, string>) => string }][] = [
+  ["accentInk", { source: "accent", paint: (t) => `color-mix(in srgb, ${t.accent} 65%, ${t.fg ?? "var(--text)"})` }],
   ["float", { source: "panel", paint: (t) => t.panel }],
   ["floatHi", { source: "bgElev", paint: (t) => t.bgElev }],
   ["codeBg", { source: "bgSoft", paint: (t) => `color-mix(in srgb, ${t.bgSoft} 50%, ${t.bg ?? t.bgSoft})` }],
@@ -53,6 +56,12 @@ const WASHES: [string, string][] = [
   ["brand", "--brand-wash"],
   ["labelAgent", "--label-agent-wash"],
 ];
+
+// A recipe is a step, not a size: the stylesheet owns what a radius or a
+// gutter measures, and the pack only says how far it moves. A factor, so no
+// pack can round a corner into a shape the rest of the layout disagrees with.
+const CORNERS: Record<string, string> = { square: "0", soft: "1", round: "1.5" };
+const DENSITY: Record<string, string> = { compact: "0.85", comfortable: "1" };
 
 // What a pack may not touch. ok/warn/err/net/deleg encode what is happening —
 // "this broke", "this is running", "this went out to a sub-agent" — and a
@@ -149,6 +158,12 @@ function declarations(pack: ThemePack, scheme: "light" | "dark", busy: boolean, 
   for (const [token, wash] of WASHES) {
     if (tokens[token]) out.push([wash, `color-mix(in srgb, ${tokens[token]} 12%, ${tokens.bg ?? "transparent"})`]);
   }
+  // A recipe lands on the same rule as the tokens, so a pack that asks for
+  // squarer corners or a tighter rhythm is one declaration from the stylesheet.
+  const corners = pack.recipes?.corners ? CORNERS[pack.recipes.corners] : "";
+  if (corners) out.push(["--r-scale", corners]);
+  const density = pack.recipes?.density ? DENSITY[pack.recipes.density] : "";
+  if (density) out.push(["--d-scale", density]);
 
   // The sky is drawn rather than placed, so it is independent of the picture:
   // a pack can have either, both, or neither.

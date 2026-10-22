@@ -29,11 +29,7 @@ func MigrateLegacyDeepSeekProtocolUserConfig() (bool, error) {
 // MigrateLegacyDeepSeekProtocolUserConfig upgrades the aliases in this
 // binding's user-global config.
 func (r Roots) MigrateLegacyDeepSeekProtocolUserConfig() (bool, error) {
-	path := r.userConfigLoadPath()
-	if strings.TrimSpace(path) == "" {
-		return false, nil
-	}
-	return editLegacyDeepSeekProtocolFile(path, "", true)
+	return r.MigrateLegacyDeepSeekProtocolUserConfigFrom(r.SnapshotUserConfig())
 }
 
 // IsDeepSeekProtocolConfigParseError reports whether migration failed while

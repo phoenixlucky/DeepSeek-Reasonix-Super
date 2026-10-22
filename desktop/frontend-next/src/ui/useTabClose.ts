@@ -9,9 +9,10 @@ interface Props {
   port: AgentPort; surfaces: Surface[]; selected: string; showFiles: boolean;
   setBrowsers: Setter<string[]>; setOpenFiles: Setter<string[]>; setDismissed: Setter<Set<string>>;
   setSelected: Setter<string>; onCloseManual: () => void; onCloseSelected: () => void;
+  fromExplorer?: { current: string }; setShowFiles?: Setter<boolean>; setLauncher?: Setter<boolean>;
 }
 
-export function useTabClose({ port, surfaces, selected, showFiles, setBrowsers, setOpenFiles, setDismissed, setSelected, onCloseManual, onCloseSelected }: Props) {
+export function useTabClose({ port, surfaces, selected, showFiles, setBrowsers, setOpenFiles, setDismissed, setSelected, onCloseManual, onCloseSelected, fromExplorer, setShowFiles, setLauncher }: Props) {
   const current = useRef({ surfaces, selected, showFiles });
   current.current = { surfaces, selected, showFiles };
   const pending = useRef(false);
@@ -38,7 +39,20 @@ export function useTabClose({ port, surfaces, selected, showFiles, setBrowsers, 
       if (closed.has(current.current.selected)) onCloseSelected();
       setSelected((v) => closed.has(v) ? "" : v);
       setCloseFailure(failures.join("\n"));
-      if (!current.current.showFiles && current.current.surfaces.every((s) => closed.has(keyOf(s)))) onCloseManual();
+      // A file picked out of the explorer leaves that list stepped aside, not
+      // closed. When that close is the one that would fold the column — nothing
+      // left behind, the list not open — the list comes back instead. Any other
+      // close keeps the previous rule, so the list never lands over a tab that
+      // is still open.
+      if (!current.current.showFiles && current.current.surfaces.every((s) => closed.has(keyOf(s)))) {
+        if (fromExplorer?.current && closed.has(`file:${fromExplorer.current}`)) {
+          fromExplorer.current = "";
+          setLauncher?.(false);
+          setShowFiles?.(true);
+        } else {
+          onCloseManual();
+        }
+      }
     } finally { pending.current = false; setClosing(false); }
   };
   return { close, closing, closeFailure };

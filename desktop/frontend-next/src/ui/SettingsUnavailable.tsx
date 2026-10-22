@@ -1,3 +1,5 @@
+import { useRef } from "react";
+import { useModalFocus } from "./useModalFocus";
 import { t } from "../i18n";
 
 // What is shown when the settings chunk does not arrive. An update replaces the
@@ -5,9 +7,11 @@ import { t } from "../i18n";
 // is gone; the rejected import throws during render, and without a boundary
 // that unmounts the whole tree — a white window, over a panel that did not open.
 export function SettingsUnavailable({ onClose }: { onClose: () => void }) {
+  const sheet = useRef<HTMLDivElement>(null);
+  useModalFocus(sheet);
   return (
     <div className="prefs">
-      <div className="prefs-sheet" role="alertdialog" aria-modal="true" aria-labelledby="prefs-gone">
+      <div ref={sheet} className="prefs-sheet" role="alertdialog" aria-modal="true" aria-labelledby="prefs-gone">
         <div className="prefs-hd">
           <h1 id="prefs-gone">{t("设置没能打开")}</h1>
           <button className="btn sm" data-action="chrome.reload" onClick={() => location.reload()}>

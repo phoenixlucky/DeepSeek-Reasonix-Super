@@ -10,8 +10,11 @@ import (
 
 const webInstanceStillActiveExitCode = 259
 
-func webAddressInUse(err error) bool {
-	return errors.Is(err, windows.WSAEADDRINUSE)
+// webPortTaken: Windows also answers "access forbidden" for a port another
+// socket holds exclusively and for the ranges Hyper-V, WSL and Docker reserve,
+// so both mean "try the next one".
+func webPortTaken(err error) bool {
+	return errors.Is(err, windows.WSAEADDRINUSE) || errors.Is(err, windows.WSAEACCES)
 }
 
 func webInstanceProcessAlive(pid int) bool {

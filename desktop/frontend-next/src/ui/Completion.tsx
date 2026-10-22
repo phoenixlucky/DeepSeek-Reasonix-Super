@@ -16,10 +16,12 @@ const KIND: Record<string, string> = {
   file: "文件",
   dir: "目录",
   resource: "资源",
+  session: "会话",
 };
 
 const HINT: Record<string, string> = {
-  ref: "Tab 补全或进入目录 · ↑↓ 后回车确认 · Esc 关闭",
+  ref: "↑↓ 选择 · 回车引用 · Tab 补全或进入目录 · Esc 关闭",
+  session: "↑↓ 选择 · 回车添加到这条消息 · Esc 关闭",
   slash: "↑↓ 选择 · Tab 或回车补全 · Esc 关闭",
   "slash-arg": "↑↓ 选择 · Tab 或回车补全 · Esc 关闭",
 };
@@ -30,7 +32,7 @@ const HINT: Record<string, string> = {
 // the other side — because a false yes costs a request and a false no costs a
 // menu that never opens.
 function mightComplete(text: string): boolean {
-  return text.startsWith("/") || text.includes("@");
+  return text.startsWith("/") || text.includes("@") || text.includes("#");
 }
 
 // A "/" opening a word past the start of the line can only become a chip. The
@@ -43,6 +45,14 @@ function midSlash(text: string, caret: number): { from: number; to: number; toke
   return { from, to: rest < 0 ? text.length : from + rest, token: text.slice(from, caret) };
 }
 
+// Whether the caret rests in a word that opens with "/" at the line start or
+// after a space: the one place a person is waiting for the command list. Prose
+// typed after a finished command still asks (an argument may complete) but is
+// not waiting, so it never announces loading.
+function inSlashWord(text: string, caret: number): boolean {
+  return /(^|\s)\/\S*$/.test(text.slice(0, caret));
+}
+
 // The chips a menu pick can become, and whether the caret rests on one: a chip
 // is finished, so the letters it is spelled with are not a word to complete.
 interface ChipHost {
@@ -50,9 +60,9 @@ interface ChipHost {
   touches: (caret: number) => boolean;
 }
 
-function ask(port: AgentPort, text: string, caret: number, mid: ReturnType<typeof midSlash>): Promise<Completion> {
-  if (!mid) return port.complete(text, caret);
-  return port.complete(mid.token, mid.token.length).then((r) => ({
+function ask(port: AgentPort, text: string, caret: number, mid: ReturnType<typeof midSlash>, signal: AbortSignal): Promise<Completion> {
+  if (!mid) return port.complete(text, caret, signal);
+  return port.complete(mid.token, mid.token.length, signal).then((r) => ({
     kind: "slash",
     from: mid.from,
     to: mid.to,
@@ -69,14 +79,10 @@ interface State {
   move: (delta: number) => void;
   hover: (i: number) => void;
   dismiss: () => void;
-  accept: (item?: CompletionItem) => void;
+  accept: (item?: CompletionItem, mode?: "confirm" | "descend") => void;
   // Whether the keys still hold the highlight. A menu opens under whatever the
   // pointer happens to be resting on, so the pointer only takes it by moving.
   kb: boolean;
-  // Whether Enter belongs to the menu. A half-typed command is not a message,
-  // so Enter completes it; a reference is ordinary prose the moment it resolves,
-  // so Enter sends unless the user went looking through the list.
-  ownsEnter: boolean;
 }
 
 // useCompletion keeps the menu in step with the caret. Every decision about
@@ -89,17 +95,20 @@ export function useCompletion(
   caret: number,
   apply: (text: string, caret: number) => void,
   chips?: ChipHost,
+  onSession?: (picked: { id: string; title: string }) => void,
 ): State {
-  const [completion, setCompletion] = useState<Completion>(EMPTY);
+  const [{ completion, active, kb }, setMenu] = useState({ completion: EMPTY, active: 0, kb: true });
+  // An answer and its default highlight publish together; a deferred reset can
+  // overwrite navigation after the rows are already visible.
+  const setCompletion = useCallback((completion: Completion) => {
+    setMenu({ completion, active: 0, kb: true });
+  }, []);
   const [loading, setLoading] = useState(false);
   const currentCompletion = useRef(completion);
   currentCompletion.current = completion;
-  const [active, setActive] = useState(0);
-  const [picked, setPicked] = useState(false);
   // The answer that was dismissed, not a flag: a reset run as an effect lands
   // after the commit that opened the menu, and a blur between the two is undone.
   const [dismissed, setDismissed] = useState<Completion | null>(null);
-  const [kb, setKb] = useState(true);
   // Answers can land out of order; only the newest question still has an answer
   // worth showing.
   const asked = useRef(0);
@@ -117,13 +126,14 @@ export function useCompletion(
     const slashy = mid !== null || text.startsWith("/");
     const compatible = slashy
       ? previous.kind === "slash" || previous.kind === "slash-arg"
-      : previous.kind === "ref";
+      : previous.kind === "ref" || previous.kind === "session";
     if (!compatible) setCompletion(EMPTY);
     setLoading(false);
-    const timer = slashy && !compatible
+    const timer = inSlashWord(text, caret) && !compatible
       ? window.setTimeout(() => { if (id === asked.current) setLoading(true); }, 180)
       : undefined;
-    ask(port, text, caret, mid)
+    const asking = new AbortController();
+    ask(port, text, caret, mid, asking.signal)
       .then((r) => {
         if (id === asked.current) {
           window.clearTimeout(timer);
@@ -138,31 +148,41 @@ export function useCompletion(
           setLoading(false);
         }
       });
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      asking.abort();
+    };
   }, [port, text, caret]);
-
-  // A keystroke changed the list under the pointer, so its claim on the
-  // highlight is stale even though it never moved.
-  useEffect(() => {
-    setActive(0);
-    setPicked(false);
-    setKb(true);
-  }, [completion]);
 
   const items = completion.items;
   const open = dismissed !== completion && items.length > 0;
   const at = Math.min(active, items.length - 1);
 
   const accept = useCallback(
-    (item?: CompletionItem) => {
+    (item?: CompletionItem, mode: "confirm" | "descend" = "confirm") => {
       const pick = item ?? items[Math.min(active, items.length - 1)];
       if (!pick) return;
+      if (completion.kind === "session" && pick.kind === "session") {
+        onSession?.({ id: pick.insert.slice("@session:".length), title: pick.label });
+        asked.current++;
+        setCompletion(EMPTY);
+        setLoading(false);
+        return apply(text.slice(0, completion.from) + text.slice(completion.to).replace(/^ /, ""), completion.from);
+      }
       const placed = chips?.place(text, completion, pick);
       if (placed) return apply(placed.text, placed.caret);
-      const next = text.slice(0, completion.from) + pick.insert + text.slice(completion.to);
-      apply(next, completion.from + pick.insert.length);
+      const finishRef = completion.kind === "ref" && !(mode === "descend" && pick.descend);
+      const suffix = text.slice(completion.to);
+      const separator = finishRef && !/^\s/.test(suffix) ? " " : "";
+      const next = text.slice(0, completion.from) + pick.insert + separator + suffix;
+      if (completion.kind === "ref") {
+        asked.current++;
+        setCompletion(EMPTY);
+        setLoading(false);
+      }
+      apply(next, completion.from + pick.insert.length + (finishRef ? 1 : 0));
     },
-    [items, active, text, completion, apply, chips],
+    [items, active, text, completion, apply, chips, onSession],
   );
 
   return {
@@ -170,17 +190,16 @@ export function useCompletion(
     active: at,
     open,
     loading,
-    ownsEnter: open && (completion.kind !== "ref" || picked),
     kb,
     move: (delta) => {
-      setPicked(true);
-      setKb(true);
-      setActive((i) => (((Math.min(i, items.length - 1) + delta) % items.length) + items.length) % items.length);
+      setMenu((menu) => {
+        const count = menu.completion.items.length;
+        if (!count) return menu;
+        return { ...menu, kb: true, active: (((Math.min(menu.active, count - 1) + delta) % count) + count) % count };
+      });
     },
     hover: (i) => {
-      setPicked(true);
-      setKb(false);
-      setActive(i);
+      setMenu((menu) => ({ ...menu, kb: false, active: i }));
     },
     dismiss: () => {
       asked.current++;

@@ -194,7 +194,7 @@ func subagentEffortRef(cfg *config.Config, sk skill.Skill, inheritedFor func(mod
 		if cfg == nil {
 			return ""
 		}
-		return strings.TrimSpace(cfg.Agent.SubagentEffort)
+		return firstNonEmpty(cfg.Agent.RoleEfforts["subagent"], cfg.Agent.SubagentEffort)
 	}
 	return inheritedFor(subagentModelRef(cfg, sk))
 }
@@ -364,6 +364,10 @@ func newSubagentStore(sessionDir string, parentLive func(sessionPath string) boo
 		return nil, nil
 	}
 	store := delegation.NewSubagentStore(filepath.Join(sessionDir, "subagents")).WithParentSessionProbe(parentLive)
+	store.WithSteerLimits(func() delegation.SteerLimits {
+		bytes, perMinute := config.LoadForEditWithoutCredentials(config.UserConfigPath()).SubagentSteerLimits()
+		return delegation.SteerLimits{MaxBytes: bytes, PerMinute: perMinute}
+	})
 	if _, err := store.CleanupStaleRunning(); err != nil {
 		return nil, fmt.Errorf("cleanup stale subagents: %w", err)
 	}
@@ -465,6 +469,7 @@ func addBuiltins(reg *tool.Registry, enabled, writeRoots []string, bashSpec sand
 		writers[i] = builtin.BindFileWriteReceipt(writer, fileWriteReceipt)
 	}
 	confined := append(writers,
+		builtin.ConfineWebImage(writeRoots, sessionGuard, proxySpec, fileWriteReceipt),
 		bashTool,
 		searchTool,
 		builtin.ConfineWebFetch(proxySpec))

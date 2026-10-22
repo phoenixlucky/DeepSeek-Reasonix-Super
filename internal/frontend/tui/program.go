@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"golang.org/x/term"
 
 	"reasonix/internal/base/i18n"
 	"reasonix/internal/frontend/termrender"
@@ -56,6 +58,10 @@ func Run(ctx context.Context, opts Options) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	m := newModel(ctx, opts)
+	m.reportOn = term.IsTerminal(int(os.Stdout.Fd()))
+	if m.reportOn {
+		defer fmt.Fprint(os.Stdout, termrender.StatusClear)
+	}
 	p := tea.NewProgram(m, tea.WithContext(ctx))
 	if clusters, ok := clustersEmoji(); ok && clusters {
 		go p.Send(clusterReport)
@@ -83,6 +89,7 @@ type model struct {
 	client  *Client
 	opts    Options
 	updates <-chan Update
+	focus   focusState
 
 	tr        Transcript
 	committed map[int]bool
@@ -92,6 +99,7 @@ type model struct {
 
 	width, height int
 	composer      textarea.Model
+	queue         queueView
 	shell         bool
 	history       []string
 	histAt        int
@@ -129,6 +137,10 @@ type model struct {
 	yoloRestore string
 	// verbose keeps an answer's thinking open as it settles; /verbose toggles it.
 	verbose bool
+	// reportOn is set when stdout is a terminal that can be told the state
+	// (OSC 7501); status7501 is the last state it was told.
+	reportOn   bool
+	status7501 reportedStatus
 }
 
 type (
@@ -197,13 +209,14 @@ func newModel(ctx context.Context, opts Options) *model {
 
 func (m *model) Init() tea.Cmd {
 	m.updates = m.client.Subscribe(m.ctx)
-	cmds := []tea.Cmd{m.waitUpdate(), m.fetchStatus(), tickStatus(), m.fetchMeters(), m.checkSetup()}
+	cmds := []tea.Cmd{m.waitUpdate(), m.fetchStatus(), tickStatus(), m.fetchMeters(), m.checkSetup(), m.fetchQueue()}
 	if m.opts.Restore {
 		cmds = append(cmds, m.fetchHistory(true))
 	}
 	if m.opts.PickSession {
 		cmds = append(cmds, m.openPicker())
 	}
+	cmds = append(cmds, m.viewedAtStart())
 	if p := strings.TrimSpace(m.opts.Prompt); p != "" {
 		m.tr.AddUser(p)
 		cmds = append(cmds, m.commit(), m.call("submit", func(ctx context.Context) error { return m.client.Submit(ctx, p) }))
@@ -299,10 +312,17 @@ func tickStatus() tea.Cmd {
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	return next, tea.Batch(cmd, m.reportStatus())
+}
+
+func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.resize(msg)
 		return m, nil
+	case tea.FocusMsg, tea.BlurMsg:
+		return m, m.focus.report(msg, m.markViewed)
 	case tea.ModeReportMsg:
 		noteCells(msg)
 		return m, nil
@@ -328,12 +348,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds := []tea.Cmd{m.commit(), rearm, m.noteRunning(was)}
 		if turnDone {
 			m.noteTurnEnd()
-			cmds = append(cmds, m.commit(), m.fetchMeters())
+			cmds = append(cmds, m.commit(), m.fetchMeters(), m.viewedOnTurnEnd())
 		}
-		if m.tr.TodosMoved {
-			m.tr.TodosMoved = false
-			cmds = append(cmds, m.fetchTodos())
-		}
+		cmds = append(cmds, m.refetchMoved()...)
 		return m, tea.Batch(cmds...)
 	case historyMsg:
 		return m, m.restore(msg)
@@ -381,8 +398,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.onCompletion(msg)
 		return m, nil
 	case tea.PasteMsg:
-		m.insertPaste(msg.Content)
-		return m, nil
+		return m, m.insertPaste(msg.Content)
 	case tea.KeyPressMsg:
 		return m.onKey(msg)
 	}
@@ -394,16 +410,42 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// refetchMoved reads again what the kernel said changed: the task list and the
+// queue.
+func (m *model) refetchMoved() []tea.Cmd {
+	var cmds []tea.Cmd
+	if m.tr.TodosMoved {
+		m.tr.TodosMoved = false
+		cmds = append(cmds, m.fetchTodos())
+	}
+	if m.tr.QueueMoved {
+		m.tr.QueueMoved = false
+		cmds = append(cmds, m.fetchQueue())
+	}
+	return cmds
+}
+
 // onScreenMsg takes the answers to what this screen asked for itself: the
 // clipboard, the session list, the mouse and its timers.
 func (m *model) onScreenMsg(msg tea.Msg) (tea.Cmd, bool) {
+	if cmd, ok := m.onMCPMsg(msg); ok {
+		return cmd, true
+	}
+	if cmd, ok := m.onQueueRowsMsg(msg); ok {
+		return cmd, true
+	}
 	switch msg := msg.(type) {
 	case sentMsg:
 		return m.onSent(msg), true
 	case urlAnswerMsg:
 		return m.onURLAnswer(msg), true
+	case askEngagementMsg:
+		m.onAskEngagement(msg)
+		return nil, true
 	case clipImageMsg:
 		return m.onClipImage(msg), true
+	case pasteKeptMsg:
+		return m.onPasteKept(msg), true
 	case clipTextMsg:
 		return m.onClipText(msg), true
 	case helpMsg:
@@ -424,12 +466,10 @@ func (m *model) onScreenMsg(msg tea.Msg) (tea.Cmd, bool) {
 		return m.onModels(msg), true
 	case modelSwitchedMsg:
 		return m.onModelSwitched(msg), true
-	case mcpMsg:
-		return m.onMCP(msg), true
-	case mcpActionErrMsg:
-		return m.onMCPActionErr(msg), true
 	case sessionsMsg:
 		return m.onSessions(msg), true
+	case deletedMsg:
+		return m.onDeleted(msg), true
 	case resumedMsg:
 		return m.onResumed(msg), true
 	case checkpointsMsg:

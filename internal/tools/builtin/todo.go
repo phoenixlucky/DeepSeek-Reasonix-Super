@@ -285,3 +285,6 @@ func toEvidenceTodo(todo todoItem) evidence.TodoItem {
 		StepID:     strings.TrimSpace(todo.StepID),
 	}
 }
+
+// HostRequiredBy says why the tool cannot be removed by name: plan steps, delivery-first mode and the task list the host replays all rest on it.
+func (todoWrite) HostRequiredBy() string { return tool.FeaturePlanSteps }

@@ -1,0 +1,13 @@
+.bring-call { display: inline-grid; place-items: center; flex: none; width: 22px; height: 22px; margin-inline-start: 4px; padding: 0; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--faint); cursor: pointer; opacity: 0; transition: opacity var(--m-line), color var(--m-line), background var(--m-line); }
+.bring-call .studio-icon { width: 13px; height: 13px; transform: rotate(180deg); }
+.call:hover .bring-call, .call:focus-within .bring-call, .bring-call:focus-visible { opacity: 1; }
+@media (hover: none) { .bring-call { opacity: 1; } }
+.bring-call:hover { color: var(--text); background: var(--overlay); }
+.bring-call:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.brought { margin-top: 18px; padding-top: 10px; border-top: 1px dashed var(--hair); }
+.brought-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; color: var(--faint); font: var(--w-med) var(--fs-meta) var(--ui); }
+.brought-close { display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--faint); cursor: pointer; }
+.brought-close .studio-icon { width: 12px; height: 12px; }
+.brought-close:hover { color: var(--text); background: var(--overlay); }
+.brought-close:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.brought .brought-line { margin-left: 0; padding: 0; border-left: 0; }

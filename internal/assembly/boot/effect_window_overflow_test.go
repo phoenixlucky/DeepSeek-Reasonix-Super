@@ -27,7 +27,7 @@ func (p *overflowingSharedWindowProvider) Stream(_ context.Context, req provider
 	for _, m := range req.Messages {
 		chars += len(m.Content)
 	}
-	digest := len(req.Messages) > 0 && strings.Contains(req.Messages[0].Content, "compacting the earlier part")
+	digest := req.Summary
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if digest {

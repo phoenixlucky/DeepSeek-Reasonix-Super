@@ -24,6 +24,7 @@ type CreateRequest struct {
 	Grant             Grant
 	Budget            *Budget
 	ConfirmedBy       string
+	ConfirmedVia      string
 	ToolCeiling       []string
 	AllowReadOnlyBash bool
 }
@@ -82,7 +83,7 @@ func (s *Store) build(p Policy, req CreateRequest, now time.Time) (Schedule, err
 		Model: req.Model, Grant: grant, Budget: budget, Status: StatusActive,
 		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(p.Expiry()),
 	}
-	sc.Confirmed = Confirmation{At: now, By: ConfirmedByHuman, Digest: Digest(sc)}
+	sc.Confirmed = Confirmation{At: now, By: ConfirmedByHuman, Via: req.ConfirmedVia, Digest: Digest(sc)}
 	return sc, nil
 }
 

@@ -87,7 +87,11 @@ func TestMachineSettingsSelectLocalWorkspace(t *testing.T) {
 	request(second.ID, http.MethodPost, "/memory/restore", `{"name":"fact","revision":1}`, http.StatusOK)
 	read(second.ID, "second")
 	request(second.ID, http.MethodPost, "/memory/forget", `{"name":"fact"}`, http.StatusNoContent)
-	if got := second.Server.Controller().Memory().Store.ListAll(); len(got) != 0 {
+	got, err := second.Server.Controller().Memory().Store.ListAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
 		t.Fatalf("forgotten second memory = %+v", got)
 	}
 	read(first.ID, "first")

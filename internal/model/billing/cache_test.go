@@ -39,7 +39,7 @@ func expire(c *Cache) {
 func TestCacheAnswersFromMemoryWhileFresh(t *testing.T) {
 	var hits atomic.Int64
 	srv := cacheStub(t, &hits, nil)
-	c := NewCache(nil, srv.URL, "")
+	c := NewCache(nil, srv.URL, FormatDeepSeek, "")
 	for range 10 {
 		if r := c.Read(context.Background()); r.Balance == nil {
 			t.Fatalf("Read = %+v", r)
@@ -53,7 +53,7 @@ func TestCacheAnswersFromMemoryWhileFresh(t *testing.T) {
 func TestCacheRefetchesAfterFreshness(t *testing.T) {
 	var hits atomic.Int64
 	srv := cacheStub(t, &hits, nil)
-	c := NewCache(nil, srv.URL, "")
+	c := NewCache(nil, srv.URL, FormatDeepSeek, "")
 	if r := c.Read(context.Background()); r.Err != nil {
 		t.Fatal(r.Err)
 	}
@@ -72,7 +72,7 @@ func TestCacheStandsInForAFailingWallet(t *testing.T) {
 	var hits atomic.Int64
 	var fail atomic.Bool
 	srv := cacheStub(t, &hits, &fail)
-	c := NewCache(nil, srv.URL, "")
+	c := NewCache(nil, srv.URL, FormatDeepSeek, "")
 	if r := c.Read(context.Background()); r.Err != nil {
 		t.Fatal(r.Err)
 	}
@@ -103,7 +103,7 @@ func TestCacheReportsFirstFailure(t *testing.T) {
 	var fail atomic.Bool
 	fail.Store(true)
 	srv := cacheStub(t, &hits, &fail)
-	c := NewCache(nil, srv.URL, "")
+	c := NewCache(nil, srv.URL, FormatDeepSeek, "")
 	first := c.Read(context.Background())
 	if first.Err == nil || first.Balance != nil {
 		t.Fatalf("Read = %+v; want an error", first)
@@ -122,7 +122,7 @@ func TestCacheReportsFirstFailure(t *testing.T) {
 }
 
 func TestCacheWithoutURLNeverFetches(t *testing.T) {
-	c := NewCache(nil, "  ", "")
+	c := NewCache(nil, "  ", FormatDeepSeek, "")
 	r := c.Read(context.Background())
 	if r.Balance != nil || r.Err != nil {
 		t.Fatalf("Read = %+v; want nothing", r)

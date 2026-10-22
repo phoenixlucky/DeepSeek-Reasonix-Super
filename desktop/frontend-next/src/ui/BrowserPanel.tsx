@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { t } from "../i18n";
+import { reason } from "../i18n/kernel";
 import type { AgentPort, BrowserTab } from "../port/port";
 import { host, type BrowserControl, type BrowserLoadFailure, type BrowserRefusal } from "../port/host";
 import { SWAP_MARK } from "./swap";
@@ -169,19 +170,38 @@ export function useBrowserTabs(port: AgentPort, moved: number): BrowserTab[] {
   return tabs;
 }
 
-export function AgentBrowserPanel(props: { tabs: BrowserTab[]; shown: boolean; showTabs?: boolean }) {
+export function localFilePath(url: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return "";
+  }
+  if (parsed.protocol !== "file:" || parsed.host) return "";
+  try {
+    const path = decodeURIComponent(parsed.pathname);
+    return /^\/[A-Za-z]:\//.test(path) ? path.slice(1) : path;
+  } catch {
+    return "";
+  }
+}
+
+type OpenDocument = (path: string) => Promise<void>;
+
+export function AgentBrowserPanel(props: { tabs: BrowserTab[]; shown: boolean; showTabs?: boolean; onOpenDocument?: OpenDocument }) {
   if (host().drawsBrowserViews()) return <AgentBrowserView {...props} />;
   const current = props.tabs.find((tab) => tab.active) ?? props.tabs[0];
   return <div className="bpanel">{current && <AgentPageNote tab={current} />}</div>;
 }
 
-function AgentBrowserView({ tabs, shown, showTabs = true }: { tabs: BrowserTab[]; shown: boolean; showTabs?: boolean }) {
+function AgentBrowserView({ tabs, shown, showTabs = true, onOpenDocument }: { tabs: BrowserTab[]; shown: boolean; showTabs?: boolean; onOpenDocument?: OpenDocument }) {
   const slot = useRef<HTMLDivElement>(null);
   const [picked, setPicked] = useState("");
   const current = tabs.find((tab) => tab.target === picked) ?? tabs.find((tab) => tab.active) ?? tabs[0];
   const [address, setAddress] = useState(current?.url ?? "");
   const [failures, setFailures] = useState<Record<string, BrowserLoadFailure>>({});
   const [refused, setRefused] = useState<BrowserRefusal>("");
+  const [docFailed, setDocFailed] = useState("");
   const [frame, setFrame] = useState("");
   const target = current?.target ?? "";
   const failure = failures[target];
@@ -270,6 +290,13 @@ function AgentBrowserView({ tabs, shown, showTabs = true }: { tabs: BrowserTab[]
       .navigateBrowserView(target, to)
       .then(setRefused);
   };
+  const documentPath = onOpenDocument ? localFilePath(current?.url ?? "") : "";
+  useEffect(() => setDocFailed(""), [current?.url]);
+  const openDocument = () => {
+    if (!documentPath || !onOpenDocument) return;
+    setDocFailed("");
+    onOpenDocument(documentPath).catch((e) => setDocFailed(reason(e)));
+  };
   const go = (event: FormEvent) => {
     event.preventDefault();
     open(address);
@@ -288,11 +315,14 @@ function AgentBrowserView({ tabs, shown, showTabs = true }: { tabs: BrowserTab[]
           <button className="bbtn" data-action="browser.control" data-target={current?.id} data-value="back" aria-label={t("后退")} onClick={() => control("back")}>←</button>
           <button className="bbtn" data-action="browser.control" data-target={current?.id} data-value="forward" aria-label={t("前进")} onClick={() => control("forward")}>→</button>
           <button className="bbtn" data-action="browser.control" data-target={current?.id} data-value="reload" aria-label={t("重新加载")} onClick={() => control("reload")}>↻</button>
+          <button className="bbtn" data-action="browser.external" disabled={!documentPath && !/^https?:\/\//i.test(current?.url ?? "")} aria-label={documentPath ? t("用系统默认程序打开这个文件") : t("用默认浏览器打开此页")} title={documentPath ? t("用系统默认程序打开这个文件") : t("用默认浏览器打开此页")} onClick={() => (documentPath ? openDocument() : current && void host().openExternal(current.url))}>↗</button>
           <form className="baddr" data-action="browser.navigate" data-target={current?.id} onSubmit={go}>
             <input data-action="browser.navigate" data-target={current?.id} value={address} spellCheck={false} aria-label={t("网址")} onChange={(event) => { setAddress(event.target.value); setRefused(""); }} />
           </form>
         </div>
       </div>
+      {documentPath && <p className="studio-browser-note" data-action="browser.document-hint">{t("用系统默认程序打开这个文件，网页里的脚本会照常运行")}</p>}
+      {docFailed && <p className="studio-browser-error" role="alert">{docFailed}</p>}
       {refused && (
         <p className="studio-browser-error" role="alert">
           {refused === "network_file" ? t("不能直接打开网络共享路径。请先把文件放到本机，再输入它的本机路径。") : t("请输入有效的 http 或 https 地址")}
@@ -314,6 +344,6 @@ function AgentBrowserView({ tabs, shown, showTabs = true }: { tabs: BrowserTab[]
   );
 }
 
-export function BrowserPanel(props: ManualProps | { tabs: BrowserTab[]; shown: boolean }) {
+export function BrowserPanel(props: ManualProps | { tabs: BrowserTab[]; shown: boolean; onOpenDocument?: OpenDocument }) {
   return "tabs" in props ? <AgentBrowserPanel {...props} /> : <ManualBrowserPanel {...props} />;
 }

@@ -9,7 +9,7 @@ GOEXE := $(shell go env GOEXE)
 # One pin for the Makefile and the CI lint job; see .github/workflows/ci.yml.
 GOLANGCI_VERSION := $(shell cat .golangci-version)
 
-.PHONY: build vet fmt lint lint-go lint-install lint-cross lint-update coverage-gate coverage-gate-update pricecheck check test studio-test sdk-test sdk-test-race hooks cross clean studio
+.PHONY: build vet fmt lint lint-go lint-install lint-cross lint-update coverage-gate coverage-gate-update pricecheck acp-conformance check test studio-test sdk-test sdk-test-race hooks cross clean studio
 
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/reasonix$(GOEXE) ./cmd/reasonix
@@ -86,6 +86,13 @@ lint-cross:
 # the root cannot see it.
 test: studio-test sdk-test
 	go test ./...
+
+# Drives `reasonix acp` with the official ACP TypeScript SDK and holds every
+# message it writes to the schema that SDK ships. Needs node and network for
+# `npm ci`, which runs without install scripts against a lockfile.
+acp-conformance: build
+	cd tools/acp-conformance && npm ci --ignore-scripts --no-audit --no-fund
+	cd tools/acp-conformance && REASONIX_BIN=$(CURDIR)/bin/reasonix$(GOEXE) npm test
 
 # The shell is a nested module, so the root `test` target never reaches it.
 studio-test:

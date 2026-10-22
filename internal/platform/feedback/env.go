@@ -25,6 +25,7 @@ func CollectEnv(ctx EnvContext) Env {
 		Locale:       clamp(localeOf(ctx.Locale), 20),
 		Channel:      channelOf(provider.ClientVersion()),
 		ProviderKind: providerKind(ctx.ProviderKind),
+		Memory:       memoryRows(ctx.Shell),
 	}
 }
 

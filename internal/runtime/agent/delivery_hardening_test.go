@@ -278,7 +278,9 @@ func TestRunSubAgentSalvagesReadinessExhaustedWork(t *testing.T) {
 	}}
 	sess := sessionstore.NewSession("sys")
 	answer, err := RunSubAgentWithSession(context.Background(), prov, reg, sess,
-		"add explanations to the question bank", Options{DeliveryProfile: true, SubagentDepth: 1}, event.Discard)
+		"add explanations to the question bank", Options{DeliveryProfile: true, SubagentDepth: 1,
+			CheckTargetAccess: allowTestFileAccess,
+		}, event.Discard)
 	if err != nil {
 		t.Fatalf("readiness exhaustion with real work must salvage, got err: %v", err)
 	}
@@ -309,7 +311,9 @@ func TestFinalReadinessFailsImmediatelyWithoutRetries(t *testing.T) {
 	// The write landed; its verification and sign-off never did — a
 	// receipt-grounded readiness failure, not one inferred from the wording.
 	stalled := &scriptedProvider{name: "p", turns: [][]provider.Chunk{criteriaCall, writeCall, finalText}}
-	a := New(stalled, newReg(), sessionstore.NewSession("sys"), Options{DeliveryProfile: true}, event.Discard)
+	a := New(stalled, newReg(), sessionstore.NewSession("sys"), Options{DeliveryProfile: true,
+		CheckTargetAccess: allowTestFileAccess,
+	}, event.Discard)
 	err := a.Run(context.Background(), "fix the crash in a.go")
 	var readinessErr *FinalReadinessError
 	if !errors.As(err, &readinessErr) {
@@ -331,7 +335,9 @@ func TestFinalReadinessFailsImmediatelyWithoutRetries(t *testing.T) {
 		criteriaCall, writeCall, readCall("1"), finalText,
 		readCall("2"), finalText,
 	}}
-	a2 := New(converging, newReg(), sessionstore.NewSession("sys"), Options{DeliveryProfile: true}, event.Discard)
+	a2 := New(converging, newReg(), sessionstore.NewSession("sys"), Options{DeliveryProfile: true,
+		CheckTargetAccess: allowTestFileAccess,
+	}, event.Discard)
 	err2 := a2.Run(context.Background(), "fix the crash in a.go")
 	var readinessErr2 *FinalReadinessError
 	if !errors.As(err2, &readinessErr2) {
@@ -355,7 +361,9 @@ func TestExplicitDeliveryRecoveryPreservesEvidenceOnce(t *testing.T) {
 		{toolCallChunk("signoff", "complete_step", `{"step":"Ship main","result":"done","evidence":[{"kind":"verification","summary":"tests pass","command":"go test ./..."}]}`), {Type: provider.ChunkDone}},
 		{{Type: provider.ChunkText, Text: "delivered"}, {Type: provider.ChunkDone}},
 	}}
-	a := New(prov, reg, sessionstore.NewSession("sys"), Options{DeliveryProfile: true}, event.Discard)
+	a := New(prov, reg, sessionstore.NewSession("sys"), Options{DeliveryProfile: true,
+		CheckTargetAccess: allowTestFileAccess,
+	}, event.Discard)
 	var readinessErr *FinalReadinessError
 	if err := a.Run(context.Background(), "implement main"); !errors.As(err, &readinessErr) {
 		t.Fatalf("first Run error = %v, want FinalReadinessError", err)
@@ -385,7 +393,9 @@ func TestOrdinaryFollowUpDoesNotPreserveFailedDeliveryEvidence(t *testing.T) {
 		finalText,
 		finalText,
 	}}
-	a := New(prov, reg, sessionstore.NewSession("sys"), Options{DeliveryProfile: true}, event.Discard)
+	a := New(prov, reg, sessionstore.NewSession("sys"), Options{DeliveryProfile: true,
+		CheckTargetAccess: allowTestFileAccess,
+	}, event.Discard)
 	var firstErr *FinalReadinessError
 	if err := a.Run(context.Background(), "implement main"); !errors.As(err, &firstErr) {
 		t.Fatalf("first Run error = %v, want FinalReadinessError", err)

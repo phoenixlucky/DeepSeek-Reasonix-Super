@@ -58,7 +58,7 @@ test("HTML comments hide references on one line or across several", () => {
 
 test("annotating leaves every other byte in place", async () => {
   const dir = new URL("../release-notes/studio/", import.meta.url);
-  for (const name of await readdir(dir)) {
+  for (const name of (await readdir(dir, { recursive: true })).filter((entry) => entry.endsWith(".md"))) {
     const source = await readFile(new URL(name, dir), "utf8");
     assert.equal(annotateMarkdown(source, () => ""), source, name);
     assert.equal(annotateMarkdown(source, tag).replace(/<\d+>/g, ""), source, name);

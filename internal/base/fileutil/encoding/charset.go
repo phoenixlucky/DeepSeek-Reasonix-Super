@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"unicode/utf8"
 
 	"golang.org/x/text/encoding"
@@ -158,6 +159,9 @@ func roundTrip(e encoding.Encoding, data []byte, final bool) ([]byte, int, bool)
 			return nil, 0, false
 		}
 	} else {
+		if len(data) > (math.MaxInt-utf8.UTFMax)/3 {
+			return nil, 0, false
+		}
 		// Not at EOF, the decoder stops before an incomplete trailing sequence
 		// with ErrShortSrc; nSrc is then the prefix of whole characters. One
 		// source byte decodes to at most three.

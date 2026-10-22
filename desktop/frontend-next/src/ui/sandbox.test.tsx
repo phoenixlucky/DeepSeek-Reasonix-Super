@@ -39,6 +39,16 @@ function segment(markup: string, label: string): string {
   return "";
 }
 
+describe("how commands run on a Windows host whose sandbox is available", () => {
+  // The Windows sandbox bounds creating and overwriting, not deleting or renaming:
+  // the general sentence ("cannot write outside the list at all") would overclaim.
+  it("says what it does not bound instead of the general claim", () => {
+    const markup = draw(windows({ available: true, effectiveBash: "enforce", bash: "enforce", whyCode: undefined }));
+    expect(markup).toContain("删除或重命名清单之外的文件");
+    expect(markup).not.toContain("命令无法写入清单之外的位置。上方的可写目录清单由操作系统实施");
+  });
+});
+
 describe("how commands run", () => {
   // The reported defect: `disabled` alone is invisible here — :hover still
   // matches a disabled button, so the dead option lit up under the pointer and

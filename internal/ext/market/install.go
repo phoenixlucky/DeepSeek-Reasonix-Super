@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"reasonix/internal/ext/installsource"
 )
@@ -23,6 +24,8 @@ var (
 	// ErrBadSource: the approved row names something this side will not fetch —
 	// a local path, a plain-http address, an unknown kind.
 	ErrBadSource = errors.New("market: approved version names an uninstallable source")
+	// ErrInvalidPluginSource identifies an invalid commit-pinned GitHub directory.
+	ErrInvalidPluginSource = errors.New("market: plugin or theme source must be an HTTPS GitHub tree URL pinned to a full 40-character lowercase hexadecimal commit")
 	// ErrVersionChanged: the approved version is no longer the one the person
 	// looked at.
 	ErrVersionChanged = errors.New("market: approved version changed")
@@ -235,7 +238,7 @@ func sourceInstallable(kind, source string) error {
 	switch kind {
 	case "plugin", "theme":
 		if !commitPinned(source) {
-			return fmt.Errorf("%w: %s source %q is not pinned to a commit", ErrBadSource, kind, source)
+			return fmt.Errorf("%w: %w: %q", ErrBadSource, ErrInvalidPluginSource, source)
 		}
 	case "skill":
 		if !remoteSource(source) {
@@ -268,14 +271,24 @@ func commitPinned(s string) bool {
 		s = "https://github.com/" + rest
 	}
 	u, err := url.Parse(s)
-	if err != nil || u.Scheme != "https" || !strings.EqualFold(u.Host, "github.com") || u.User != nil || u.RawQuery != "" {
+	if err != nil || u.Scheme != "https" || !strings.EqualFold(u.Host, "github.com") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return false
 	}
-	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	return len(parts) >= 4 && parts[2] == "tree" && fullCommit.MatchString(parts[3])
+	parts := strings.Split(strings.TrimSuffix(strings.TrimPrefix(u.EscapedPath(), "/"), "/"), "/")
+	for i, encoded := range parts {
+		part, err := url.PathUnescape(encoded)
+		if err != nil || part == "" || part == "." || part == ".." || strings.ContainsAny(part, `/\`) || strings.ContainsFunc(part, func(r rune) bool {
+			return unicode.IsSpace(r) || unicode.IsControl(r)
+		}) {
+			return false
+		}
+		parts[i] = part
+	}
+	return len(parts) >= 4 && repoSegment.MatchString(parts[0]) && repoSegment.MatchString(strings.TrimSuffix(parts[1], ".git")) && parts[2] == "tree" && fullCommit.MatchString(parts[3])
 }
 
 var fullCommit = regexp.MustCompile(`^[0-9a-f]{40}$`)
+var repoSegment = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 func npmPackage(s string) bool {
 	if !installsource.LooksLikePackage(s) {

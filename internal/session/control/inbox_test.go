@@ -465,6 +465,9 @@ func TestInboxUsesFrozenImageBytesAfterWorkspaceChanges(t *testing.T) {
 		t.Fatalf("frozen image envelope = %+v err=%v", env, err)
 	}
 	frozen := env.FrozenImages[0]
+	if snap := c.InboxSnapshot(); len(snap.Items) != 1 || !snap.Items[0].Images {
+		t.Fatalf("the queue snapshot does not say the item carries a picture: %+v", snap.Items)
+	}
 	if err := os.WriteFile(imagePath, []byte("changed after enqueue"), 0o644); err != nil {
 		t.Fatal(err)
 	}

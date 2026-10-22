@@ -12,7 +12,7 @@ import (
 
 func digestRequests(reqs []provider.Request) (summarizer, carrying int) {
 	for _, req := range reqs {
-		if len(req.Messages) > 0 && strings.Contains(req.Messages[0].Content, "compacting the earlier part") {
+		if req.Summary {
 			summarizer++
 			continue
 		}
@@ -26,6 +26,11 @@ func digestRequests(reqs []provider.Request) (summarizer, carrying int) {
 	return summarizer, carrying
 }
 
+// modelSwitchFixtureChars is the first-request size this fixture is padded to:
+// from 40500 to 48000 characters it folds three times before the switch, and
+// its first request is about 27200 unpadded, so either side has room to move.
+const modelSwitchFixtureChars = 44000
+
 // A model switch rebuilds the controller on the same transcript. The projection
 // the old model earned is content, not model state: the next request must still
 // carry it, and no summarization call may be spent re-deriving it.
@@ -38,11 +43,12 @@ func TestEffectModelSwitchKeepsTheCompactionProjection(t *testing.T) {
 	provider.Register("boot-compaction-switch", func(provider.Config) (provider.Provider, error) {
 		return rec, nil
 	})
-	writeFile(t, dir, "reasonix.toml", `
+	configure := func(padding string) {
+		writeFile(t, dir, "reasonix.toml", `
 default_model = "model-a"
 
 [agent]
-system_prompt = "BASE"
+system_prompt = "BASE`+padding+`"
 compact_ratio = 0.5
 recent_keep = 2
 
@@ -50,15 +56,29 @@ recent_keep = 2
 name = "model-a"
 kind = "boot-compaction-switch"
 model = "a"
-context_window = 32000
+context_window = 32500
 
 [[providers]]
 name = "model-b"
 kind = "boot-compaction-switch"
 model = "b"
-context_window = 32000
+context_window = 32500
 `)
+	}
+	configure("")
 	approveWorkspaceAt(t, home, dir)
+	probe, err := Build(context.Background(), Options{Home: home, WorkspaceRoot: dir, Sink: event.Discard})
+	if err != nil {
+		t.Fatalf("Build probe: %v", err)
+	}
+	probe.EnsureSessionPath()
+	if err := probe.Run(context.Background(), "start the task"); err != nil {
+		t.Fatalf("Run probe: %v", err)
+	}
+	first := rec.requests()[0]
+	probe.Close()
+	rec = &compactionEffectProvider{bulk: rec.bulk}
+	configure(promptPadding(t, first, modelSwitchFixtureChars))
 
 	from, err := Build(context.Background(), Options{Home: home, WorkspaceRoot: dir, Sink: event.Discard})
 	if err != nil {
@@ -85,6 +105,9 @@ context_window = 32000
 	defer to.Close()
 	if err := ApplyRuntimeMigration(to, from, CaptureRuntimeMigration(from)); err != nil {
 		t.Fatalf("ApplyRuntimeMigration: %v", err)
+	}
+	if got := requestChars(rec.requests()[0]); got != modelSwitchFixtureChars {
+		t.Fatalf("the fixture's first request is %d characters, want %d: the padding did not reach it", got, modelSwitchFixtureChars)
 	}
 	before := len(rec.requests())
 	summBefore, _ := digestRequests(rec.requests())

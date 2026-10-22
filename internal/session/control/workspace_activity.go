@@ -24,7 +24,7 @@ var workspaceActivities = struct {
 
 // Entries live only while an operation owns or is waiting for its guard.
 func (c *Controller) workspaceActivity() (*workspaceActivity, func(), error) {
-	root := c.workspaceRepo.WorkTree
+	root := c.WorkspaceRepo().WorkTree
 	if root == "" {
 		root = c.workspaceRoot
 	}

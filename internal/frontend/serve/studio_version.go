@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"reasonix/internal/contract/config"
 	"reasonix/internal/platform/update"
 )
 
@@ -16,6 +17,9 @@ const codeNoInstall = "studio.no_install"
 
 // codePinRejected answers a pin the config layer would not take.
 const codePinRejected = "studio.pin_rejected"
+
+// codeUpdateModeInvalid answers a mode this build does not offer.
+const codeUpdateModeInvalid = "studio.update_mode_invalid"
 
 // The notes route tells three kinds of failure apart: a version that is not a
 // release is the caller's, a release with no notes is the catalog's, and a
@@ -33,6 +37,8 @@ const (
 func (h *Hub) registerStudioVersionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /studio/versions", h.readStudioVersions)
 	mux.HandleFunc("POST /studio/pin", h.pinStudioVersion)
+	mux.HandleFunc("GET /studio/update-mode", h.readUpdateMode)
+	mux.HandleFunc("POST /studio/update-mode", h.saveUpdateMode)
 	mux.HandleFunc("GET /studio/versions/{version}/notes", h.readStudioNotes)
 }
 
@@ -76,7 +82,7 @@ func (h *Hub) readStudioVersions(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusNotFound, codeNoInstall, "no Studio install was declared for this kernel", nil)
 		return
 	}
-	writeJSON(w, update.Hub(r.Context(), *h.opts.Install))
+	writeJSON(w, update.HubRefreshing(r.Context(), *h.opts.Install, r.URL.Query().Get("refresh") == "1"))
 }
 
 func (h *Hub) pinStudioVersion(w http.ResponseWriter, r *http.Request) {
@@ -98,4 +104,36 @@ func (h *Hub) pinStudioVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// readUpdateMode answers without touching the network: whether the window may
+// read the catalog in the background is decided from the user's file alone.
+func (h *Hub) readUpdateMode(w http.ResponseWriter, r *http.Request) {
+	if h.opts.Install == nil {
+		refuse(w, http.StatusNotFound, codeNoInstall, "no Studio install was declared for this kernel", nil)
+		return
+	}
+	writeJSON(w, map[string]string{"mode": update.Mode()})
+}
+
+func (h *Hub) saveUpdateMode(w http.ResponseWriter, r *http.Request) {
+	if h.opts.Install == nil {
+		refuse(w, http.StatusNotFound, codeNoInstall, "no Studio install was declared for this kernel", nil)
+		return
+	}
+	var req struct {
+		Mode string `json:"mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		badBody(w)
+		return
+	}
+	switch err := update.SetMode(req.Mode); {
+	case err == nil:
+		writeJSON(w, map[string]string{"mode": update.Mode()})
+	case errors.Is(err, config.ErrUpdateModeInvalid):
+		refuse(w, http.StatusBadRequest, codeUpdateModeInvalid, err.Error(), nil)
+	default:
+		saveFailed(w, http.StatusInternalServerError, "studio.update_mode_save_failed", err)
+	}
 }

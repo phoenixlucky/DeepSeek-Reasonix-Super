@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"unicode"
 
 	"github.com/spf13/pflag"
 
 	"reasonix/internal/base/i18n"
+	"reasonix/internal/base/rulelist"
 	"reasonix/internal/state/sessionstore"
 )
 
@@ -21,43 +21,11 @@ const resumePickerSentinel = "__reasonix_resume_picker__"
 func splitAllowedToolRules(values []string) ([]string, error) {
 	var rules []string
 	for _, value := range values {
-		start := -1
-		depth := 0
-		flush := func(end int) {
-			if start < 0 {
-				return
-			}
-			if rule := strings.TrimSpace(value[start:end]); rule != "" {
-				rules = append(rules, rule)
-			}
-			start = -1
+		got, err := rulelist.Split(value)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --allowed-tools value %q: %w", value, err)
 		}
-		for i, r := range value {
-			switch r {
-			case '(':
-				if start < 0 {
-					start = i
-				}
-				depth++
-			case ')':
-				if depth == 0 {
-					return nil, fmt.Errorf("invalid --allowed-tools value %q: unexpected ')'", value)
-				}
-				depth--
-			default:
-				if depth == 0 && (r == ',' || unicode.IsSpace(r)) {
-					flush(i)
-					continue
-				}
-				if start < 0 {
-					start = i
-				}
-			}
-		}
-		if depth != 0 {
-			return nil, fmt.Errorf("invalid --allowed-tools value %q: unclosed '('", value)
-		}
-		flush(len(value))
+		rules = append(rules, got...)
 	}
 	return uniqueStrings(rules), nil
 }

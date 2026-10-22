@@ -30,9 +30,9 @@ var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // generator emits them as JSON Schema enums.
 var enumTypes = map[reflect.Type][]string{
 	reflect.TypeFor[Direction]():         values(DirectionHostToExtensionRequest, DirectionExtensionToHostRequest, DirectionHostToExtensionNotification, DirectionExtensionToHostNotification),
-	reflect.TypeFor[OperationClass]():    values(ClassLifecycle, ClassIntercept, ClassObservation, ClassProvider, ClassUI, ClassContent),
+	reflect.TypeFor[OperationClass]():    values(ClassLifecycle, ClassIntercept, ClassObservation, ClassProvider, ClassUI, ClassContent, ClassTool, ClassSession),
 	reflect.TypeFor[InterceptEvent]():    interceptEventValues(),
-	reflect.TypeFor[InterceptDecision](): values(DecisionContinue, DecisionBlock, DecisionReplace, DecisionAllow, DecisionDeny),
+	reflect.TypeFor[InterceptDecision](): values(DecisionContinue, DecisionBlock, DecisionReplace, DecisionAllow, DecisionDeny, DecisionAsk),
 	reflect.TypeFor[UIHostKind]():        values(UIHostTUI, UIHostDesktop, UIHostACP, UIHostHeadless),
 	reflect.TypeFor[UISurfaceKind]():     values(UISurfaceStatus, UISurfaceCard, UISurfaceForm, UISurfaceNotification, UISurfacePanel, UISurfaceView),
 	reflect.TypeFor[UINodeKind]():        values(UINodeText, UINodeMarkdown, UINodeRow, UINodeStack, UINodeKV, UINodeMeter, UINodePip, UINodeButton, UINodeDivider),
@@ -44,6 +44,7 @@ var enumTypes = map[reflect.Type][]string{
 	reflect.TypeFor[ProviderChunkType](): values(ChunkText, ChunkReasoning, ChunkToolCallStart, ChunkToolCallDelta, ChunkToolCall, ChunkUsage, ChunkDone, ChunkError),
 	reflect.TypeFor[ProviderErrorCode](): values(ProviderFailed, ProviderInterrupted),
 	reflect.TypeFor[ContentEncoding]():   values(ContentUTF8),
+	reflect.TypeFor[SessionReadKind]():   values(SessionReadUsage, SessionReadMessages),
 }
 
 func init() {

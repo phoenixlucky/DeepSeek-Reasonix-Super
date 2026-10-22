@@ -2,12 +2,15 @@ package sessionstore
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"reasonix/internal/contract/provider"
+	"reasonix/internal/state/sessionv4"
 	"reasonix/internal/state/sessionv4/v4fixture"
 )
 
@@ -152,11 +155,181 @@ func TestImportV4FromCopiesAndIsIdempotent(t *testing.T) {
 	}
 	defer root.Close()
 	dest := filepath.Join(t.TempDir(), "ws")
-	if n, skipped, err := ImportV4From(root.FS(), dest, nil); n != 1 || len(skipped) != 0 || err != nil {
+	if n, skipped, err := ImportV4From(root.FS(), dest, nil, nil); n != 1 || len(skipped) != 0 || err != nil {
 		t.Fatalf("first import = %d, %v", n, err)
 	}
-	if n, skipped, err := ImportV4From(root.FS(), dest, nil); n != 0 || len(skipped) != 0 || err != nil {
+	if n, skipped, err := ImportV4From(root.FS(), dest, nil, nil); n != 0 || len(skipped) != 0 || err != nil {
 		t.Fatalf("second import = %d, %v", n, err)
 	}
 	_ = sessions
+}
+
+// writeListingCache stores the title 1.x cached for a conversation whose log
+// carries none, the way 1.x writes it, so it describes the log as it stands.
+func writeListingCache(t *testing.T, store *v4fixture.Store, dir, title string) {
+	t.Helper()
+	opened, err := sessionv4.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := map[string]any{
+		"version": 5, "codec": "reasonix.session.linear/v4", "sessionId": opened.Manifest.SessionID,
+		"createdAt": opened.Manifest.CreatedAt.UTC().Format(time.RFC3339Nano), "title": title,
+		"turns": 1, "preview": "hello", "logSize": opened.LogSize, "logModTimeNs": opened.LogModTime.UnixNano(),
+	}
+	raw, _ := json.Marshal(meta)
+	cache := filepath.Join(store.Root, ".query-cache", opened.Manifest.SessionID)
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cache, "catalog-metadata.json"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func untitledV4(t *testing.T) (*v4fixture.Store, string, string) {
+	t.Helper()
+	s := v4fixture.New(t)
+	dir := s.Session(v4TestID, 3)
+	s.Batch(dir, v4fixture.Ended,
+		v4fixture.Event{Kind: "message/complete", Payload: v4fixture.Msg("m3", "user", "hello")},
+		v4fixture.Event{Kind: "message/complete", Payload: v4fixture.Msg("m4", "assistant", "hi")},
+	)
+	sessions := filepath.Join(filepath.Dir(s.Root), "sessions")
+	if err := os.MkdirAll(sessions, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return s, dir, sessions
+}
+
+// 1.x keeps a title in its listing cache when the log never recorded one; the
+// copy carries it, as the unimported row did.
+func TestImportKeepsTheTitleOnlyTheListingCacheHolds(t *testing.T) {
+	s, dir, sessions := untitledV4(t)
+	writeListingCache(t, s, dir, "Floppy")
+	if n, _, err := ImportV4From(os.DirFS(s.Root), sessions, nil, nil); err != nil || n != 1 {
+		t.Fatalf("imported %d, err %v", n, err)
+	}
+	meta, ok, err := LoadBranchMeta(v4ImportPath(sessions, v4TestID))
+	if err != nil || !ok || meta.CustomTitle != "Floppy" {
+		t.Fatalf("meta %+v ok=%v err=%v, want the cached title", meta, ok, err)
+	}
+}
+
+// A copy an earlier import left without a title is given it by the next import;
+// a title the person set is left alone.
+func TestReimportFillsAnEmptyTitleAndKeepsAChosenOne(t *testing.T) {
+	s, dir, sessions := untitledV4(t)
+	if n, _, err := ImportV4From(os.DirFS(s.Root), sessions, nil, nil); err != nil || n != 1 {
+		t.Fatalf("imported %d, err %v", n, err)
+	}
+	path := v4ImportPath(sessions, v4TestID)
+	if meta, _, _ := LoadBranchMeta(path); meta.CustomTitle != "" {
+		t.Fatalf("setup: title %q", meta.CustomTitle)
+	}
+	writeListingCache(t, s, dir, "Floppy")
+	if n, _, err := ImportV4From(os.DirFS(s.Root), sessions, nil, nil); err != nil || n != 0 {
+		t.Fatalf("second import: %d, err %v", n, err)
+	}
+	if meta, _, _ := LoadBranchMeta(path); meta.CustomTitle != "Floppy" {
+		t.Fatalf("title %q, want it filled from the cache", meta.CustomTitle)
+	}
+	meta, _, _ := LoadBranchMeta(path)
+	meta.CustomTitle = "Mine"
+	if err := SaveBranchMeta(path, meta); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ImportV4From(os.DirFS(s.Root), sessions, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if meta, _, _ := LoadBranchMeta(path); meta.CustomTitle != "Mine" {
+		t.Fatalf("title %q, a chosen title must stay", meta.CustomTitle)
+	}
+}
+
+// A conversation 1.x had filed away keeps that mark once moved. Without this the
+// person's archived list turns into active conversations on the first launch
+// after the upgrade, and every one of them has to be put away again by hand.
+func TestImportV4FromCarriesTheArchivedMark(t *testing.T) {
+	s, _, _ := v4Project(t)
+	root, err := os.OpenRoot(s.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	dest := filepath.Join(t.TempDir(), "ws")
+
+	n, skipped, err := ImportV4From(root.FS(), dest, nil, func(string) BranchMeta {
+		return BranchMeta{Archived: true}
+	})
+	if n != 1 || len(skipped) != 0 || err != nil {
+		t.Fatalf("import = %d, %v", n, err)
+	}
+
+	meta, ok, err := LoadBranchMeta(v4ImportPath(dest, v4TestID))
+	if err != nil || !ok {
+		t.Fatalf("meta = %v, %v", ok, err)
+	}
+	if !meta.Archived {
+		t.Fatal("an archived conversation came back as an active one")
+	}
+}
+
+// A migration that names nothing keeps the default, so an install with no archive
+// list behaves exactly as before.
+func TestImportV4FromLeavesTheMarkOffWhenUnasked(t *testing.T) {
+	s, _, _ := v4Project(t)
+	root, err := os.OpenRoot(s.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	dest := filepath.Join(t.TempDir(), "ws")
+
+	if n, skipped, err := ImportV4From(root.FS(), dest, nil, nil); n != 1 || len(skipped) != 0 || err != nil {
+		t.Fatalf("import = %d, %v", n, err)
+	}
+	meta, ok, err := LoadBranchMeta(v4ImportPath(dest, v4TestID))
+	if err != nil || !ok {
+		t.Fatalf("meta = %v, %v", ok, err)
+	}
+	if meta.Archived {
+		t.Fatal("a conversation nobody archived was filed as archived")
+	}
+}
+
+// PrepareSessionPath refreshes a copy 1.x has continued since the import. That
+// refresh rebuilds the meta, so an archived conversation has to still read as
+// archived afterwards — otherwise the first continued turn brings it back to the
+// everyday list.
+func TestPrepareSessionPathKeepsTheArchivedMark(t *testing.T) {
+	s, dir, sessions := v4Project(t)
+	path := filepath.Join(sessions, "v4-"+v4TestID+".jsonl")
+
+	// Import it the way the migration does, for a conversation 1.x had archived.
+	opened, err := sessionv4.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := importV4As(path, opened, BranchMeta{Archived: true}); err != nil {
+		t.Fatal(err)
+	}
+	before, ok, err := LoadBranchMeta(path)
+	if err != nil || !ok || !before.Archived {
+		t.Fatalf("import did not archive: %+v, %v", before, err)
+	}
+
+	// 1.x continues the conversation, which is what makes the copy stale.
+	s.Batch(dir, v4fixture.Ended, v4fixture.Event{Kind: "message/complete", Payload: v4fixture.Msg("m9", "user", "continued in 1.x")})
+	if err := PrepareSessionPath(path); err != nil {
+		t.Fatal(err)
+	}
+
+	after, ok, err := LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("meta = %v, %v", ok, err)
+	}
+	if !after.Archived {
+		t.Fatal("refreshing the copy brought an archived conversation back")
+	}
 }

@@ -20,10 +20,6 @@ import (
 // FileName is where the list lives, at the top of the state root.
 const FileName = "serve-workspaces.json"
 
-// MaxPaths bounds the remembered list: it is the sidebar's tree, not a recents
-// menu, so it holds more than a dropdown would.
-const MaxPaths = 32
-
 // AdoptedSuffix marks a list that has been merged into the current one, so the
 // merge happens once.
 const AdoptedSuffix = ".adopted"
@@ -158,9 +154,6 @@ func MergeOnce(ctx context.Context, current, old string) (int, error) {
 	added := 0
 	err = Update(ctx, current, false, func(list *List) error {
 		for _, dir := range incoming.Paths {
-			if len(list.Paths) >= MaxPaths {
-				break
-			}
 			if !slices.ContainsFunc(list.Paths, func(have string) bool { return samePath(have, dir) }) {
 				list.Paths = append(list.Paths, dir)
 				added++

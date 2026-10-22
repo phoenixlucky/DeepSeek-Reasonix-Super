@@ -294,3 +294,6 @@ func grantedAuthorityEndpoints(s Spec) []string {
 	}
 	return out
 }
+
+// bwrapFault: bubblewrap is a Linux backend, so there is no such reason here.
+func bwrapFaultFor(Spec) error { return nil }

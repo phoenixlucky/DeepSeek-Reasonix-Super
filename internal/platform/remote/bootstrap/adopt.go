@@ -14,7 +14,7 @@ import (
 // never wrote one — and records it, so it is attached rather than raced. found
 // is false when nothing live is published. A live serve that cannot be driven
 // from here is an error: its files are not this connect's to clear.
-func adoptPublished(ctx context.Context, conn Conn, target remoteOS, fs *sftpfs.FS, paths StatePaths, workspace, minVersion string, held bool, clock func() time.Time) (ServeState, bool, error) {
+func adoptPublished(ctx context.Context, conn Conn, target remoteOS, fs sftpfs.Files, paths StatePaths, workspace, minVersion string, held bool, clock func() time.Time) (ServeState, bool, error) {
 	pid, err := readPIDFile(ctx, fs, paths.PidFile)
 	if err != nil || !pidIsServe(ctx, conn, target, pid, paths) {
 		return ServeState{}, false, nil
@@ -57,7 +57,7 @@ func adoptPublished(ctx context.Context, conn Conn, target remoteOS, fs *sftpfs.
 // left behind, so the next launch's port file is its own. A live holder is
 // never cleared: whoever started it published those files, and deleting them
 // is how two serves came to share one workspace.
-func clearDeadEndpoint(ctx context.Context, conn Conn, target remoteOS, fs *sftpfs.FS, paths StatePaths) error {
+func clearDeadEndpoint(ctx context.Context, conn Conn, target remoteOS, fs sftpfs.Files, paths StatePaths) error {
 	if pid, err := readPIDFile(ctx, fs, paths.PidFile); err == nil && pidIsServe(ctx, conn, target, pid, paths) {
 		return fmt.Errorf("%w: pid %d is still running", ErrServeNotAttachable, pid)
 	}

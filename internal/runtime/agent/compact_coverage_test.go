@@ -146,3 +146,25 @@ func TestCompactionDoneCarriesWhatTheDigestKept(t *testing.T) {
 		t.Fatalf("sizes = %d → %d, want a real shrink", got.SourceTokens, got.ProjectionTokens)
 	}
 }
+
+// A digest written from input the window forced shortened cannot name changes
+// it was never shown; those are restored by the backstop, not a reason to drop
+// the whole fold.
+func TestCoverageDoesNotBlameDigestForUnseenChanges(t *testing.T) {
+	region := coverageRegion()
+	shown := region[:0:0]
+	cov := measureShownCoverage(region, shown, coverageTools, "The user asked for a refactor.")
+	if cov.LostEveryChange() {
+		t.Fatalf("changes the summarizer never saw were read as forgotten: %+v", cov)
+	}
+	if len(cov.Unseen) != 2 || cov.Missing() == 0 {
+		t.Fatalf("unseen changes must still be missing so the backstop writes them: %+v", cov)
+	}
+	if got := foldCoverageBackstop(cov); !strings.Contains(got, "lexer.go") {
+		t.Errorf("backstop did not restore the unseen change: %q", got)
+	}
+	seen := measureShownCoverage(region, region, coverageTools, "The user asked for a refactor.")
+	if !seen.LostEveryChange() {
+		t.Errorf("a digest that saw every change and named none must still read as broken: %+v", seen)
+	}
+}

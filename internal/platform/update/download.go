@@ -39,6 +39,8 @@ const (
 type Report struct {
 	Bytes ProgressFunc       // fires as the artifact arrives
 	Phase func(phase string) // fires when the download moves between steps
+	// Stalled fires each time a connection that went quiet is dropped.
+	Stalled func()
 }
 
 func (r Report) phase(name string) {
@@ -106,6 +108,7 @@ func (u *Updater) DownloadManifest(ctx context.Context, m *Manifest, r Report) (
 		}
 	}
 	t := u.transport()
+	t.OnStall = r.Stalled
 	r.phase(PhaseDownloading)
 	data, err := u.fetchArtifact(ctx, t, asset, r.Bytes)
 	if err != nil {

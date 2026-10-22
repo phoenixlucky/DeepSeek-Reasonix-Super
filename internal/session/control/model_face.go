@@ -29,5 +29,9 @@ func (c *Controller) ModelFace() (ModelFace, bool) {
 	if c.modelFace == nil {
 		return ModelFace{}, false
 	}
-	return *c.modelFace, true
+	face := *c.modelFace
+	if level := c.effortSel.level.Load(); level != nil {
+		face.Effort = *level
+	}
+	return face, true
 }

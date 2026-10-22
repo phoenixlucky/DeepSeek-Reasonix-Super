@@ -192,6 +192,9 @@ type SchedulerPolicy struct {
 	// OnQueued fires with what held this run out of a slot, when something did.
 	// It may refuse, for the same reason OnStart may: the record goes first.
 	OnQueued func(agentgraph.WaitCause) error
+	// OnHeld fires after OnQueued with whose write claim held this run back, when
+	// a claim did; the scheduler is the only one that can say.
+	OnHeld func(writeclaim.Held)
 }
 
 // ResolveProfileDefinition looks up a profile and enforces the runAs=subagent

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useModalFocus } from "./useModalFocus";
 import { t } from "../i18n";
 import { host, type BrowserLogin as Ask } from "../port/host";
 import { listenAction } from "./listen";
@@ -23,6 +24,8 @@ export function BrowserLogin() {
 }
 
 function LoginCard({ ask, onAnswer }: { ask: Ask; onAnswer: (username: string, password: string) => void }) {
+  const sheet = useRef<HTMLDivElement>(null);
+  useModalFocus(sheet);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const first = useRef<HTMLInputElement>(null);
@@ -41,7 +44,7 @@ function LoginCard({ ask, onAnswer }: { ask: Ask; onAnswer: (username: string, p
   const where = ask.port ? `${ask.host}:${ask.port}` : ask.host;
   const submit = () => username && onAnswer(username, password);
   return (
-    <div className="askveil" role="dialog" aria-modal="true" aria-labelledby="blogin-t">
+    <div ref={sheet} className="askveil" role="dialog" aria-modal="true" aria-labelledby="blogin-t">
       <div className="askcard">
         <h2 id="blogin-t">{ask.proxy ? t("代理 {host} 需要登录", { host: where }) : t("{host} 需要登录", { host: where })}</h2>
         <p className="h">

@@ -158,3 +158,18 @@ func TestBroadcasterEmitDoesNotBlockOnAStalledClient(t *testing.T) {
 		t.Fatal("Emit blocked on a subscriber that never read")
 	}
 }
+
+// A child's phase transitions ride ToolProgress but nothing later restates
+// them: a client that misses the terminal one shows the child running forever.
+func TestBroadcasterKeepsSubagentStatusBehindABacklog(t *testing.T) {
+	b := NewBroadcaster()
+	ch, cancel := b.Subscribe()
+	defer cancel()
+
+	for range 500 {
+		b.Emit(event.Event{Kind: event.ToolProgress, Tool: event.Tool{ID: "c1", Name: event.SubagentProgressReasoningName, Output: "x"}})
+	}
+	b.Emit(event.Event{Kind: event.ToolProgress, Tool: event.Tool{ID: "c1", Name: event.SubagentProgressStatusName, Output: "failed"}})
+
+	read(t, ch, `"output":"failed"`)
+}

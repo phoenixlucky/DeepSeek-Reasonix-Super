@@ -298,7 +298,7 @@ export function publishPackages({
   // npm's public registry can lag a successful immutable publish by several
   // minutes. Keep this bounded, but allow enough time for normal replication
   // before recovery treats the package as missing.
-  attempts = 31,
+  attempts = 91,
   log = console.log,
 }) {
   if (!Array.isArray(packages) || packages.length === 0) {

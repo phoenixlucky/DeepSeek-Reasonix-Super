@@ -37,6 +37,10 @@ type memoryManager struct {
 	// the prefix naturally on the next session.
 	pending    []string
 	lastRecall memory.RecallResult
+	// delivered is the facts the last turn handed the model as memory context —
+	// its recall hits, plus the facts a turn-tail note carried — with the file
+	// stamp each had then. The next recall re-stats them; a moved stamp reloads.
+	delivered  []deliveredFact
 	autoWrites map[[32]byte]int
 
 	// instructions is what the model has of the standing-instruction block. It
@@ -68,16 +72,10 @@ func (m *memoryManager) owedInstructions() string {
 		return ""
 	}
 	block := memory.InstructionsBlockFor(opts)
-	if block == "" && m.instructions.sent() {
+	if block == "" && m.instructions.visible(projectInstructionsTag) {
 		block = instructionsClearedBlock
 	}
-	return m.instructions.owed(block)
-}
-
-// forgetDeliveredInstructions returns the block to the unknown state after a
-// fold has taken the turn that carried it out of the model's view.
-func (m *memoryManager) forgetDeliveredInstructions() {
-	m.instructions.forget()
+	return m.instructions.owed(projectInstructionsTag, block)
 }
 
 func (m *memoryManager) authorizeAutoRemember(args json.RawMessage) {
@@ -119,8 +117,10 @@ func (m *memoryManager) claimAutoRemember(args json.RawMessage) bool {
 }
 
 func (m *memoryManager) recall(query string) memory.RecallResult {
+	m.refreshDelivered()
 	result := m.current().AutoRecall(query, memory.RecallOptions{})
 	m.recordRecall(result)
+	m.recordDelivered(result)
 	return result
 }
 
@@ -149,6 +149,7 @@ func memoryRecallAudit(result memory.RecallResult) event.MemoryRecallAudit {
 		OmittedByLimit:  result.OmittedByLimit,
 		OmittedByBudget: result.OmittedByBudget,
 		Suppressed:      result.Suppressed,
+		SuppressionCode: string(result.SuppressionCode),
 	}
 	for _, hit := range result.Hits {
 		audit.Hits = append(audit.Hits, event.MemoryRecallHit{
@@ -183,18 +184,45 @@ func (m *memoryManager) drainPending() []string {
 }
 
 // applyWrite re-discovers memory from disk (off-lock, the expensive part) then,
-// under a brief mu, swaps the fresh snapshot in and queues the turn-tail note so a
-// later current() reflects the just-applied write. mem is the snapshot taken at
-// the start of the writeMu-serialized write and supplies the discovery roots.
-// Callers hold writeMu.
-func (m *memoryManager) applyWrite(mem *memory.Set, note string) {
+// under a brief mu, swaps the fresh snapshot in, queues the turn-tail note so a
+// later current() reflects the just-applied write, and baselines the facts that
+// note handed the model. Callers hold writeMu.
+func (m *memoryManager) applyWrite(mem *memory.Set, note string, delivered ...memory.Memory) {
 	reloaded := memory.Load(mem.LoadOptions())
+	held := make([]deliveredFact, 0, len(delivered))
+	for _, fact := range delivered {
+		held = append(held, stampFact(reloaded.Store, fact))
+	}
+	m.mu.Lock()
+	kept := m.delivered
+	m.mu.Unlock()
+	// The reload settles the disk, so re-stamp what the model holds against the
+	// snapshot just loaded and drop what is gone: a stale stamp would reload the
+	// whole store again on every later recall. See restampFact.
+	settled := make([]deliveredFact, 0, len(kept)+len(held))
+	for _, was := range kept {
+		if now, ok := restampFact(reloaded.Store, was); ok {
+			settled = append(settled, now)
+		}
+	}
 	m.mu.Lock()
 	if note != "" {
 		m.pending = append(m.pending, note)
 	}
 	m.set = reloaded
+	m.delivered = appendDelivered(settled, held)
 	m.mu.Unlock()
+}
+
+// restampFact re-reads one fact the model still holds from the store a reload
+// just built, and stamps it there. ok is false when the fact is gone from the
+// store, so the caller drops it.
+func restampFact(store memory.Store, held deliveredFact) (deliveredFact, bool) {
+	now, ok, err := store.Read(held.fact.ID)
+	if err != nil || !ok {
+		return deliveredFact{}, false
+	}
+	return stampFact(store, now), true
 }
 
 // quickAdd appends a one-line note to the doc-memory file for scope (project
@@ -249,13 +277,14 @@ func (m *memoryManager) saveMemory(fact memory.Memory) (string, error) {
 	if mem == nil {
 		return "", nil
 	}
-	path, err := mem.Store.Save(fact)
+	result, err := mem.Store.SaveWithOptions(fact, memory.SaveOptions{})
 	if err != nil {
 		return "", err
 	}
 	m.applyWrite(mem,
-		"Saved memory \""+fact.Name+"\": "+strings.Join(strings.Fields(fact.Description), " ")+"\n"+strings.TrimSpace(fact.Body))
-	return path, nil
+		"Saved memory \""+fact.Name+"\": "+strings.Join(strings.Fields(fact.Description), " ")+"\n"+strings.TrimSpace(fact.Body),
+		result.Memory)
+	return result.Path, nil
 }
 
 // forget removes a saved auto-memory by name — the panel/TUI forget action, the
@@ -278,10 +307,10 @@ func (m *memoryManager) forget(name string) error {
 	return nil
 }
 
-func (m *memoryManager) revisions(ref string) []memory.Memory {
+func (m *memoryManager) revisions(ref string) ([]memory.Memory, error) {
 	mem := m.current()
 	if mem == nil {
-		return nil
+		return nil, nil
 	}
 	return mem.Store.Revisions(ref)
 }
@@ -298,7 +327,7 @@ func (m *memoryManager) restore(ref string, revision int) (memory.Memory, error)
 		return memory.Memory{}, err
 	}
 	m.applyWrite(mem, fmt.Sprintf("Restored memory %q as revision %d: %s\n%s",
-		result.Memory.Name, result.Memory.Revision, strings.Join(strings.Fields(result.Memory.Description), " "), strings.TrimSpace(result.Memory.Body)))
+		result.Memory.Name, result.Memory.Revision, strings.Join(strings.Fields(result.Memory.Description), " "), strings.TrimSpace(result.Memory.Body)), result.Memory)
 	return result.Memory, nil
 }
 
@@ -314,19 +343,19 @@ func (m *memoryManager) restoreArchived(archivePath string) (memory.Memory, erro
 		return memory.Memory{}, err
 	}
 	m.applyWrite(mem, fmt.Sprintf("Recovered archived memory %q as revision %d: %s\n%s",
-		result.Memory.Name, result.Memory.Revision, strings.Join(strings.Fields(result.Memory.Description), " "), strings.TrimSpace(result.Memory.Body)))
+		result.Memory.Name, result.Memory.Revision, strings.Join(strings.Fields(result.Memory.Description), " "), strings.TrimSpace(result.Memory.Body)), result.Memory)
 	return result.Memory, nil
 }
 
-// queue refreshes the snapshot a memory panel reads after the model's own
-// remember/forget tool wrote (memory.Queue). It queues no turn-tail note: the
-// tool result is already in the conversation, and the reloaded snapshot lets a
-// later turn retrieve the fact. A note would say the same thing twice and
+// queue refreshes the snapshot after the model's own remember/forget tool wrote
+// (memory.Queue) and records the typed facts it wrote as delivered, so the next
+// recall re-checks their own files. It queues no turn-tail note: the tool result
+// is already in the conversation, and a note would say the same thing twice and
 // suppress the retrieval that says it better.
-func (m *memoryManager) queue(string) {
+func (m *memoryManager) queue(_ string, delivered ...memory.Memory) {
 	m.writeMu.Lock()
 	defer m.writeMu.Unlock()
 	if mem := m.current(); mem != nil {
-		m.applyWrite(mem, "")
+		m.applyWrite(mem, "", delivered...)
 	}
 }

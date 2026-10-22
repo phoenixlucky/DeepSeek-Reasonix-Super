@@ -235,7 +235,7 @@ func TestTokenizerVersionMismatchClearsMixedProjection(t *testing.T) {
 	if err := catalog.ReconcileRoot(ctx, Root{Path: root, Source: "project", Scope: "project", WorkspaceRoot: root}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := catalog.db.Exec(`UPDATE history_state SET tokenizer_version=?`, TokenizerVersion+1); err != nil {
+	if _, err := catalog.db.Exec(`UPDATE history_state SET tokenizer_version=?`, TokenizerVersion-1); err != nil {
 		t.Fatal(err)
 	}
 	if err := catalog.Close(ctx); err != nil {

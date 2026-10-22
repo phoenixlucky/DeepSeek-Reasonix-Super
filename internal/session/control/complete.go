@@ -19,6 +19,7 @@ const (
 	CompleteSlash    = "slash"     // the command word, while the line is a bare "/word"
 	CompleteSlashArg = "slash-arg" // a structured argument of a slash command
 	CompleteRef      = "ref"       // an @-reference: a path or an MCP resource
+	CompleteSession  = "session"   // a #-word: a past conversation of this workspace
 )
 
 const (
@@ -60,6 +61,19 @@ type CompletionData struct {
 	// never offered a path the turn would then refuse.
 	Scoped    bool
 	Resources []plugin.Resource
+	// Sessions are the past conversations a #-word may name; read only when the
+	// cursor is in one.
+	Sessions []SessionOption
+}
+
+// CompletionNeedsArgData says whether completing line reads anything beyond the
+// command catalogue: an @-reference under the cursor, or the arguments after a
+// command name. It follows the branches of Complete.
+func CompletionNeedsArgData(line string, cursor int) bool {
+	if _, _, _, ok := ActiveRefToken(line, cursor); ok {
+		return true
+	}
+	return strings.HasPrefix(line, "/") && strings.ContainsAny(line, " \t\n")
 }
 
 // Complete is the single source of the composer's completion grammar: which
@@ -72,6 +86,11 @@ func Complete(line string, cursor int, d CompletionData) Completion {
 		if items := dropTyped(d.refItems(query), line[from:to]); len(items) > 0 {
 			_, frag := SplitPathToken(query)
 			return Completion{Kind: CompleteRef, From: from, To: to, Query: UnescapeRefPath(frag), Items: items}
+		}
+	}
+	if from, to, query, ok := ActiveSessionToken(line, cursor); ok {
+		if items := SessionRefItems(d.Sessions, query); len(items) > 0 {
+			return Completion{Kind: CompleteSession, From: from, To: to, Query: query, Items: items}
 		}
 	}
 	if !strings.HasPrefix(line, "/") {

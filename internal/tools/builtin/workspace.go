@@ -81,20 +81,22 @@ func (w Workspace) Tools(enabled ...string) []tool.Tool {
 	}
 
 	overrides := map[string]tool.Tool{
-		"read_file":     readFile{workDir: w.Dir, netRoots: netRoots, readRoots: readRoots, paths: w.ReadPaths, forbidRoots: forbidRoots, overlay: w.FileOverlay},
-		"write_file":    writeFile{workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig, sessionTemp: w.SessionTemp, overlay: w.FileOverlay, receipt: w.FileWriteReceipt},
-		"edit_file":     editFile{workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig, sessionTemp: w.SessionTemp, overlay: w.FileOverlay},
-		"multi_edit":    multiEdit{workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig, sessionTemp: w.SessionTemp, overlay: w.FileOverlay},
-		"move_file":     moveFile{workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig, sessionTemp: w.SessionTemp},
-		"notebook_edit": notebookEdit{workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig, sessionTemp: w.SessionTemp, overlay: w.FileOverlay},
-		"delete_range":  deleteRange{workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig, sessionTemp: w.SessionTemp, overlay: w.FileOverlay},
-		"delete_symbol": deleteSymbol{workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig, sessionTemp: w.SessionTemp, overlay: w.FileOverlay},
-		"code_index":    codeIndex{workDir: w.Dir, netRoots: netRoots, readRoots: readRoots, forbidRoots: forbidRoots},
-		"bash":          bash{workDir: w.Dir, sb: w.Bash, timeout: w.BashTimeout, guard: w.SessionGuard, terminal: w.Terminal, sessionTemp: w.SessionTemp, paths: w.ReadPaths},
-		"ls":            listDir{workDir: w.Dir, netRoots: netRoots, readRoots: readRoots, paths: w.ReadPaths, forbidRoots: forbidRoots},
-		"glob":          globTool{workDir: w.Dir, netRoots: netRoots, readRoots: readRoots, paths: w.ReadPaths, forbidRoots: forbidRoots},
-		"grep":          grepTool{workDir: w.Dir, netRoots: netRoots, readRoots: readRoots, paths: w.ReadPaths, rg: w.Search.RgPath, forbidRoots: forbidRoots, sb: w.Bash, sessionTemp: w.SessionTemp},
-		"web_fetch":     webFetch{proxySpec: w.ProxySpec},
+		"read_file":        readFile{workDir: w.Dir, netRoots: netRoots, readRoots: readRoots, paths: w.ReadPaths, forbidRoots: forbidRoots, overlay: w.FileOverlay},
+		"write_file":       writeFile{workDir: w.Dir, roots: roots, readRoots: readRoots, forbidRoots: forbidRoots, guard: w.SessionGuard, managed: w.ManagedConfig, sessionTemp: w.SessionTemp, overlay: w.FileOverlay, receipt: w.FileWriteReceipt},
+		"edit_file":        editFile{readPolicy: editReadPolicy{readRoots: readRoots, forbidRoots: forbidRoots}, workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig, sessionTemp: w.SessionTemp, overlay: w.FileOverlay},
+		"multi_edit":       multiEdit{readPolicy: editReadPolicy{readRoots: readRoots, forbidRoots: forbidRoots}, workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig, sessionTemp: w.SessionTemp, overlay: w.FileOverlay},
+		"move_file":        moveFile{workDir: w.Dir, roots: roots, readRoots: readRoots, forbidRoots: forbidRoots, guard: w.SessionGuard, managed: w.ManagedConfig, sessionTemp: w.SessionTemp},
+		"notebook_edit":    notebookEdit{readPolicy: editReadPolicy{readRoots: readRoots, forbidRoots: forbidRoots}, workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig, sessionTemp: w.SessionTemp, overlay: w.FileOverlay},
+		"delete_range":     deleteRange{readPolicy: editReadPolicy{readRoots: readRoots, forbidRoots: forbidRoots}, workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig, sessionTemp: w.SessionTemp, overlay: w.FileOverlay},
+		"delete_symbol":    deleteSymbol{readPolicy: editReadPolicy{readRoots: readRoots, forbidRoots: forbidRoots}, workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig, sessionTemp: w.SessionTemp, overlay: w.FileOverlay},
+		"code_index":       codeIndex{workDir: w.Dir, netRoots: netRoots, readRoots: readRoots, forbidRoots: forbidRoots},
+		"bash":             bash{workDir: w.Dir, sb: w.Bash, timeout: w.BashTimeout, guard: w.SessionGuard, terminal: w.Terminal, sessionTemp: w.SessionTemp, paths: w.ReadPaths},
+		"ls":               listDir{workDir: w.Dir, netRoots: netRoots, readRoots: readRoots, paths: w.ReadPaths, forbidRoots: forbidRoots},
+		"glob":             globTool{workDir: w.Dir, netRoots: netRoots, readRoots: readRoots, paths: w.ReadPaths, forbidRoots: forbidRoots},
+		"grep":             grepTool{workDir: w.Dir, netRoots: netRoots, readRoots: readRoots, paths: w.ReadPaths, rg: w.Search.RgPath, forbidRoots: forbidRoots, sb: w.Bash, sessionTemp: w.SessionTemp},
+		"read_video":       readVideo{workDir: w.Dir, netRoots: netRoots, readRoots: readRoots, paths: w.ReadPaths, forbidRoots: forbidRoots, sb: w.Bash},
+		"web_fetch":        webFetch{proxySpec: w.ProxySpec},
+		"import_web_image": webImage{workDir: w.Dir, roots: roots, guard: w.SessionGuard, proxySpec: w.ProxySpec, receipt: w.FileWriteReceipt},
 	}
 	all := tool.Builtins()
 	if len(enabled) == 0 {

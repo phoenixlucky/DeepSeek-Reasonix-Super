@@ -17,7 +17,6 @@ import (
 	fileencoding "reasonix/internal/base/fileutil/encoding"
 	"reasonix/internal/contract/ablation"
 	"reasonix/internal/contract/config"
-	"reasonix/internal/session/control"
 )
 
 type task struct {
@@ -121,7 +120,8 @@ type sourceUsage struct {
 type result struct {
 	task
 	runMetrics
-	Profile string `json:"profile"`
+	SFT     *sftProvenance `json:"sft,omitempty"`
+	Profile string         `json:"profile"`
 	// Arm is the ablation arm the harness requested, not the arm the child
 	// reported, so a run that died before writing metrics is still attributable.
 	Arm            string `json:"arm"`
@@ -272,7 +272,7 @@ func main() {
 	ablateFlag := flag.String("ablate", "", "ablation arm: subsystems to switch off ("+ablation.ModuleList()+"; none|all)")
 	foldIndexFlag := flag.String("fold-index", "", "fold-index arm: how much of the model-visible address list to keep (default|half|quarter|off)")
 	outMD := flag.String("out", "", "write the markdown report here (default: stdout)")
-	trajDir := flag.String("trajectories", "", "suite mode: write one <task-id>.trajectory.jsonl per task into this directory")
+	trajDir := flag.String("trajectories", "", "suite mode: write one <task-id>.trajectory.jsonl per task into this directory (<task-id>.trial-N.trajectory.jsonl per trial under -trials)")
 	forcePlanner := flag.Bool("force-planner", false, "suite mode: prefix each prompt with a plan-first directive so the two-model turn engages regardless of the planner gate")
 	anchorFlag := flag.String("anchor", anchorBlind, "suite mode: hypothesis arm — blind (no hypothesis) | correct | wrong; correct/wrong prefix each prompt with the task's authored seed and skip tasks that have none")
 	outJSON := flag.String("json", "", "write the JSON report here (optional)")
@@ -518,15 +518,10 @@ func runSuite(cfg suiteConfig, tasks []task) []result {
 // then drops in verify.sh and runs it as the grader. The grader is added only
 // after the run so the agent can't read the answer key.
 func runTask(cfg suiteConfig, t task) result {
-	r := result{task: t, Profile: cfg.profile, CacheArm: cfg.cacheArm, Effort: cfg.effort, ReplyLanguage: cfg.replyLanguage}
-	r.Arm = cfg.arm.Arm()
-	r.Anchor = cfg.anchor
-	t.Prompt = anchorPrompt(cfg.anchor, t)
-	if cfg.forcePlanner {
-		// The host's own routing marker, so the two-model turn engages without
-		// putting an English sentence in front of every prompt.
-		t.Prompt = control.PlannerRouteMarker + "\n\n" + t.Prompt
-		r.PlanForced = true
+	t, r, err := prepareRunTask(cfg, t)
+	if err != nil {
+		r.Note = "SFT provenance: " + err.Error()
+		return r
 	}
 
 	// The per-leg file names are decided in runSegments; only the directory has
@@ -590,10 +585,11 @@ func runTask(cfg suiteConfig, t task) result {
 	}
 
 	mtr.record(&r)
-	if trajPath = lastSegmentTrajectory(runTrajDir, t.ID, r.Segments); trajPath != "" {
+	stem := trajectoryStem(t.ID, cfg.trial, cfg.trials)
+	if trajPath = lastSegmentTrajectory(runTrajDir, stem, r.Segments); trajPath != "" {
 		recordTaskTrajectory(&r, trajPath, t)
 	}
-	if !auditAnswerRun(&r, runTrajDir, t) {
+	if !auditAnswerRun(&r, runTrajDir, stem, t) {
 		return r
 	}
 	// A killed child never writes metrics, so the deadline is the only place

@@ -3,25 +3,27 @@ import { t } from "../i18n";
 import type { Protocol, ProviderCheck, ProviderEntry } from "../port/port";
 import { checkedFact, clearModelCheckFacts, ModelChoice, type ModelFact } from "./ModelChoice";
 import type { Port } from "./Providers";
-import { SAVED_NOT_APPLIED, reason, say } from "../i18n/kernel";
+import { savedNotApplied, reason, say } from "../i18n/kernel";
 import { checkFailure } from "./provider_check";
-import { HttpError } from "../port/port";
 import { IDLE_TIMEOUT_MAX, IDLE_TIMEOUT_MIN, THINKING, headerLines, parseEffortLevels, parseExtraBody, parseHeaders, parseIdleTimeout } from "./provider_compat";
 import { ModelEfforts } from "./ModelEfforts";
 import { EffortShape } from "./EffortShape";
 import type { ModelEffort, ModelLimit, ProviderEdit } from "../port/port";
 import { KIND_LABEL } from "./vendors";
 import { ModelLimits, limitTextOf, limitsToSend, type LimitText } from "./ModelLimits";
+import { ModelPrices, incomplete, priceTextOf, pricesToSend, sourceBad, type PriceText } from "./ModelPrices";
 import { useModelBatch } from "./useModelBatch";
+import { EndpointSwitches, hasEndpointSwitches } from "./EndpointSwitches";
+import { BalanceFields } from "./BalanceFields";
 
 // Only what this form owns is sent: the entry keeps its prices, effort
 // vocabularies and everything else the panel cannot show.
 // declare opens the form on the reasoning fields: the composer sends a user
 // here when the endpoint reported no effort levels.
 export function EditConn({
-  entry, wireFixed = false, initialCheck, port, busy, setBusy, onDone, onRevert, onSaved, onDirty, declare = false, justSaved = false,
+  entry, label = entry.name, wireFixed = false, initialCheck, port, busy, setBusy, onDone, onRevert, onSaved, onDirty, declare = false, justSaved = false,
 }: {
-  entry: ProviderEntry; wireFixed?: boolean; initialCheck?: ProviderCheck; port: Port;
+  entry: ProviderEntry; label?: string; wireFixed?: boolean; initialCheck?: ProviderCheck; port: Port;
   busy: string; setBusy: (b: string) => void; onDone: () => void | Promise<void>; onRevert: () => void; onSaved?: () => void; onDirty?: (dirty: boolean) => void;
   declare?: boolean; justSaved?: boolean;
 }) {
@@ -61,7 +63,16 @@ export function EditConn({
   const [limitText, setLimitText] = useState<Record<string, LimitText>>(
     () => Object.fromEntries(Object.entries(entry.modelLimits ?? {}).map(([m, l]) => [m, limitTextOf(l)])),
   );
+  const [priceText, setPriceText] = useState<Record<string, PriceText>>(
+    () => Object.fromEntries(Object.entries(entry.modelPrices ?? {}).map(([m, r]) => [m, priceTextOf(r)])),
+  );
+  const [balUrl, setBalUrl] = useState(entry.balanceUrl ?? "");
+  const [balFormat, setBalFormat] = useState(entry.balanceFormat ?? "");
   const [think, setThink] = useState(entry.reasoningProtocol ?? "");
+  const [search, setSearch] = useState(entry.webSearch ?? false);
+  const [carry, setCarry] = useState(entry.continuation ?? "");
+  // These belong to the stored wire; a draft that retypes it carries none of them.
+  const wireSwitches = kind === entry.kind;
   // Until saved, the thinking field follows the wire being picked: the stored
   // entry's field belongs to the stored wire.
   const draftWire = wires.find((w) => w.kind === kind);
@@ -108,18 +119,16 @@ export function EditConn({
 
   // Re-asking the endpoint is how a source that gained models catches up; the
   // ticks the user already made survive it.
-  // A blank key field means "keep the stored one", so re-probing has to go
-  // through the saved source. Sending the empty field instead probes as a
-  // provider with no credential at all, which fails before it reaches the host.
+  // A blank key field means "keep the stored one", so the kernel is asked
+  // through the saved source with the form's address, key and protocol laid
+  // over it: what is being edited is what gets tested.
   const refetch = async () => {
     setBusy(`refresh:${entry.name}`);
     setErr(null);
     setRefreshFail("");
     setDiff(null);
     try {
-      const refreshed = apiKey.trim()
-        ? await port.probeProvider(baseUrl.trim(), apiKey.trim())
-        : await port.checkProvider(entry.name);
+      const refreshed = await port.checkProvider(entry.name, { baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), kind });
       if ("ok" in refreshed && !refreshed.ok) {
         setRefreshFail(checkFailure(refreshed));
         return;
@@ -207,6 +216,10 @@ export function EditConn({
     };
   };
 
+  const thinkingShape = (className: string) => (
+    <EffortShape field={think === (entry.reasoningProtocol ?? "") || kind !== entry.kind ? effortField : undefined} level={levels[0]} className={className} />
+  );
+
   const draft = (): ProviderEdit => ({
     name: entry.name,
     ...(kind !== entry.kind && { kind }),
@@ -219,11 +232,16 @@ export function EditConn({
     contextWindow: Number(win.replace(/\D/g, "")) || 0,
     maxOutputTokens: Number(maxOut.replace(/\D/g, "")) || 0,
     idleTimeoutSeconds: idle.ok ? idle.secs : 0,
+    ...(balUrl.trim() !== (entry.balanceUrl ?? "") && { balanceUrl: balUrl.trim() }),
+    ...(balFormat !== (entry.balanceFormat ?? "") && { balanceFormat: balFormat }),
     reasoningProtocol: think,
+    ...(wireSwitches && entry.canWebSearch && search !== (entry.webSearch ?? false) && { webSearch: search }),
+    ...(wireSwitches && entry.canSetContinuation && carry !== (entry.continuation ?? "") && { continuation: carry }),
     supportedEfforts: levels,
     defaultEffort: levels.includes(defEffort) ? defEffort : "",
     modelEfforts: Object.fromEntries(picked.filter((m) => ownEfforts[m]).map((m) => [m, ownEfforts[m]])),
     modelLimits: limitsToSend(picked, limitText, entry.modelLimits ?? {}),
+    modelPrices: pricesToSend(picked, priceText, entry.modelPrices ?? {}),
     headers: parseHeaders(heads),
     extraBody: parseExtraBody(extra) ?? {},
   });
@@ -250,7 +268,7 @@ export function EditConn({
   const [edited, setEdited] = useState(false);
   if (dirty && !edited) setEdited(true);
 
-  const canSave = (dirty || err?.kind === "unapplied") && busy === "" && !testing && picked.length > 0 && !extraBad && idle.ok;
+  const canSave = (dirty || err?.kind === "unapplied") && busy === "" && !testing && picked.length > 0 && !extraBad && idle.ok && !picked.some((m) => incomplete(priceText[m]) || sourceBad(priceText[m]));
   const phase: Phase = saving ? "saving"
     : err?.kind === "save" && dirty ? "failed"
       : dirty ? "dirty"
@@ -265,7 +283,7 @@ export function EditConn({
       await port.editProvider(draft());
       await onDone();
     } catch (e) {
-      const unapplied = e instanceof HttpError && SAVED_NOT_APPLIED.includes(e.reason?.code ?? "");
+      const unapplied = savedNotApplied(e);
       setErr({ text: reason(e), kind: unapplied ? "unapplied" : "save" });
       // Saved but not yet applied: the list has to show what is on file while
       // the form stays open to say why.
@@ -337,6 +355,8 @@ export function EditConn({
         {(picked.length > 1 || picked.some((m) => entry.modelLimits?.[m])) && (
           <ModelLimits models={picked} value={limitText} onChange={setLimitText} inherited={inheritedLimitsFor} />
         )}
+        {picked.length > 0 && <ModelPrices models={picked} value={priceText} onChange={setPriceText} official={entry.officialPricing === true} stored={entry.modelPrices ?? {}}
+          onOpenSource={(url) => void Promise.resolve(port.openExternal(url)).catch(() => {})} />}
       </div>
 
       <div className="mlist">
@@ -395,6 +415,14 @@ export function EditConn({
       {/* Folded, and worth folding: no probe can answer these, and most
           endpoints need none of them. The fold names its contents, because a
           relay's effort levels are declared nowhere else. */}
+      {wireSwitches && hasEndpointSwitches(entry) && (
+        <EndpointSwitches
+          entry={entry} label={label} disabled={saving} shape={thinkingShape("why")}
+          search={search} sendsThinking={think !== "none"} continuation={carry}
+          onSearch={setSearch} onThinking={(send) => setThink(send ? (think === "none" ? (entry.reasoningProtocol === "none" ? "" : entry.reasoningProtocol ?? "") : think) : "none")} onContinuation={setCarry}
+        />
+      )}
+
       <details className="addp-options" open={more} onToggle={(e) => setMore(e.currentTarget.open)}>
         <summary data-action="provider.draft" data-value="compat">
           <span className="tx">
@@ -419,7 +447,7 @@ export function EditConn({
               <i className="tip">
                 {t("端点控制思考深度的方式。此项无法自动探测：中转站转发的是第三方模型，只有你知道其后端。选择后才能调整推理强度，选择错误会导致请求被端点拒绝。")}
               </i>
-              <EffortShape field={think === (entry.reasoningProtocol ?? "") || kind !== entry.kind ? effortField : undefined} level={levels[0]} />
+              {!(wireSwitches && entry.canSetThinking) && thinkingShape("tip")}
             </label>
             <label className="grow">
               <span>{t("推理档位")}</span>
@@ -478,6 +506,7 @@ export function EditConn({
                 {t("等待响应头、以及回包过程中无新内容超过这个时间，就按连接中断处理并重试。本地模型处理长上下文时可能需要调大。")}
               </i>
             </label>
+            <BalanceFields entry={entry} url={balUrl} format={balFormat} onUrl={setBalUrl} onFormat={setBalFormat} />
             {!idle.ok && <div className="why">{t("须是 {min} 到 {max} 之间的整数秒；留空使用默认值。", { min: IDLE_TIMEOUT_MIN, max: IDLE_TIMEOUT_MAX })}</div>}
             <label className="grow full">
               <span>{t("额外请求头")}</span>

@@ -30,6 +30,8 @@
 - [Embedded documentation retrieval](#embedded-documentation-retrieval)
 - [@ references](#-references)
 - [Two-model collaboration](#two-model-collaboration)
+- [Letting the model change a setting](#letting-the-model-change-a-setting)
+- [Google Gemini, native (experimental)](#google-gemini-native-experimental)
 
 ## Configuration
 
@@ -67,10 +69,20 @@ reasoning_language = "auto"      # visible reasoning text: auto|zh|en
 # planner_model = "deepseek-pro"      # optional low-frequency planner
 # subagent_model = "deepseek-pro"     # optional default for runAs=subagent skills
 # subagent_models = { review = "deepseek-pro", security_review = "deepseek-pro" }
-# max_subagent_depth = 2              # nested delegation depth; set 1 for the old single-layer boundary
-# max_subagent_concurrency = 6        # session-wide sub-agent concurrency (task/fleet/skills)
-# max_parallel_writers = 3            # concurrent writers with non-overlapping write_paths
-# write_lease = "optimistic"          # user file only; a writer that declares no path (bash, MCP) stops holding the whole workspace against other sessions; default strict
+# max_subagent_depth = 8              # nested delegation depth; a named stop against runaway recursion, 0 removes it; set 1 for the single-layer boundary (user config only)
+# max_subagent_concurrency = 0        # session-wide sub-agent concurrency (task/fleet/skills); 0 = no limit (user config only)
+# max_parallel_writers = 0            # concurrent writers with non-overlapping write_paths; 0 = no limit, write claims keep writers apart (user config only)
+# max_side_sessions = 0              # side conversations open at once; 0 = no limit (user config only)
+# max_provider_retries = 10          # retries of a failed provider connection before the turn stops; 0 = keep trying until cancelled (user config only)
+# max_queued_inputs = 0              # prompts waiting in a session's queue; 0 = no limit, the queue's byte limits still apply (user config only)
+# max_subagent_steer_bytes = 16384    # bytes in one message of guidance to a running sub-agent, which keeps one message from filling its context; 0 = no limit (user config only)
+# max_subagent_steers_per_minute = 30  # messages of guidance per minute to one running sub-agent, a stop for a loop; 0 = no limit (user config only)
+# write_lease = "optimistic"          # user file only; a writer that declares no path (bash, MCP) stops holding the whole workspace
+# write_lease_max_wait_minutes = 0    # minutes a write waits behind another session's claim before it fails with workspace.claim_timeout; 0 (default) = wait as long as the turn lasts, 120 is a sensible limit (user config only)
+# subagent_claims = "optimistic"      # user file only; a sub-agent that declares no write_paths holds only the path it is writing, not the whole workspace against other sessions; default strict
+# plan_approval = "auto"             # user file only; a submitted plan starts executing without the approval click, and the transcript says so; default ask
+# default_mode = "plan"              # user file only; a new conversation starts in plan mode (a resumed one keeps its own; Settings has a switch); default normal
+# host_verification = "off"          # user file only; the host stops holding a turn that changed files to a check, a review and a sign-off; the receipt still says what was checked; default on
 # compact_ratio = 0.85             # sole auto trigger; presets 0.70 / 0.80 / 0.85
 # max_output_tokens = 0            # recommended: automatic (DeepSeek default high → ~64K; not unlimited)
 # max_output_tokens = 32768        # ordinary coding / cost control
@@ -90,9 +102,13 @@ web_search  = true
 
 [tools]
 enabled = []   # omit/empty = all built-ins
+# disabled = ["web_fetch", "ask"]   # removed from every request by name, framework and MCP tools included; a call to one is refused with the reason; a tool the host itself reads (todo_write, complete_step, await_user, conclude_blocked, update_goal, use_capability) stays on and a warning says which; a project file can only add names, and Settings lists those as turned off by the project; Settings has a switch per tool; applies to conversations opened afterwards
 bash_timeout_seconds = 120   # foreground safety cap; set 0 for no tool-local cap
 protect_changed_files = true   # refuse a whole-file write over a change made since the agent last read or wrote the file
 browser_tools = true   # built-in browser tools; the browser starts on first use
+# mcp_resources = true  # user file only; a read_mcp_resource tool for resources a connected MCP server lists or builds from its declared templates (a {+x} template is wide: read the full address on the card before approving); asks first; default off
+# web_search_backends = ["searxng"]  # user file only; ordered chain for web_search
+# searxng_url = "http://localhost:8888"  # your own SearXNG instance
 mcp_startup_timeout_seconds = 30   # background initialize + tools/list safety cap
 mcp_call_timeout_seconds = 300   # default MCP call safety cap; per-plugin/tool overrides may raise it
 
@@ -129,12 +145,29 @@ allow = ["Bash(go test:*)"]                  # never prompted
 # workspace_root = ""          # file-writers confined here; empty = current dir
 # allow_write    = ["/tmp"]    # extra dirs write_file/edit_file/multi_edit/move_file may touch
 # forbid_read    = ["${HOME}/.ssh"]   # paths the agent must not read or list
+# allow_devices  = ["/dev/nvidia*"]   # host device nodes bound into the Linux bash sandbox (user config only)
+# egress_unlisted = "allow"    # unattended long tasks (user config only): hosts outside allowed_domains pass without asking, said once each; denied_domains still refuse
+
+[peers]
+# enabled = false              # your sessions on this machine can message each other; every message waits for that session's user to approve it; also a switch in Settings, applied at the next turn (user config only)
+# dispatch = false             # the model may hand a task to a session in another of your projects, via dispatch_to_project; needs enabled; turning it on is your consent for those sessions' tasks and replies, no card; the opened session keeps the sender's model, preset, approval mode and planning, so a YOLO sender opens a YOLO session that answers the target project's ask rules too (deny rules still hold) (user config only)
+# max_dispatch_depth = 1       # how many sessions deep a dispatch may chain; 0 removes the ceiling (user config only)
+# max_dispatched_sessions = 8  # sessions one session may keep open from its dispatches; 0 removes the ceiling (user config only)
+# release_projects = []        # projects that take messages from your other sessions without the card; their own approvals and sandbox still apply; they start over a pause the host set itself (session switch, unreadable @ reference, reopen) but never over one you pressed (user config only)
+
+[mods]
+# enabled = false              # run the hooks module of installed Claude Code mods; full trust, no sandbox (user config only)
+# hook_budget_ms = 0           # one hook's own running time in milliseconds; 0 keeps 10000 (user config only)
 
 [serve]
 # auth_mode = "token"          # token (default)|password|none; none still requires the launch token for changes
 # token = ""                   # optional fixed token; empty token mode generates one at startup
 # password_hash = ""           # bcrypt hash generated with reasonix serve --hash-password --password '...'
 # behind_proxy = false         # true only behind a trusted reverse proxy
+
+[desktop]
+# max_workspaces = 0           # most projects the sidebar remembers; 0 = no limit (user config only)
+# session_ref_tokens = 8000     # most tokens one referenced past conversation (@session:<id>) adds to a message; 500..200000
 
 [[plugins]]
 name    = "example"
@@ -223,6 +256,44 @@ uploads nothing; it asks again the next time.
 Reasonix never uploads prompts, answers, reasoning, tool names/arguments/output,
 paths, repositories/branches, session IDs, exact token or cost values,
 Provider/model names, base URLs, or environment variables.
+
+### Trace export (OpenTelemetry)
+
+Reasonix can hand each turn to your own observability stack as OpenTelemetry
+GenAI traces. It is off, and nothing leaves the machine, until your user config
+switches it on and names a collector:
+
+```toml
+[observability.otlp]
+enabled = true
+endpoint = "http://localhost:4318"   # OTLP/HTTP; /v1/traces is appended
+header_name = "Authorization"        # optional: the header carrying a credential
+header_env = "OTEL_EXPORTER_AUTH"    # the variable holding its value, never the value
+service_name = "reasonix"            # optional
+```
+
+- **What is sent.** One trace per turn: an `invoke_agent` span, a `chat` span per
+  model attempt (provider, model, token counts, finish reason), and an
+  `execute_tool` span per tool call (tool name, failure class), nested under the
+  tool that delegated the work.
+- **What is never sent.** Prompts, answers, tool arguments and results, file
+  paths and error text. Spans are built from typed event fields through one fixed
+  attribute set, and a name that does not look like a name is sent as `unknown`.
+- **Who decides.** Only your user config. A repository's `reasonix.toml` cannot
+  switch it on or move it; the ignored key is reported at load.
+- **Credentials.** `header_env` must be an `OTEL_*` or `REASONIX_OTEL_*` variable, so no
+  setting can read an unrelated secret. A credential is refused over plain `http`
+  to any host but loopback, the endpoint may not contain user info, and redirects
+  are not followed.
+- **Failure.** Export never blocks a turn: a slow or dead collector drops spans
+  from a bounded queue.
+- **Stability.** The upstream conventions are marked Development (read
+  2026-10-18); every payload carries `reasonix.semconv_experimental = true` and
+  attribute names can change. Not run against a real backend: built against the
+  OTLP/HTTP JSON encoding and tested with a local collector.
+
+Studio has the same switches under Settings, Network. A save reaches sessions
+opened afterwards.
 
 ### CLI crash reports
 
@@ -349,6 +420,10 @@ startup, capability negotiation, session lifecycle, independent model/work/
 collaboration/approval controls, client filesystem and terminal capabilities,
 MCP servers, permission requests, and the Reasonix mid-turn steering extension.
 
+## Using Reasonix from DeepSeek Harness
+
+DeepSeek Harness (`dsh`) can delegate a task to Reasonix as a subagent over ACP, with configuration only. [Using Reasonix from DeepSeek Harness](./DSH.md) covers the install through DSH's plugin market or by hand, switching the plugin on, the permission policy and the limits.
+
 ## Remote SSH
 
 The remote module runs Reasonix on a remote host and reaches it over your own
@@ -368,6 +443,24 @@ follow the provider idiom: the host names an env var (`passphrase_env`,
 `password_env`) whose value lives in Reasonix's global `.env`; key material
 itself is never stored — `identity_file` is a path.
 
+Studio uses that host's explicit `workspace` as the default for host-level reads
+and opens that omit a workspace.
+
+Only when it is unset does the first nonempty
+`workspaces` entry supply the default; with neither set, the attach receives an
+empty workspace. An explicit open path takes precedence.
+
+Reordering other
+entries cannot override a declared `workspace`. These values come only from the
+user's host configuration, and disabled hosts are refused before any link reuse.
+
+The active SSH project's secondary line shows its actual connection directory,
+including isolated worktrees. Its project menu shows the default connection
+directory used by Refresh; these can differ. Settings' default action explicitly
+chooses a new default.
+
+A host-level read never borrows an unrelated pane's path.
+
 ```toml
 [remote]
 [[remote.hosts]]
@@ -384,6 +477,36 @@ type   = "local"                  # local (-L) | remote (-R)
 bind   = "127.0.0.1:5432"
 target = "127.0.0.1:5432"
 ```
+
+A WSL distribution on a Windows machine is a host with `kind = "wsl"` and a `distro` (see `reasonix remote wsl list`):
+
+- It has no address, so it takes only the folder and install fields. `host`, `port`, `user`, keys, passwords,
+  `proxy_jump`, `use_ssh_config` and forwards are rejected on it.
+- Add one under Settings, Remote: the "WSL distribution" choice appears only on a machine that has WSL, and lists
+  its distributions (WSL 1 ones are shown disabled). Studio then opens it like any other machine in the list.
+- Connecting needs WSL 2 and a distribution that has `ps`
+  and `nohup`; a minimal image without them is refused with the missing name.
+- The kernel runs inside a shell session Studio keeps open, because WSL ends everything a session started when it ends.
+  - When Studio closes its link, the kernel goes away with the distribution (WSL stops an idle one after about 15
+    seconds).
+  - Conversations are kept on disk and resume on the next connect.
+  - Nothing keeps a distribution running behind your back.
+- Model credentials come from the distribution's own configuration (`provider = "remote"`): under WSL's default
+  networking the distribution cannot reach this machine's loopback, so this machine's provider is not shared.
+- A folder chosen as a Windows path (`C:\work\app` or `\\wsl.localhost\<distro>\home\me\app`) is translated by
+  the distribution; a folder it cannot see is refused.
+- From the command line, `reasonix remote wsl add <name> <distribution>` adds one, and `remote test` and
+  `remote connect` then work as they do for an SSH host.
+  - `connect` keeps the session open until you press Ctrl-C, and the kernel stops with it.
+  - `status`, `forward`, `serve` and `fs` stay SSH-only and refuse a WSL machine with
+    `remote: host is not reached over ssh`.
+
+For an agent's own shell commands, only `list`, `help` and `wsl list|test` run:
+
+- Every other `reasonix remote` subcommand refuses there (exit 77), because it changes the machine book or opens a
+  link, which a person does.
+- The host marks the commands it runs for the agent to tell them apart. It guards against an agent that does not
+  hide; it is not the sandbox.
 
 CLI:
 
@@ -601,7 +724,8 @@ For Anthropic-compatible services, such as some coding-plan endpoints, choose
 | Authorization: Bearer | For Anthropic-compatible providers, sends the saved API key as `Authorization: Bearer <key>` instead of `x-api-key`. | Enable it only when the gateway documents Bearer auth, such as MiniMax Global or Vercel AI Gateway. |
 | Model capability mode | Which reasoning request protocol Reasonix should use for this provider. | Keep **Auto-detect** unless the gateway is misdetected or the model docs require a specific reasoning format. |
 | Thinking override | Provider-specific override for `thinking.type`. | Keep **Auto** unless the backend documents `enabled`, `disabled`, or `adaptive`. Unsupported values can make some OpenAI-compatible gateways reject the request. |
-| Balance URL | Optional endpoint for wallet/balance lookup. | Set it when the provider exposes a balance endpoint and you want the desktop status bar to show it. |
+| Balance URL | Optional endpoint for wallet/balance lookup. | Set it when the provider exposes a balance endpoint and you want the desktop status bar to show it. The key is sent only to this address and never follows a redirect. |
+| Balance format | How that endpoint answers: `deepseek`, `moonshot` or `openrouter` (`balance_format`). | A vendor's own domain (`api.deepseek.com`, `api.moonshot.cn`/`.ai`, `openrouter.ai`) is read in that vendor's format with nothing set. Any other address, a relay for example, must name the format, or it is shown as not configured and the endpoint is not asked. Existing entries on such addresses are written as `deepseek` once, which is how they were always read. Reasonix 1.x rewrites the shared config file without keys it does not know, so a format it dropped is put back at the next start from `provider-keys.json` beside the config, unless you removed it in the connection editor. |
 | Context window | The provider-wide token budget Reasonix uses for automatic context cleanup. `0` disables automatic compaction. | Set it to the provider's model context limit; use a per-model override below when selected models differ. |
 
 Each selected model also has an optional **Context window** input. Leave it blank
@@ -862,11 +986,36 @@ Composer shortcuts:
 | `Cmd+Z` on macOS, `Ctrl+Z` on Windows/Linux | Undoes the latest composer edit | Native typing stays in the WebView history; Reasonix-managed paste, cut, folded blocks, and structured tokens are restored as complete transactions. |
 | `Cmd+Shift+Z` on macOS, `Ctrl+Shift+Z` on Windows/Linux | Redoes the latest composer edit | On Windows/Linux, `Ctrl+Y` is also accepted after the YOLO shortcut has been rebound. |
 | `Cmd+Y` / `Ctrl+Y` (default) | Toggles YOLO on/off | Turning YOLO off restores the previous Ask/Auto base when known. The current binding is shown in **Settings → Shortcuts**. |
-| `Cmd+V` on macOS, `Ctrl+V` on Windows/Linux | Pastes clipboard content | Clipboard images are attached. Dropping into the composer takes **any file or folder** and references it where it lives — the desktop app copies nothing, so the turn works on that file itself. Only sources with no path to offer, the clipboard and the add-image button, store bytes in the workspace. |
+| `Cmd+V` on macOS, `Ctrl+V` on Windows/Linux | Pastes clipboard content | Clipboard images are attached. Studio references ordinary files by their native path when available, including files selected with Add attachment, pasted, or dropped. Sources without a native path stream into the workspace. |
 | Plain `Up` / `Down` at the prompt boundary | Recalls older or newer submitted prompts | Modified arrows and native text navigation stay with the textarea. |
 | `Esc` while a turn is running | Cancels the running turn | If the turn has not produced a response yet, the draft is restored. |
 
 Remembered projects have Move up / Move down in their project menu. Open it with the keyboard, navigate with arrows or Home/End, and use Escape to return to the trigger. Moving a project changes sidebar order without changing the launch project.
+
+Ordinary Reasonix-managed worktree chats appear under their original project,
+without a separate project row for each checkout. The chat header shows Local
+checkout or Worktree, with its actual working directory available on hover;
+worktree chats also carry a sidebar marker.
+
+Reopening history uses that chat's working directory, while starting a chat
+from the project uses the original directory. Ordering, search, paging, pins
+and archives span the project.
+
+When reading legacy history for the first time, the sidebar shows discovered
+conversations while summaries and turn counts are filled in the background.
+Conversations marked as reading their summary can already be opened.
+
+Search indicates incomplete coverage instead of reporting a definitive empty result.
+Failed summaries can be retried without blocking other conversations. Summary
+caches live in the current version's directory; legacy history is not rewritten.
+
+History search index rebuilds after an upgrade run in the background. Background
+reads yield when a conversation is opened or read, then continue after the
+foreground operation. Search results may remain incomplete until indexing finishes.
+
+Removing the project closes its idle panes and retains every directory and
+transcript. Existing transcripts stay in place and group on restart without migration.
+Worktrees added separately outside Reasonix-managed storage remain independent projects.
 
 The list holds up to 32 projects; adding another requires removing one first. `serve-workspaces.json` now stores an object with `paths` and `launch`. Older binaries read only arrays and cannot preserve this format: do not share the same state home with an older binary after reordering.
 
@@ -882,6 +1031,39 @@ Menus and controls:
 | Plan approval card | `Left` / `Right`, `Enter`, `1`-`3`, `Esc` | Move between Revise plan, Start execution, and Exit plan. The default highlighted action is Start execution. |
 | Plan control | Toggles Plan on/off | Same mode as `Shift+Tab`. |
 | Goal item in the collaboration menu | Starts, views, or clears Goal | Goal is not in any keyboard cycle. |
+
+#### Studio file attachments
+
+Ordinary local files, including large APKs, use path references whenever the
+desktop shell can identify the file. Selecting one external file grants read
+access to that file, not its siblings; selecting a folder grants its descendants,
+but a symlink inside it does not grant access outside that folder.
+
+Files without a native path use binary streaming into `.reasonix/attachments`.
+Streaming bounds memory use. Ordinary uploads have a default 1 GiB safety ceiling
+per request to protect disk space; native path references do not copy bytes.
+
+Incomplete files are removed if the transfer fails or is canceled. Removing an uploading
+attachment cancels its transfer.
+
+| Entry point | Limit |
+| --- | --- |
+| Native ordinary-file references | No attachment size cap; the file stays where it is. |
+| Ordinary-file binary upload | Default 1 GiB safety ceiling per request, adjustable in user config. Disk space and upstream limits still apply. |
+| Image upload | 10 MiB per image, checked before upload and by the kernel. |
+| Legacy JSON/Base64 attachment endpoint | 25 MiB general-file limit; retained for older clients. |
+| Encrypted cloud relay | 16 MiB per request body; oversized uploads stop at that budget. This is a relay limit, separate from native references and direct uploads. |
+
+In the user's `config.toml`, `[attachments] max_stream_bytes = 1073741824`
+sets the ordinary upload ceiling in bytes.
+
+- `0` removes that ceiling; negative values use the default. Project `reasonix.toml` cannot set this value.
+- An upload one byte over the limit is refused and its partial file removed.
+- The typed `attachment.too_large` response includes `limit_bytes` and `limit_source` (`default` or `user`).
+- A malformed user config refuses the upload until repaired. The image and relay limits remain independent.
+
+These limits govern attachment transport. A referenced file is read on demand;
+its full bytes do not become model input automatically.
 
 ### CLI / TUI
 
@@ -906,23 +1088,24 @@ Chat and transcript shortcuts:
 | Key or command | What it does | Notes |
 | --- | --- | --- |
 | `Enter` | Sends the current message | While a turn is running, non-empty input is durably queued as a follow-up before the composer clears. On an empty composer it jumps back to the newest output and keeps following it. |
-| `Ctrl+Enter` or `/steer <text>` | Adds guidance to the active turn | The guidance is persisted first; if the turn cannot accept it, it remains a normal follow-up. |
+| `Ctrl+Enter`, `Ctrl+S`, or `/steer <text>` | Adds guidance to the active turn | The guidance is persisted first; if the turn cannot accept it, it remains a normal follow-up. On an idle composer `Ctrl+S` sends the message as `Enter` does, and `Ctrl+Enter` does nothing. |
 | `Shift+Enter`, `Alt+Enter`, or `Ctrl+J` | Inserts a newline | Plain `Enter` is reserved for send/confirm. |
-| Plain `Up` / `Down` while idle | Recalls older or newer submitted prompts | In a running turn, the same keys navigate queued follow-up feedback. |
-| `PageUp` / `PageDown` | Scrolls the transcript | Works regardless of the current chat state. |
+| Plain `Up` / `Down` | Recalls older or newer submitted prompts | Only from the composer's first or last line, so multi-line editing keeps the arrows. While a turn runs (or the queue is paused) and messages are queued, `Up` selects the newest queued message into the composer instead; see the queue keys below. |
+| Queue keys, with a message selected | Edit, reorder, delete or retry a queued message | `Up` / `Down` move the selection (past the newest puts your draft back); `Alt+Up` / `Alt+Down` move the message in the queue; `Enter` saves your edit in place; `d` twice deletes it (the first press only asks, and is not typed) and `r` runs a blocked one again (both only while the composer still holds the full message unedited and, in vi command mode, before the vi keys: once you edit, those letters are typed); `Enter` and the edit keys wait until the full message has been read, and a message that cannot be read, or that has already started, ends the selection and brings your draft back; `Esc` lets go. `Space` on an empty composer pauses or resumes the queue. Up to three queued messages are drawn under the working line; `/queue` (below) shows the rest. |
+| `PageUp` / `PageDown`, also with `Shift` | Scrolls the transcript | Works regardless of the current chat state. |
 | `Ctrl+Home` / `Ctrl+End` | Jumps to the top or bottom of the transcript | Useful after long tool output. |
 | `Ctrl+L` or `/cls` | Clears only the visible transcript | The LLM context, session file, tools, memory, and plugins stay loaded. Use `/clear` when you want to discard the conversation context. |
-| `Esc` | Backs out of the current action | It un-sends a just-submitted turn before any reply, cancels a running turn, or clears non-empty input. |
+| `Esc` | Backs out of the current action | It cancels a running turn; otherwise it clears non-empty input or leaves `!` shell mode. |
 | Double `Esc` on an empty idle composer | Opens the rewind picker | Same entry point as `/rewind`. |
-| Transcript text selection | Copies transcript text | Releasing an in-app drag writes through the verified native clipboard path in a local session (`pbcopy` on macOS, the available Wayland/X11 tool on Linux, or the Windows clipboard). SSH falls back to OSC 52 and labels the fallback instead of claiming native success. `Ctrl+C`/`Super+C`/`Meta+C` or right-clicking the active selection copies it again. |
-| Composer text selection | Selects, copies, or replaces draft text | Releasing an in-app drag copies the selection through the same verified clipboard path as transcript text. Typing or pasting replaces the selection; arrow keys collapse it. |
+| Transcript text selection | Copies transcript text | Releasing an in-app drag writes through the verified native clipboard path in a local session (`pbcopy` on macOS, the available Wayland/X11 tool on Linux, or the Windows clipboard). SSH falls back to OSC 52 and labels the fallback instead of claiming native success. `Ctrl+C`/`Super+C`/`Meta+C`/`Ctrl+Insert` or right-clicking the active selection copies it again. |
 | Right-click with no active selection | Pastes clipboard text locally | In a local session with in-app mouse capture on, Reasonix reads text only and routes it through the normal bracketed-paste handling. Over SSH, use the terminal paste shortcut because the remote process cannot read the local clipboard; `/mouse` restores the terminal's native right-click menu. Right-click with an active selection still copies that selection. |
 | `/mouse` | Toggles in-app mouse capture | Off hands the mouse back to your terminal, restoring its native click-drag selection and right-click context menu, at the cost of in-app drag-select, the transcript scrollbar, and wheel-scroll. Set `REASONIX_DISABLE_MOUSE=1` to start every session with it off. Remote (SSH) sessions start with capture off so native selection works out of the box; `REASONIX_DISABLE_MOUSE=0` forces capture on everywhere. |
-| `Ctrl+C` | Copies, cancels, clears, or quits | Copies an active transcript or composer selection first. Otherwise it cancels a running turn, clears non-empty input, or quits on a second empty-composer press. A second press while a cancelled turn is still stopping quits too. |
+| `Ctrl+C` | Copies, cancels, clears, or quits | Copies an active transcript selection first. Otherwise it cancels a running turn, clears non-empty input, or quits on a second empty-composer press. A second press while a cancelled turn is still stopping quits too. |
 | `Ctrl+D` | Quits the TUI | Immediate quit on an empty idle composer. |
 | `Ctrl+Z` | Suspends the TUI to the shell | macOS and Linux; resume it with `fg`. Windows has no job control, so the key does nothing there. |
 | `/quit` or `/exit` | Quits the TUI | Runs at once, also while a turn is running. Typing a bare `exit`, `quit` or `:q` sends it to the model as a normal message. |
-| Your terminal's text-paste shortcut | Pastes text | Text stays on the terminal's bracketed-paste path (`Cmd+V` on macOS, commonly `Ctrl+Shift+V` on Linux, and the terminal's configured shortcut elsewhere). Reasonix consumes the resulting paste event and never probes for an image first. |
+| Your terminal's text-paste shortcut | Pastes text | Text stays on the terminal's bracketed-paste path (`Cmd+V` on macOS, commonly `Ctrl+Shift+V` on Linux, and the terminal's configured shortcut elsewhere). Reasonix consumes the resulting paste event and never probes for an image first. For terminals that hand `Shift+Insert` to the app instead of pasting, that key reads the clipboard text in a local session and pastes it the same way; over SSH it says to use the terminal's paste shortcut. |
+| `Ctrl+G` | Keeps folded pastes as files | A paste of 1,000 characters or 5 lines or more is folded into a `[Pasted text #N · M lines]` label and sent whole. `Ctrl+G` stores every folded paste still in the draft as a file under the workspace's attachments and relabels it `[Pasted file #N · M lines]`; the message then carries a pointer to the file instead of the text. |
 | `Ctrl+V` on macOS/Linux; `Alt+V` on Windows | Pastes a clipboard image | Image paste is a separate application action. The footer shows `Pasting image…` while the clipboard is read, then inserts an editable `[image #N]` token at the cursor. |
 | `/paste-image` | Pastes a clipboard image | Command form of the same image-only action. |
 | A line starting with `!` | Runs a shell command directly | The command runs locally without asking the model. |
@@ -942,7 +1125,7 @@ Mode and display shortcuts:
 | `--yolo`, `--dangerously-skip-permissions` | Starts chat in YOLO | Same runtime mode as `Ctrl+Y`. |
 | `[ui].commandmode = "vi"` | Opts the composer into a vi command mode | User/global only; a project `reasonix.toml` cannot set it, so a cloned repo never rebinds the user's keys. `Esc` enters command mode, a running turn or not; only `Ctrl+C` interrupts. `Ctrl+C` with a non-empty prompt clears it and leaves shell mode, in vi mode and out; in vi mode it first saves the trimmed draft to the prompt history, so `Up` recalls it. Unset or `""` keeps the default, where `Esc` stops a running turn. The footer names the current input mode, `NORMAL` in command mode and `INSERT` otherwise. |
 | `auto_submit = true` | Commits a multi-question ask once its last question is answered | Top-level config; user/global only, so a project `reasonix.toml` cannot set it; default `false`. The ask card drops its Submit tab: answering a question moves on to the next unanswered one, answering the last with nothing left unanswered commits the batch at once, and a skipped question pulls the panel back to it. Unset keeps the Submit tab and its explicit `Enter`. |
-| `/preset [balanced|delivery]` | Shows or switches the current session's execution setting (执行设定) | `/work-mode` and `/profile` are compatibility aliases (`economy` → `light`). Switching updates the execution setting in place without rebuilding the controller; blocked while a turn, approval, or background job is active. |
+| `/preset [balanced|delivery]` | Shows or switches the current session's execution setting (执行设定) | `/work-mode` and `/profile` are compatibility aliases; the retired `light` and `economy` select `balanced`. Switching updates the execution setting in place without rebuilding the controller; blocked while a turn, approval, or background job is active. |
 | `/theme [auto|light|dark|style]` | Shows or switches the CLI theme | Bare `/theme` lists background modes and named accent palettes. The choice is saved to the user config; `REASONIX_THEME` and `REASONIX_THEME_STYLE` can override it for one run. |
 | `Ctrl+O` | Toggles verbose reasoning display | Also available through `/verbose`. |
 | `Ctrl+B` | Expands or collapses long shell output | Long shell-output hint lines can also be clicked in the transcript; text selection is handled in-app while the full-screen TUI has mouse reporting enabled. |
@@ -954,12 +1137,12 @@ Picker and approval shortcuts:
 | Context | Keys | What they do |
 | --- | --- | --- |
 | Slash or `@` completion | `Up` / `Down`, `Ctrl+P` / `Ctrl+N`, `Tab` / `Enter`, `Esc` | Move, accept, or close the completion menu. While a turn is running, `Esc` also stops it, except in vi mode. |
-| Tool approval prompt | `y`/`1`, `a`/`2`, `p`/`3`, `n`/`4`, `Enter`, `Esc`, `Ctrl+C` | Allow once, allow for session, persist allow, deny, accept default allow once, deny, or cancel the turn. |
+| Tool approval prompt | `Up`/`Down` or `j`/`k`/`Tab`, `Enter`, `y`, `a`, `p`, `n`, number keys, `Esc`, `Ctrl+C` | Move, answer the highlighted row (the cursor starts on allow once), allow once, allow for this session, always allow, deny, pick a row by its position, deny, or cancel the turn. `a` and `p` are offered only when the call can be allowed that way, so the numbers follow the rows shown. In vi mode `Esc` does not answer; a row key or `Ctrl+C` does. |
+| Plan approval prompt | `Up`/`Down` or `j`/`k`/`Tab`, `Enter`, `y`, `n`, `x`, number keys, `Esc` | Move, answer the highlighted row, start executing the plan, revise it, leave plan mode, or pick a row by its position. `Esc` asks for a revision, except in vi mode. |
 | Ask question card | `Up`/`Down` or `j`/`k`, `Left`/`Right` or `h`/`l`, `Space`, `Enter`, `1`-`9`, `Esc`, `Ctrl+C` | Navigate answers/tabs, toggle multi-select answers, submit/activate, pick numbered options, dismiss, or cancel the turn. |
-| Rewind picker | `Up`/`Down` or `j`/`k`, `Enter`, `b`, `c`, `d`, `f`, `s`, `u`, `Esc` | Choose a turn, apply both/conversation/code/fork/summarize actions, or go back/close. |
-| Model, provider, or resume picker | `Up`/`Down` or `Ctrl+P`/`Ctrl+N`; `j`/`k` while search is empty; type to filter; `Enter`; `Esc` | Search, select an item, or close the picker. Once search input starts, `j`/`k` become query text. `/provider` opens that provider's model list. |
-| MCP import picker | `Up`/`Down` or `j`/`k`, `Space`, `Enter`, `Esc` / `Ctrl+C` | Move, select servers, import selected servers, or cancel. |
-| MCP manager | `Up`/`Down` or `j`/`k`, `Enter`, `Left`/`Right` or `h`/`l`, `r`, number keys, `q` / `Ctrl+C` | Navigate server lists/details, refresh, choose actions, or close. |
+| Rewind picker | `Up`/`Down` or `j`/`k`, `Enter`, `b`, `c`, `d`, `s`, `u`, `y`, `Esc` | Choose a turn, apply both/conversation/code/summarize actions, confirm with `Enter` or `y` a file restore the checkpoint covers only partly, or go back/close. |
+| Model, provider, or resume picker | `Up`/`Down` or `Ctrl+P`/`Ctrl+N`; `j`/`k` while search is empty; type to filter; `Enter`; `Esc` | Search, select an item, or close the picker. Once search input starts, `j`/`k` become query text. `/provider` opens that provider's model list. In the resume picker `Ctrl+D` twice deletes the highlighted saved session: the first press only asks, and any other key takes it back. |
+| `/mcp` panel | `Up`/`Down` or `j`/`k`, `Enter`/`Right`/`l`, `Esc`/`Ctrl+C`/`Left`/`h`, `q`, `Space`, `n`, `d`, `a`, `u`, `r` | Move; show a server's tools; go back from them or close; close; enable or disable a server (enabling one the repository declares asks `y` first); add a server; remove one (asks `y` first); sign in to a server that answered 401; grant the extra access a server asks for; reconnect a failed server. To add, type its command, URL or config and press `Enter`, then on the review install it with `y` (user), `l` (local) or `p` (project), or leave with `n`/`Esc`; keys are ignored for a moment after the review opens, and a server too long to show whole cannot be installed from it. |
 | `/clear` confirmation | Arrow keys or `j`/`k` / `Tab`, `Enter`, `y`, `n`, `Esc` / `Ctrl+C` | Toggle Clear/Cancel, confirm clear, or cancel. |
 
 Mode meanings:
@@ -997,6 +1180,22 @@ closed on ordinary writer fallback and explicit ask rules. Use
 automation should allow ordinary writer fallback; configured `ask` and `deny`
 rules always remain authoritative.
 
+Text from outside is a separate question. `[permissions] ask_on_external_origin
+= true` (user file only, off by default) makes Auto and YOLO ask first when:
+
+- the call is not a read;
+- one of its string arguments, at least 12 bytes, is copied byte for byte from a
+  web page, MCP tool result or other external result the task read;
+- you did not write that string yourself.
+
+The question is fresh. Auto, YOLO and a remembered answer do not settle it. With
+nobody to ask, such as a headless YOLO run, the call is refused with the origin
+named instead of being executed.
+
+Not asked about: a call your own `allow` rule covers, an installed MCP server,
+and any call that is not a verbatim copy (re-encoded, paraphrased, built by a
+script the model wrote first). A resumed session starts with nothing recorded.
+
 Ask is not read-only: after approval, a writer can still run. Permissions decide
 whether to allow or prompt; the Sandbox is the enforced capability boundary.
 The sandbox remains a second boundary after authorization; confinement cannot
@@ -1018,6 +1217,16 @@ Reasonix always removes saved provider and bot credential variables from tool
 subprocess environments and automatically adds its global credential `.env` to
 the runtime read-deny boundary. Project `.env` files keep their existing
 workspace-scoped behavior.
+
+**Device nodes (Linux).** The bubblewrap sandbox shows a private `/dev`, so host
+devices such as the GPU are not there. `[sandbox] allow_devices` binds some in:
+
+- It lists globs under `/dev` (for example `/dev/nvidia*`, `/dev/dri/*`).
+- Only existing character or block device nodes qualify; symlinks, directories
+  and files are skipped, and at most 64 are bound.
+- It is empty by default.
+- It is read from your user config only. A project's `reasonix.toml` cannot set
+  it, because a device is a host capability, not a workspace file.
 
 **Git metadata is host-protected.** Inside the bash sandbox, the Git
 configuration and hooks of the workspace repository stay read-only, because the
@@ -1125,10 +1334,11 @@ inherit the chat session's temporary directory. An approved sandbox-escape
 command still receives the private temp environment variables, but on Linux its
 literal `/tmp` is no longer mapped by bubblewrap.
 
-**Windows note:** Reasonix does not ship an OS-level Bash sandbox on Windows.
-The effective mode is fixed to `off`; even an older config containing
+**Windows note:** the OS-level Bash sandbox on Windows is off unless the user
+turns on `[sandbox] windows_integrity = true` (see "On Windows" below). While it
+is off the effective mode is `off`; even an older config containing
 `bash = "enforce"` resolves to `off`, `reasonix doctor` flags the ignored value,
-and the desktop selector is read-only. Bash commands therefore run unconfined,
+and the desktop selector is read-only. Bash commands then run unconfined,
 while the dedicated file tools still enforce `workspace_root`, `allow_write`,
 and `forbid_read` in process. Saved credential variables are still removed from
 the child environment, but an approved unconfined shell runs as the user and is
@@ -1138,7 +1348,82 @@ When no OS sandbox backend is available, `bash = "enforce"` refuses bash
 execution instead of running unconfined. Install the platform sandbox backend
 (bubblewrap/`bwrap` on Linux, `sandbox-exec` on macOS) or set
 `[sandbox] bash = "off"` to explicitly restore the pre-1.16 unconfined shell
-behavior. On Windows the compatible value is always `off`.
+behavior.
+
+On Windows the sandbox is off unless you turn on
+`[sandbox] windows_integrity = true` (Settings > Sandbox; user file only).
+
+### On Windows
+
+With `windows_integrity` on, a bash command runs under a write-restricted token.
+
+- The first session grants a synthetic Windows identity write access on the
+  workspace, your `allow_write` folders and the data caches of your toolchains.
+- The caches are Go build and module, npm, pip, cargo registry and NuGet packages.
+  A folder that holds programs you run (`~/go/bin`, `.cargo/bin`) is never granted.
+- The grant is a permission entry on those folders, recorded in the Reasonix
+  state folder. It gives nobody else access and is inert if the sandbox is turned off.
+- `reasonix sandbox list` shows what is granted; `reasonix sandbox revoke` takes it back.
+
+What it bounds, measured on Windows 11 and for every child process:
+
+- Creating, appending to and overwriting files outside the granted folders.
+- `mkdir`, registry writes under your user (HKCU), and global git configuration.
+- Writes through a junction or symbolic link that points out of a granted folder.
+- Backup-semantics writes (`robocopy /B`): the token carries no privileges.
+- Creating a scheduled task, creating a service and writing HKLM from the command
+  were refused when measured.
+
+What it does not bound:
+
+- **Deleting or renaming away** an existing file outside the granted folders.
+  Windows does not apply the restriction to those two. The delete guard and the
+  approval layer remain the control for deletes.
+- **Reading** files, and **the network**.
+- **Host authorities**: the Windows named pipes of ssh-agent and docker, and COM
+  and RPC services such as the task scheduler, are reachable.
+- Writes anywhere that Everyone or your logon session can already write: both are
+  in the restricting set, so a folder open to them is open to the command.
+- The toolchain caches that are granted are writable by the command, so a
+  poisoned cache can reach your later unsandboxed builds. macOS and Linux have the
+  same exposure for their caches.
+
+Other facts:
+
+- The command runs with every privilege except the traverse check removed, and in
+  a job that cannot reach the other windows, clipboard or display settings of your session.
+- Only the three standard handles cross into the command.
+- A command cannot start its own launcher: the launcher refuses to run under a
+  restricted token, and grants only session temp folders the host made.
+- It needs an interactive desktop session. In an SSH or service session `enforce`
+  refuses to run commands (`sandbox.win_no_logon_sid`) instead of running them unconfined.
+- Not measured: standard (non-admin) accounts, other Windows versions, ReFS and
+  network drives. Linux and macOS are unchanged and bound every kind of write.
+
+### In a dev container or Docker
+
+Bubblewrap has to create user and mount namespaces (and a network namespace for
+a closed network), which a default container blocks. Measured on Docker Desktop
+(Linux VM, Debian 12, bubblewrap 0.8.0), by launching a confined command under
+`enforce` in each configuration:
+
+| Container configuration | Sandbox | Reported cause |
+|---|---|---|
+| bubblewrap not installed | unavailable | `sandbox.no_bubblewrap` |
+| default `docker run`; seccomp unconfined only; `SYS_ADMIN` only; seccomp and AppArmor unconfined without `SYS_ADMIN` | unavailable | `sandbox.bwrap_namespace_denied` |
+| `SYS_ADMIN` with seccomp and AppArmor unconfined | works with the network open; a closed network is unavailable | `sandbox.bwrap_network_denied` for the closed network |
+| the above plus `NET_ADMIN`, or `--privileged` | works, network open or closed | none |
+
+- Both `CAP_SYS_ADMIN` and an unconfined seccomp profile are needed; either alone is not enough.
+- Reasonix does not look for a container. The message comes from what bubblewrap
+  could and could not do, so a container granted those privileges gets its
+  sandbox, and one that is not is told which privilege is missing.
+- Granting them widens the container itself. The other choice is
+  `[sandbox] bash = "off"`; the container is then the only boundary, and what
+  you mount writable (a credentials file in a bind-mounted workspace included)
+  is writable by every command.
+- Only the Linux sandbox was measured. A Dev Containers or Codespaces session,
+  rootless Docker and SELinux hosts were not run.
 
 For coding-quality reports, run `reasonix doctor quality <branch-id-or-path>`
 (add `--json` for structured output). This reads the selected session but emits
@@ -1184,6 +1469,10 @@ start failure); `2` is bad flags. This is separate from `reasonix doctor`
 
 ## Plugins (MCP)
 
+When a cached resource capability is available before its server connects,
+`read_mcp_resource` waits within the normal startup budget. Cancelling that read
+does not cancel the session's background connection attempt.
+
 Reasonix is an MCP client. A `[[plugins]]` entry's `type` selects the transport:
 `stdio` (default) launches a local subprocess (`command`/`args`/`env`); `http`
 (Streamable HTTP) connects to a remote `url` with optional static `headers`
@@ -1200,11 +1489,22 @@ headers = { IJ_MCP_SERVER_PROJECT_PATH = "${REASONIX_WORKSPACE_ROOT}" }
 
 For a remote HTTP server without a static `Authorization` header, an
 authentication challenge (HTTP 401 with a `Bearer` challenge) is reported as
-needing sign-in. Run `reasonix mcp auth <name>` in the CLI; Studio has no
-sign-in control yet. Reasonix performs OAuth metadata discovery, dynamic
+needing sign-in. Run `reasonix mcp auth <name>` in the CLI. Reasonix performs OAuth metadata discovery, dynamic
 client registration, PKCE S256 authorization, and refresh-token
 rotation. Discovery and token requests use the same Reasonix network-proxy
 settings as the MCP connection.
+
+Before a browser opens, Reasonix names the authorization host the server chose and asks. "Always" is remembered for that server and host only, beside its OAuth state, and cleared with it.
+
+When a signed-in server refuses a call (HTTP 403, `insufficient_scope`) because the access you granted is too narrow:
+
+- The model is told to stop and say so, and you get a notice.
+- Only you can grant more: click **Grant more access** on the server's row, or run `reasonix mcp auth <name> --upgrade`.
+- The scope names are the server's own words, shown as written.
+- You are asked every time, in every approval mode, and the answer is never remembered.
+- A server that keeps asking after being granted is refused for good.
+
+Tools whose definitions change after you approved them are held back until you accept them (`reasonix mcp trust <name>`). To take one server's changes without being asked, run it with `--follow` (`--unfollow` undoes it); each change is still announced.
 
 OAuth client and token state is kept outside the workspace in the server's
 private Reasonix state directory, written with mode `0600`, and bound to the
@@ -1400,6 +1700,16 @@ Context Engine v2 separates two intentionally different layers:
   and `CLAUDE.md` files. Put rules here when they must be present on every
   relevant turn. User-global files load first, then workspace and deeper target
   directories; within one directory, `.local.md` variants win.
+- **Rules** are Markdown files in `.reasonix/rules/`, `.claude/rules/` (project)
+  and `<Reasonix home>/rules/` (user), subdirectories included.
+  - A rule with no `paths:` frontmatter is delivered like the standing instructions.
+  - A rule with `paths: ["src/**/*.ts"]` (a list or a comma-separated string) is
+    delivered on the next turn after the session reads or edits a matching file,
+    and is retracted if it stops applying.
+  - Rules load user first, then project, so a later rule is the more specific one.
+  - A file is limited to 32 KB and each of the two layers to 64 KB. What exceeds a
+    limit is skipped and shown in capability diagnostics. Symlinks are not followed.
+  - Neither layer touches the cache-stable prefix.
 - **Background memory** stores one durable fact per Markdown file. Each fact has
   an immutable ID, monotonic revision, timestamps, independent `type`
   (`user`, `feedback`, `project`, `reference`) and `scope` (`project`,
@@ -1552,6 +1862,8 @@ until the goal is complete, blocked, paused, or cleared. Ordinary chat never
 changes collaboration mode implicitly; choose Goal in the composer or use
 `/goal` to start a long-running objective.
 
+The desktop plan fold and the terminal footer show a goal's state, turns, requests, tokens and active work time, and name the stop cause when it is not running.
+
 Goal has no default model-round, cross-Run turn, wall-clock, or numeric
 no-progress limit. It continues until completion, a genuine user/external
 blocker, manual stop/pause, an unrecoverable external error, or an explicit
@@ -1598,6 +1910,47 @@ plus the bounded Goal evaluator. Legacy `.reasonix/autoresearch/<task-id>/` arch
 read-only: an explicit old path can be recovered as an ordinary Goal, but new
 runs never create or update those directories. Deprecated budget flags are
 accepted for compatibility but are hidden from help and completion.
+
+## Scheduled runs
+
+A schedule makes Reasonix run a read-only task for you at a time you chose and leave the result waiting. Create
+and manage them in Studio under Settings, Automation, Scheduled runs, or with the command line below.
+
+```bash
+reasonix schedule add --every 2h --prompt "Summarize what changed in the open TODOs" --workspace ~/src/app
+reasonix schedule list
+reasonix schedule pause <id>      # pause-all, resume, resume-all, renew and rm work the same way
+reasonix schedule tick            # claim and run what is due now, then exit
+```
+
+- **A person confirms it.** `add`, `resume`, `renew`, `rm` and `resume-all` need a terminal. `add` shows the whole
+  plan (prompt, folder, model, budget, expiry) and asks you to type back its short id; `list` shows who created
+  each one. A command run by a tool, a pipe or a scheduler is refused.
+  - The host marks every subprocess it starts for the agent with `REASONIX_AGENT_CHILD=1`, and these commands
+    refuse when it is set, so an agent that opens its own pty is stopped too.
+  - That is a guard against accidents and a trick, not a boundary: a child can clear its own environment, and
+    only the sandbox confines what an agent can do.
+- **When it runs.**
+  - Studio ticks while it is open, with a window or a tray icon showing; a kernel nobody can see, or one with
+    no parent that ends it, never starts a run. One kernel at a time ticks.
+  - Otherwise call `reasonix schedule tick` from the operating system's scheduler (cron, launchd, Task
+    Scheduler).
+  - Every tick goes through the store's own budget and expiry checks, so neither route can bypass them.
+- **Trusted folders only.** A schedule's folder must be a project you have trusted in Studio or the terminal UI.
+  Anything else is refused by the kernel (`schedule.workspace_unknown`), and trust is checked again at every run:
+  withdrawing it stops the schedule's runs.
+- **Read-only.** A run reads files in its folder and writes nothing. Anything that needs your approval is parked
+  for you and never answered on your behalf.
+- **Ceilings.** `[schedule]` in your user config can change them; a repository's `reasonix.toml` can only
+  tighten them.
+  - One run at a time, and by default at least 60 minutes between runs (never under 10).
+  - Per run: 250,000 tokens, 40 steps and 15 minutes.
+  - 4 runs a day for one schedule and 6 for all of them, and a lifetime budget per schedule.
+  - A 30 day expiry that only you renew.
+- **Late and missed runs.** Only the latest slot counts. It still runs if it is at most 15 minutes late (never
+  more than a quarter of the interval); otherwise it is recorded as skipped and not made up.
+- **The model is pinned** when you create the schedule, from your own configuration. If it later becomes
+  unavailable the run fails and says so.
 
 ## @ references
 
@@ -1768,14 +2121,13 @@ Subagent skills inherit the executor model by default. Set `subagent_model` to
 run them on another configured model, or use `subagent_models` to override only
 specific skills such as `review` or `security_review`.
 
-Subagents may delegate one more layer by default: the root session is depth 0,
-first-layer subagents are depth 1, and the maximum `max_subagent_depth = 2`
-means a depth-1 workflow can dispatch a depth-2 reviewer or implementer. Depth-2
-subagents do not receive recursive agent/skill tools. Set
-`agent.max_subagent_depth = 1` to restore the old single-layer boundary. This is
-intended for workflows such as Superpowers where a workflow skill may dispatch a
-reviewer subagent, while still avoiding unbounded recursion and background
-fanout.
+Subagents delegate in layers: the root is depth 0, and `max_subagent_depth`
+(default 8, a stop against a model delegating to itself without bound; 0 removes
+it, 1 is the single-layer boundary) is the deepest layer with recursive tools.
+`max_subagent_concurrency` and `max_parallel_writers` default to 0, no limit:
+write claims, not a count, keep writers apart. A project's `reasonix.toml`
+cannot set any of the three. A 429 under heavy parallelism is retried with
+backoff and `Retry-After`.
 
 Use `read_only_task` when planning needs isolated, deeper research without
 granting write-capable delegation. Use `read_only_skill` when the same need is
@@ -1833,6 +2185,19 @@ are scoped to the current conversation lineage and workspace. Headless runs
 without a persisted parent session remain ephemeral and receive fair bounded
 previews, but cannot mint durable references.
 
+A sub-agent that is still running can be sent guidance:
+
+- The model calls `task` with `task_id` set to the sub-agent's `sa_...` reference
+  and the guidance as `prompt`. You send it from Settings or the sub-agent's view.
+- The sub-agent reads it at its next tool call, framed as coming from the
+  delegating session (or from you). Its own approvals still apply.
+- If the sub-agent has already finished, `task_id` continues its transcript
+  exactly as `continue_from` does.
+- `max_subagent_steer_bytes` and `max_subagent_steers_per_minute` bound one
+  message and the rate (user config only; Settings > Tools > Guidance to running
+  sub-agents; `0` lifts a limit).
+- Guidance cannot be sent from a paired device.
+
 The interactive two-model Planner uses a dedicated construction path
 (`NewPlannerAgent`): it still blocks bash, file writers, and ordinary writers,
 but may call authorized, non-destructive MCP through the fixed
@@ -1876,7 +2241,7 @@ never exposes writers at all.
 Choose the startup execution setting with
 `--preset balanced|delivery` (for example, `reasonix run --preset
 delivery "fix and verify this bug"`). Legacy `--profile economy|balanced|delivery`
-still works (`economy` maps to `light`). All three execution settings share the same
+still works (`economy` maps to `balanced`). Both execution settings share the same
 provider-visible core tool surface: direct read/bash/edit/write, background-shell
 lifecycle tools, `ask`/`compress`/`recall` when registered, and the stable
 `use_capability` proxy for optional tools (search, MCP, skills, subagents, docs,
@@ -1887,8 +2252,6 @@ settings.
 What differs by execution setting is host policy (planning route, verification
 intensity, independent review floor), not the tool list:
 
-- **Light** — direct-first planning, targeted verification, independent review only
-  on high-risk/security class work; optional capabilities stay on-demand.
 - **Balanced** (default) — auto light/full planning by risk, risk-tiered
   verification, conditional independent review on medium-risk multi-file work.
 - **Delivery** — full acceptance criteria, full verification, forced independent
@@ -1930,3 +2293,195 @@ project-local override.
 
 The why behind separate sessions (keeping each model's prefix cache-stable) is in
 [`SPEC.md` §3.5](./SPEC.md#35-two-model-collaboration-coordinator).
+
+## Free web search with SearXNG
+
+`web_search` can use a [SearXNG](https://docs.searxng.org/) instance that you run yourself, so searches cost nothing. Reasonix does not start it.
+
+```
+mkdir -p ./searxng/config/ ./searxng/data/ && cd ./searxng/
+docker run --name searxng -d -p 8888:8080 -v "./config/:/etc/searxng/" -v "./data/:/var/cache/searxng/" docker.io/searxng/searxng:latest
+```
+
+(the command is from the SearXNG documentation). SearXNG answers JSON only when its `settings.yml` allows it; put this in `./config/settings.yml` and restart the container:
+
+```yaml
+use_default_settings: true
+search:
+  formats: [html, json]
+```
+
+Then, in your user config file (a project file cannot set these):
+
+```toml
+[tools]
+web_search_backends = ["searxng"]
+searxng_url = "http://localhost:8888"
+```
+
+A backend counts as not answering when:
+
+- the request fails, or the status is not 200;
+- the body is not JSON, or no results came back.
+
+Each time that happens Reasonix shows a notice naming the backend and the cause, then tries the next one. If none answers, the model receives `search.all_backends_failed`.
+
+- Engines inside SearXNG that rate-limit you do not fail a search while one engine still answers.
+
+In Settings, **Web access** has a **Test connection** button beside the address. It saves the field, then sends one search to the saved address, follows no redirect, uses no proxy, and says why the instance does not answer.
+
+It never connects to a link-local, cloud-metadata or unspecified address; a loopback or local-network address is fine. The model is told the same code when a real search fails.
+
+| Code | Meaning | What to do |
+|---|---|---|
+| `search.searxng_json_disabled` | The instance answered 403. SearXNG does that when `json` is not in `search.formats` of its `settings.yml`; a reverse proxy in front of it can also answer 403. | Add `json` to `search.formats` and restart it; if that is set, look at the proxy. |
+| `search.searxng_unreachable` | Nothing answered at the address. | Check that it runs and that host and port are right. |
+| `search.searxng_not_searxng` | It answered 200 but not with SearXNG's JSON results. | Point at SearXNG itself, not a login page or another service. |
+| `search.searxng_redirected` | The address redirects. | Enter the final address, for example the `https` one. |
+| `search.searxng_address_refused` | The test will not connect to this address (link-local, cloud metadata or unspecified). | Use a loopback or local-network address for a self-hosted instance. |
+| `search.searxng_status` | Any other HTTP status, for example 429 or 500. | Retry later or read the instance's log. |
+- Results are third-party content and are labelled as such to the model.
+
+### Paid fallback: the DeepSeek Search API
+
+Add `"deepseek_api"` after `"searxng"` to let `web_search` fall back to DeepSeek's [Search API](https://api-docs.deepseek.com/guides/search) when the free backend did not answer.
+
+```toml
+[tools]
+web_search_backends = ["searxng", "deepseek_api"]
+```
+
+- It uses the key of a provider you configured for `api.deepseek.com`.
+- DeepSeek lists the price as $0.75 per 1,000 successful requests (pricing page, read 2026-10-17); it bills only a 200 response with results, and announces the billing start date separately.
+- The first time a search would reach it, a card shows the price and the query that would be sent to DeepSeek. Allow once, allow for the session, or always allow, which records `web_search_paid_allowed = ["deepseek_api"]` in your user file.
+- After you choose always allow, the queries the model sends are no longer shown one by one before they go to DeepSeek.
+- No approval mode answers that card for you, and a project file cannot record the allowance.
+- Without an answer the model receives `search.free_failed_paid_needs_consent`. A 402 reaches it as `search.insufficient_balance`.
+- Each successful paid request is counted in the usage view under its own source, `deepseek-search`.
+
+### Paid fallback for fetching pages
+
+`web_fetch` can fall back to DeepSeek's [Fetch API](https://api-docs.deepseek.com/guides/search) when this machine could not read a page.
+
+```toml
+[tools]
+web_fetch_backends = ["local", "deepseek_api"]
+```
+
+- `local` is the fetch from this machine and is free. It counts as not answering when the request fails, the status is not 2xx, or no text came back.
+- DeepSeek lists the same price as for search, $0.75 per 1,000 successful requests; a request is billed only when it returns page content.
+- The first time it would be used, a card shows the price and the address that would be sent to DeepSeek. Agreeing to search is not agreeing to fetch: always allow records `web_fetch_paid_allowed`.
+- An address on your own network is never sent. That covers loopback, private and link-local addresses, and names that resolve to them.
+- So are names that cannot be public, even when this machine cannot resolve them: a single label such as `jira`, or a name under `localhost`, `local`, `internal`, `lan`, `home.arpa`, `invalid`, `test`, `example` or `onion`. Both are refused with `fetch.internal_address`.
+- The whole address, including its query string, is sent to DeepSeek as written. The card shows it in full; after you choose always allow it is no longer shown each time.
+- Pages are third-party content. Each successful paid fetch is counted in the usage view as `deepseek-fetch`.
+
+## Letting a model watch a video file
+
+`read_video` has two ways to look at a video.
+
+- Frames: ffmpeg samples still images, which loses audio and the order of fast events.
+- Natively: the MP4 itself is handed to a model that watches video, with no ffmpeg in between.
+
+Native needs two declarations in the provider entry of your user config: the models, and how a file reaches them.
+
+```toml
+[[providers]]
+name = "dashscope"
+video_models = ["qwen3-vl-plus"]
+video_protocol = "inline_data_url"   # or "moonshot_file"
+```
+
+- `inline_data_url`: the file travels inside the request as a `video_url` data URL. DashScope's documentation (read 2026-10-17) limits the encoded string to under 10 MB, so Reasonix caps the file at 7.5 MB.
+- `moonshot_file`: the file is uploaded once (`POST /files`, `purpose = "video"`) and the request names it as `ms://<id>`.
+- Moonshot's file API (read 2026-10-17) allows 100 MiB per file and 10 GiB per organization, and does not say how long a file is kept.
+- A file the vendor no longer holds is uploaded again once. Files stay in your organization's storage until you delete them there.
+- A model that is not listed in `video_models`, or an entry with no `video_protocol`, keeps getting frames. Nothing is guessed from a model or host name; an explicit empty list means "no model here watches video".
+
+`read_video` takes `mode`: `auto` (default) sends natively when the selected model offers it and the file fits, otherwise samples frames and says why; `frames` always samples; `native` refuses with a code if the file cannot be handed over.
+
+- Only MP4 is sent natively; any other container is sampled into frames (`video.native_container_unsupported`).
+- To lower the size limit, set `[tools] video_native_max_bytes` in your user file; a project file cannot set it, and it can only be lower than the protocol's own limit. A refusal names which limit stopped it (`video.native_too_large`).
+- The model sees the video on the one request that follows the read. After it answers, later requests carry a one-line note instead, so a long file is not resent every turn; call `read_video` again to look again. The session file keeps a reference to the file, not its bytes.
+- The file is read from disk when the request is built. A file that changed since it was read is not sent (`video.file_changed`), and one that is gone is reported as `video.file_missing`.
+- Only a video this process's `read_video` handed out is ever opened; a reference from a restored or imported session is not, and is reported as `video.file_unavailable`.
+- Sub-agents do not get native video; they use frames.
+- Where there is no OS sandbox, `read_video` still asks before its first use, as before; choose always allow on that card or add a rule for `read_video` to stop being asked.
+
+Not built, and why:
+
+- Gemini: its video input is in the native Gemini API (inline data, the Files API, YouTube URLs); the OpenAI-compatible page does not list a video content part, and Reasonix reaches Gemini through that endpoint.
+- Zhipu GLM: the documentation shows `video_url` with a public HTTPS address only and says nothing about base64 or limits, so a local file cannot be sent without Reasonix uploading it somewhere.
+
+## Letting the model change a setting
+
+The model has a `setting` tool. When something it needs is switched off, such as handing a task to another project, it can ask you to turn the switch on instead of sending you to Settings.
+
+A refusal that a setting would lift ends with `(fix: setting ...)`. The tool can also list settings by the words of their id.
+
+- Nothing changes until you answer a card. It names the setting, the old and the new value, and when the change takes effect. It is worded by Reasonix; the model's own reason is only quoted under it.
+- Every setting has a class in the code. A preference (a font, a retry count) can be agreed once for the rest of the session. An elevated setting (messaging between sessions, dispatching to another project, a protection the model could otherwise loosen) is asked every time, in every approval mode including YOLO.
+- Boundary settings (approval mode, sandbox, network, rules, hooks, provider keys and addresses, safety limits, and the switch for this tool) are never changed by the model. It can only point you at them (`op=open`).
+- The card shows the whole new value; a value too long to show is refused instead of cut. The change is written to your user file, a project file cannot grant it, and values are checked with the same rules as the Settings screen.
+- At most three proposals are put to you per turn, and none while plan mode is on (the model can still look at settings and point you at one).
+- To remove the tool, set `[tools] setting_tool = false`, or leave `setting` out of an explicit `[tools] enabled` list.
+## Google Gemini, native (experimental)
+
+The `gemini` provider kind speaks Google's Interactions API. It is experimental: it was written from Google's documentation (read 2026-10-17) and has not been run against the real endpoint, so expect rough edges and report them.
+
+Install the **Google Gemini, native (experimental)** preset, or write the entry yourself:
+
+```toml
+[[providers]]
+name = "gemini-native"
+kind = "gemini"
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+api_key_env = "GEMINI_API_KEY"
+models = ["gemini-3.8-flash"]
+```
+
+- Every request carries the whole conversation and `store` is false, so the transcript stays yours; Google keeps nothing of it.
+- Thinking runs at the level the entry sets (`/effort`); the preset lists the levels each model documents. Thought summaries are streamed as reasoning, and the thought steps are sent back exactly as received, in order, on the next request.
+- `temperature` and `top_p` are never sent: Google's reference page does not list them for this API.
+- The preset lists only models whose own pages were read: `gemini-3.8-flash`, `gemini-4-argon`, `gemini-3.6-flash`, `gemini-3.5-flash-lite` and `gemini-3.1-pro-preview`, all with a 1,048,576-token window, image and video input. Others work if you list them and say what they read.
+- The older **Google Gemini** preset uses Google's OpenAI-compatible endpoint. That endpoint documents no video input.
+
+### Watching video
+
+Declare the models and how a file reaches them, as for any provider (see Letting a model watch a video file):
+
+```toml
+video_models = ["gemini-3.8-flash"]
+video_protocol = "gemini_files"   # or "gemini_inline"
+```
+
+- `gemini_inline` puts the file in the request as base64. Google's page says "under 20MB total request size" while its table says 100 MB; the narrower reading is used, so the file is held to 15,000,000 bytes (the encoded request is a third larger). You can only lower it with `[tools] video_native_max_bytes`.
+- `gemini_files` uploads the file with the Files API resumable protocol, waits until Google reports it `ACTIVE`, refers to it by its uri, and deletes it when the request ends. Google allows 2 GB per file and 20 GB per project and removes files after 48 hours on its own.
+- MP4, WebM and MOV are sent natively on both protocols; any other container is sampled into frames. A file Google reports as `FAILED`, or in a state this build does not know, is not sent and the model is told `video.upload_failed`.
+- A public YouTube address cannot be given to the model through `read_video`: the host does not fetch addresses, and handing one to the vendor is a separate setting.
+
+### Cost
+
+Reasonix prices Google's list rates per 1M tokens (https://ai.google.dev/gemini-api/docs/pricing, read 2026-10-17):
+
+| Model | Input | Cached | Output (incl. thinking) |
+|---|---|---|---|
+| `gemini-3.8-flash`, `gemini-3.6-flash` | $0.75 | $0.075 | $3.75 |
+| the same two from 2027-01-01 | $1.50 | $0.15 | $7.50 |
+| `gemini-3.5-flash-lite` | $0.30 | $0.03 | $2.50 |
+| `gemini-3.1-pro-preview` (up to 200k prompt tokens) | $2.00 | $0.20 | $12.00 |
+
+`gemini-3.1-pro-preview` costs more above 200k prompt tokens ($4.00 / $0.40 / $18.00), which one rate card cannot say, so a long prompt reads low. `gemini-4-argon` shows no price on the page and is not priced. Storage for explicit context caching is not counted.
+
+### Handing a video address to the model vendor
+
+Some vendors read a video from a public address instead of a file. `read_video` can take `url` in place of `path`, but only when you turn this on in Settings (**Web access → Video addresses**, or `[tools] video_url_passthrough = true` in your user file; a project file cannot set it).
+
+Turning it on is a confirmation of its own: the model can propose it, and you answer a card every time.
+
+- The vendor visits the address itself; nothing is downloaded on your machine. Turn it on only if you accept that the vendor's servers open the address.
+- Only an address you wrote in the conversation is handed over. An address the model found in a page, a file or a tool result, or made up, is refused (`video.url_not_from_user`), so a page's author cannot make the vendor visit an address of their choosing.
+- The address must be `https`, with a public host name: no credentials, no IP address, no `localhost`, single-label or local-network name, and at most 2,048 characters (`video.url_invalid`).
+- Zhipu GLM takes a public https address in a `video_url` part and no file ([docs.bigmodel.cn](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-4.6v), read 2026-10-17). Declare it with `video_models = ["glm-4.6v"]` and `video_protocol = "zhipu_url"` on the entry; a local file is then read as frames.
+- Gemini takes a public YouTube address as a video `uri` on `gemini_inline` and `gemini_files`; no other address is handed to it (`video.url_unsupported_model`).
+- A reference restored from a stored or imported transcript is never sent: only an address checked in this process is.

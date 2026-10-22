@@ -65,6 +65,8 @@ type Transport struct {
 	// StallTimeout drops a download connection that has delivered nothing for
 	// this long, so the download resumes on a new one. Zero never drops it.
 	StallTimeout time.Duration
+	// OnStall hears each connection StallTimeout dropped; the download goes on.
+	OnStall func()
 }
 
 // Retry runs attempt 1..Attempts of fetch until one succeeds, pausing between

@@ -1,8 +1,8 @@
 package config
 
 import (
+	"database/sql"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -133,22 +133,17 @@ func TestLoadCCSwitchLegacyConfigPrefersReasonixFlag(t *testing.T) {
 }
 
 func TestLoadCCSwitchMCPDBPrefersReasonixColumn(t *testing.T) {
-	if _, err := exec.LookPath("sqlite3"); err != nil {
-		t.Skip("sqlite3 not available")
-	}
 	dbPath := filepath.Join(testenv.TempDir(t), "cc-switch.db")
-	setup := `CREATE TABLE mcp_servers (
+	createCCSwitchTestDB(t, dbPath, `CREATE TABLE mcp_servers (
 		id TEXT PRIMARY KEY,
 		name TEXT NOT NULL,
 		server_config TEXT NOT NULL,
 		enabled_codex BOOLEAN NOT NULL DEFAULT 0,
 		enabled_reasonix BOOLEAN NOT NULL DEFAULT 0
-	);
-	INSERT INTO mcp_servers VALUES ('codex-only', 'codex-only', '{"command":"node","args":["codex.js"]}', 1, 0);
-	INSERT INTO mcp_servers VALUES ('reasonix-only', 'reasonix-only', '{"command":"node","args":["reasonix.js"]}', 0, 1);`
-	if out, err := exec.Command("sqlite3", dbPath, setup).CombinedOutput(); err != nil {
-		t.Fatalf("create sqlite db: %v\n%s", err, out)
-	}
+	)`,
+		`INSERT INTO mcp_servers VALUES ('codex-only', 'codex-only', '{"command":"node","args":["codex.js"]}', 1, 0)`,
+		`INSERT INTO mcp_servers VALUES ('reasonix-only', 'reasonix-only', '{"command":"node","args":["reasonix.js"]}', 0, 1)`,
+	)
 	got, err := loadCCSwitchMCPDB(dbPath)
 	if err != nil {
 		t.Fatalf("loadCCSwitchMCPDB: %v", err)
@@ -159,21 +154,16 @@ func TestLoadCCSwitchMCPDBPrefersReasonixColumn(t *testing.T) {
 }
 
 func TestLoadCCSwitchMCPDBFallsBackToCodexWithoutReasonixColumn(t *testing.T) {
-	if _, err := exec.LookPath("sqlite3"); err != nil {
-		t.Skip("sqlite3 not available")
-	}
 	dbPath := filepath.Join(testenv.TempDir(t), "cc-switch.db")
-	setup := `CREATE TABLE mcp_servers (
+	createCCSwitchTestDB(t, dbPath, `CREATE TABLE mcp_servers (
 		id TEXT PRIMARY KEY,
 		name TEXT NOT NULL,
 		server_config TEXT NOT NULL,
 		enabled_codex BOOLEAN NOT NULL DEFAULT 0
-	);
-	INSERT INTO mcp_servers VALUES ('codex-on', 'codex-on', '{"command":"node","args":["on.js"]}', 1);
-	INSERT INTO mcp_servers VALUES ('codex-off', 'codex-off', '{"command":"node","args":["off.js"]}', 0);`
-	if out, err := exec.Command("sqlite3", dbPath, setup).CombinedOutput(); err != nil {
-		t.Fatalf("create sqlite db: %v\n%s", err, out)
-	}
+	)`,
+		`INSERT INTO mcp_servers VALUES ('codex-on', 'codex-on', '{"command":"node","args":["on.js"]}', 1)`,
+		`INSERT INTO mcp_servers VALUES ('codex-off', 'codex-off', '{"command":"node","args":["off.js"]}', 0)`,
+	)
 	got, err := loadCCSwitchMCPDB(dbPath)
 	if err != nil {
 		t.Fatalf("loadCCSwitchMCPDB: %v", err)
@@ -184,19 +174,14 @@ func TestLoadCCSwitchMCPDBFallsBackToCodexWithoutReasonixColumn(t *testing.T) {
 }
 
 func TestLoadCCSwitchMCPEmptyDBDoesNotReadLegacyBackups(t *testing.T) {
-	if _, err := exec.LookPath("sqlite3"); err != nil {
-		t.Skip("sqlite3 not available")
-	}
 	root := testenv.TempDir(t)
 	dbPath := filepath.Join(root, "cc-switch.db")
-	if out, err := exec.Command("sqlite3", dbPath, `CREATE TABLE mcp_servers (
+	createCCSwitchTestDB(t, dbPath, `CREATE TABLE mcp_servers (
 		id TEXT PRIMARY KEY,
 		name TEXT NOT NULL,
 		server_config TEXT NOT NULL,
 		enabled_codex BOOLEAN NOT NULL DEFAULT 0
-	);`).CombinedOutput(); err != nil {
-		t.Fatalf("create sqlite db: %v\n%s", err, out)
-	}
+	)`)
 	stale := `{"mcp":{"servers":{"stale":{"name":"stale","server":{"command":"node","args":["stale.js"]},"apps":{"codex":true}}}}}`
 	if err := os.WriteFile(filepath.Join(root, "config.json.migrated"), []byte(stale), 0o644); err != nil {
 		t.Fatal(err)
@@ -207,5 +192,34 @@ func TestLoadCCSwitchMCPEmptyDBDoesNotReadLegacyBackups(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("empty sqlite db should be authoritative, got legacy entries: %+v", got)
+	}
+}
+
+func createCCSwitchTestDB(t *testing.T, path, schema string, statements ...string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open sqlite test database: %v", err)
+	}
+	if _, err := db.Exec(schema); err != nil {
+		_ = db.Close()
+		t.Fatalf("create sqlite test schema: %v", err)
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			_ = db.Close()
+			t.Fatalf("populate sqlite test database: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite test database: %v", err)
+	}
+}
+
+func TestCCSwitchReadOnlyDSNHandlesWindowsPaths(t *testing.T) {
+	got := ccSwitchReadOnlyDSN(`C:\Users\Ada Example\.cc-switch\cc-switch.db`)
+	want := "file:///C:/Users/Ada%20Example/.cc-switch/cc-switch.db?mode=ro&_pragma=busy_timeout%28150%29"
+	if got != want {
+		t.Fatalf("ccSwitchReadOnlyDSN() = %q, want %q", got, want)
 	}
 }

@@ -134,7 +134,7 @@ func TestStatusExtensionTracksMultipleSessionsAndUsage(t *testing.T) {
 	}}
 	client, stop := startServer(t, factory)
 	defer stop()
-	client.call(t, "initialize", InitializeParams{ProtocolVersion: 1})
+	client.call(t, "initialize", InitializeParams{ProtocolVersion: 1, ClientCapabilities: statusUpdatesCaps})
 	first := openStatusSession(t, client, testenv.TempDir(t))
 	second := openStatusSession(t, client, testenv.TempDir(t))
 

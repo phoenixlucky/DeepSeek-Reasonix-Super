@@ -5,6 +5,7 @@ import { Exception } from "./CapabilityScope";
 import { Clip } from "./Clip";
 import { Switch } from "./Switch";
 import { reason } from "../i18n/kernel";
+import { listMatcher } from "./listsearch";
 import "../styles/mcpheld.css";
 
 // One external service: whether it is answering, what it brought, and the two
@@ -58,11 +59,14 @@ export function ServerRow({
   const [busy, setBusy] = useState("");
   const [failed, setFailed] = useState("");
   const [confirming, setConfirming] = useState(false);
+  const [q, setQ] = useState("");
+  const search = useRef<HTMLInputElement>(null);
   if (owner.port !== port || owner.root !== root) {
     setOwner({ port, root });
     setBusy("");
     setFailed("");
     setConfirming(false);
+    setQ("");
   }
   // 状态码是主机答上来的事实，画出来即可；它是不是「需要你重新认证」还要看自动
   // 刷新有没有跑过，那件事目前无人知道。m.error 是外部服务器自己写的文本，只作
@@ -90,6 +94,13 @@ export function ServerRow({
       {live && m.enabled && m.state !== "ready" && m.state !== "pending" && (
         <button className="act" data-action="mcp.retry" data-target={m.name} disabled={!!busy} onClick={() => void run("retry", () => port.reconnectMcp(m.name))}>
           {t(busy === "retry" ? "连接中…" : m.state === "standby" ? "立即连接" : "重连")}
+        </button>
+      )}
+      {/* The server answered 401: the status is a fact the host drew, and signing in
+          is the one thing that answers it, so it sits beside the retry. */}
+      {live && m.enabled && m.state === "failed" && m.httpStatus === 401 && (
+        <button className="act" data-action="mcp.signin" data-target={m.name} disabled={!!busy} onClick={() => void run("signin", () => port.signinMcp(m.name))}>
+          {t(busy === "signin" ? "等待浏览器登录…" : "登录")}
         </button>
       )}
       {/* Removal is the one action here that cannot be undone by clicking again,
@@ -158,13 +169,51 @@ export function ServerRow({
       </ul>
       {!!m.heldMore && <span className="hn">{t("还有 {n} 个没有列出，批准时会一并生效。", { n: m.heldMore })}</span>}
       {live && (
-        <button className="act" data-action="mcp.trust" data-target={m.name} disabled={!!busy} onClick={() => void run("trust", () => port.trustMcp(m.name, m.heldDigest!))}>
-          {t(busy === "trust" ? "批准中…" : "批准并重新连接")}
+        <span className="acts">
+          <button className="act" data-action="mcp.trust" data-target={m.name} disabled={!!busy} onClick={() => void run("trust", () => port.trustMcp(m.name, m.heldDigest!))}>
+            {t(busy === "trust" ? "批准中…" : "批准并重新连接")}
+          </button>
+          {/* Following is asked for after an approval, never instead of one: the
+              kernel owes the approval first, and a refused approval stops here. */}
+          <button className="act" data-action="mcp.follow" data-target={m.name} disabled={!!busy}
+            onClick={() => void run("follow", async () => {
+              const approved = await port.trustMcp(m.name, m.heldDigest!);
+              if (approved.error) return approved;
+              await port.followMcp(m.name, true);
+            })}>
+            {t(busy === "follow" ? "批准中…" : "接受并以后都自动接受这个服务器的改动")}
+          </button>
+        </span>
+      )}
+    </div>
+  );
+  const asked = m.scopeUpgrade ?? [];
+  // The scope names are the server's words: shown as written, never read for meaning.
+  const upgrade = asked.length > 0 && (
+    <div className="srv-held" role="group" aria-label={t("这个服务器要求更多权限")}>
+      <span className="ds">{t("这个服务器拒绝了一次调用，并要求更多权限（以下是它自己写的名称）：")}</span>
+      <code>{asked.join(" ")}</code>
+      {live && (
+        <button className="act" data-action="mcp.upgrade" data-target={m.name} disabled={!!busy} onClick={() => void run("upgrade", () => port.upgradeMcp(m.name))}>
+          {t(busy === "upgrade" ? "等待浏览器授权…" : "授权更多权限")}
+        </button>
+      )}
+    </div>
+  );
+  const following = m.followsChanges && (
+    <div className="srv-held" role="group" aria-label={t("自动接受这个服务器的改动")}>
+      <span className="ds">{t("这个服务器的改动会自动接受，并在通知里告诉你。")}</span>
+      {live && (
+        <button className="act" data-action="mcp.unfollow" data-target={m.name} disabled={!!busy} onClick={() => void run("unfollow", () => port.followMcp(m.name, false))}>
+          {t(busy === "unfollow" ? "取消中…" : "取消跟随")}
         </button>
       )}
     </div>
   );
   const tools = m.toolList ?? [];
+  const searchable = tools.length > 5;
+  const matches = listMatcher(searchable ? q : "");
+  const shown = tools.filter((tool) => matches([tool.name, tool.description, tool.error]));
   const tag = loadTag(m);
   // The tool list is what gets loaded, so the choice sits above it; a server
   // whose tools are not known yet has nothing to load either way.
@@ -227,8 +276,8 @@ export function ServerRow({
         <div className="srv-hd">{head}</div>
         {about}
         {launch}
-        {held}
-        {why && <div className="why">{why}</div>}
+        {held}{upgrade}{following}
+        {why && <div className="why" role={failed ? "alert" : undefined}>{why}</div>}
         {confirm}
       </div>
     );
@@ -240,12 +289,20 @@ export function ServerRow({
       <summary>{head}</summary>
       {about}
       {launch}
-      {held}
-      {why && <div className="why">{why}</div>}
+      {held}{upgrade}{following}
+      {why && <div className="why" role={failed ? "alert" : undefined}>{why}</div>}
       {confirm}
       {load}
       <div className="peek">
-        {tools.map((tool) => (
+        {searchable && <div className="msearch">
+          <input ref={search} type="search" data-action="mcp.tool-search" data-target={m.name}
+            value={q} spellCheck={false} aria-label={t("搜索 {name} 的工具", { name: m.name })}
+            placeholder={t("搜索 {name} 的工具", { name: m.name })} onChange={(e) => setQ(e.target.value)} />
+          {q && <button className="act" data-action="mcp.tool-search-clear" data-target={m.name}
+            onClick={() => { setQ(""); search.current?.focus(); }}>{t("清除")}</button>}
+        </div>}
+        {tools.length > 0 && shown.length === 0 && <div className="empty" role="status">{t("没有匹配的工具。")}</div>}
+        {shown.map((tool) => (
           // 一行一个工具：它叫什么、它自己说它干什么、以及这一刀下去会不会动
           // 你的东西。schema 被拒的那些照列，但写明为什么调不了。
           <div className="trow" key={tool.name} data-bad={tool.error ? "" : undefined}>

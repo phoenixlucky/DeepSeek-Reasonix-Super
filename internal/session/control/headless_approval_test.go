@@ -199,7 +199,10 @@ func TestApplyHeadlessApprovalModeAllowsOnlyLowRiskProjectMemoryCreate(t *testin
 			if prompts != 0 {
 				t.Fatalf("approval prompts = %d, want 0 for headless run", prompts)
 			}
-			_, saved := store.Read("release-target")
+			_, saved, readErr := store.Read("release-target")
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
 			if saved != tc.wantMemory {
 				t.Fatalf("saved = %v, want %v", saved, tc.wantMemory)
 			}

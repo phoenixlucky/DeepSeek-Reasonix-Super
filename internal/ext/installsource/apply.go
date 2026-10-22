@@ -11,6 +11,7 @@ import (
 
 	"reasonix/internal/contract/config"
 	"reasonix/internal/ext/skill"
+	"reasonix/internal/ext/skilllock"
 )
 
 // apply dispatches to the per-action implementation. Each branch is
@@ -23,11 +24,23 @@ func (t *Tool) apply(ctx context.Context, req request, act *action) error {
 		case "register_skill_root":
 			return t.applySkillRoot(req, act)
 		case "copy_skill":
-			return t.applyCopySkill(req, act)
+			err := t.applyCopySkill(req, act)
+			if err == nil {
+				t.recordSkillSource(act)
+			}
+			return err
 		case "link_skill":
-			return t.applyLinkSkill(req, act)
+			err := t.applyLinkSkill(req, act)
+			if err == nil {
+				t.recordSkillSource(act)
+			}
+			return err
 		case "remove_skill":
-			return t.applyRemoveSkill(req, act)
+			err := t.applyRemoveSkill(req, act)
+			if err == nil && act.Scope == "global" && t.reasonixHome != "" {
+				_ = skilllock.Forget(t.reasonixHome, act.Name, act.Scope)
+			}
+			return err
 		case "remove_skill_root":
 			return t.applyRemoveSkillRoot(req, act)
 		default:

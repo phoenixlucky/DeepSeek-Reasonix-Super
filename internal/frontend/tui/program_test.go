@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -25,6 +26,12 @@ type recordingKernel struct {
 	git   bool
 	// keyless makes the kernel refuse a turn the way it does with no key set.
 	keyless bool
+	// refuseText makes the attachment route refuse a kept paste.
+	refuseText bool
+	// partialCoverage makes a prepared rewind plan ask for confirmation.
+	partialCoverage bool
+	// mcpRows replaces the canned /mcp list when set.
+	mcpRows []map[string]any
 }
 
 func (k *recordingKernel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -61,7 +68,7 @@ func (k *recordingKernel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/sessions":
 		_ = json.NewEncoder(w).Encode([]map[string]any{
 			{"name": "a", "path": "/s/a.jsonl", "title": "fix the parser", "turns": 3, "current": true},
-			{"name": "b", "path": "/s/b.jsonl", "title": "write the docs", "turns": 2},
+			{"name": "b", "path": "/s/b.jsonl", "title": "write the docs", "turns": 2, "unread": true},
 			{"name": "c", "path": "/s/c.jsonl", "title": "fix the lexer", "turns": 1},
 		})
 	case "/history":
@@ -70,6 +77,15 @@ func (k *recordingKernel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"itemId": "q-7"})
 	case "/provider-setup":
 		_ = json.NewEncoder(w).Encode(map[string]any{"required": true, "provider": "beta", "model": "b1"})
+	case "/attachments":
+		if k.refuseText {
+			w.WriteHeader(http.StatusUnsupportedMediaType)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": "attachment.not_text", "message": "not text"})
+			return
+		}
+		var in struct{ Kind, Text string }
+		_ = json.Unmarshal(body, &in)
+		_ = json.NewEncoder(w).Encode(map[string]any{"path": ".reasonix/attachments/p.txt", "pointer": "[pasted text kept out of this message: " + strconv.Itoa(len(in.Text)) + " bytes]\nSaved: .reasonix/attachments/p.txt\n"})
 	case "/submit":
 		if k.keyless {
 			w.WriteHeader(http.StatusConflict)
@@ -95,6 +111,10 @@ func (k *recordingKernel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			{"ref": "beta/solo", "provider": "beta", "model": "solo"},
 		}})
 	case "/mcp":
+		if k.mcpRows != nil {
+			_ = json.NewEncoder(w).Encode(map[string]any{"servers": k.mcpRows})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"servers": []map[string]any{
 			{"name": "docs", "state": "ready", "enabled": true, "transport": "http", "source": "user", "tools": 2,
 				"toolList": []map[string]any{{"name": "search", "readOnly": true}, {"name": "purge", "destructive": true}}},
@@ -106,9 +126,21 @@ func (k *recordingKernel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			{"turn": 0, "prompt": "read the code"}, {"turn": 1, "prompt": "fix the bug", "files": 2},
 		})
 	case "/rewind/prepare":
+		if k.partialCoverage {
+			_ = json.NewEncoder(w).Encode(map[string]any{"planId": "p-1", "canFiles": true, "canConversation": true,
+				"coverageGaps": []map[string]any{{"path": "gen.go"}}, "requiresConfirmation": true})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"planId": "p-1", "canFiles": true, "canConversation": true})
 	case "/rewind/commit":
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "conversationOk": true})
+	case "/delete-session":
+		if strings.Contains(string(body), `"a"`) {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": "session.active", "message": "this session is the one open here"})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -175,8 +207,10 @@ func press(m *model, k string) tea.Cmd {
 		"enter":        {Code: tea.KeyEnter},
 		"esc":          {Code: tea.KeyEscape},
 		"ctrl+s":       {Code: 's', Mod: tea.ModCtrl},
+		"ctrl+d":       {Code: 'd', Mod: tea.ModCtrl},
 		"ctrl+c":       {Code: 'c', Mod: tea.ModCtrl},
 		"ctrl+o":       {Code: 'o', Mod: tea.ModCtrl},
+		"ctrl+g":       {Code: 'g', Mod: tea.ModCtrl},
 		"y":            {Code: 'y', Text: "y"},
 		"a":            {Code: 'a', Text: "a"},
 		"n":            {Code: 'n', Text: "n"},
@@ -605,8 +639,8 @@ func TestAskAutoSubmitArrowStopsAtLastQuestion(t *testing.T) {
 	if m.ask == nil || m.ask.tab != 1 {
 		t.Fatalf("right must stop at the last question, got tab %d", m.ask.tab)
 	}
-	if calls := strings.Join(k.seen(), "\n"); strings.Contains(calls, "POST /answer") {
-		t.Fatalf("an arrow must make no /answer call:\n%s", calls)
+	if calls := strings.Join(k.seen(), "\n"); strings.Contains(calls, `"answers"`) {
+		t.Fatalf("an arrow must not submit an answer:\n%s", calls)
 	}
 }
 

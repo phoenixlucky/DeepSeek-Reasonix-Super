@@ -1,11 +1,13 @@
 package control
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"slices"
 	"testing"
 
+	"reasonix/internal/contract/provider"
 	"reasonix/internal/state/sessionstore"
 )
 
@@ -109,5 +111,64 @@ func TestABranchIsListedBesideItsSourceUnderItsOwnTitle(t *testing.T) {
 	}
 	if branch.Recovered || branch.CustomTitle != "the other way" || source.CustomTitle == branch.CustomTitle {
 		t.Fatalf("branch = %+v, want an ordinary session with its own title (source %+v)", branch, source)
+	}
+}
+
+func startLaterTurn(t *testing.T, c *Controller, ag interface {
+	Session() *sessionstore.Session
+}) {
+	t.Helper()
+	if err := c.beginCheckpoint(context.Background(), "third prompt"); err != nil {
+		t.Fatal(err)
+	}
+	ag.Session().Add(provider.Message{Role: provider.RoleUser, Content: "third prompt", RawContent: "third prompt"})
+	c.mu.Lock()
+	c.gate.begin(func() {})
+	c.mu.Unlock()
+}
+
+func TestBranchAtClosedTurnWhileALaterTurnRuns(t *testing.T) {
+	c, ag, _ := runTwoTurns(t)
+	turns := orderedTurns(t, c)
+	secondStart, _ := c.checkpoints.boundary(turns[1])
+	startLaterTurn(t, c, ag)
+	total := len(ag.Session().Messages)
+
+	path, err := c.BranchAt(turns[0], "")
+	if err != nil {
+		t.Fatalf("BranchAt a closed turn mid-run: %v", err)
+	}
+	if got := savedMessages(t, path); got != secondStart {
+		t.Fatalf("branch holds %d messages, want %d: the first turn only", got, secondStart)
+	}
+	if _, err := c.BranchAt(turns[1], ""); err != nil {
+		t.Fatalf("the latest closed turn must branch too: %v", err)
+	}
+	if len(ag.Session().Messages) != total {
+		t.Fatalf("the running conversation changed: %d messages, want %d", len(ag.Session().Messages), total)
+	}
+	if _, err := c.BranchAt(turns[1]+1, ""); !errors.Is(err, ErrTurnRunning) {
+		t.Fatalf("the running turn itself: err = %v, want ErrTurnRunning", err)
+	}
+}
+
+func TestBranchAtClosedTurnRefusesABoundaryThatNamesAnotherMessage(t *testing.T) {
+	c, ag, _ := runTwoTurns(t)
+	turns := orderedTurns(t, c)
+	startLaterTurn(t, c, ag)
+	at, _ := c.checkpoints.boundary(turns[1] + 1)
+
+	msgs := ag.Session().Snapshot()
+	msgs[at] = provider.Message{Role: provider.RoleUser, Content: "someone else's prompt", RawContent: "someone else's prompt"}
+	ag.Session().Rewrite(msgs, "")
+
+	if _, err := c.BranchAt(turns[1], ""); !errors.Is(err, ErrBranchStale) || !errors.Is(err, ErrBranchUnavailable) {
+		t.Fatalf("a boundary now holding another prompt: err = %v, want ErrBranchStale", err)
+	}
+
+	shifted := append([]provider.Message{{Role: provider.RoleUser, Content: "inserted", RawContent: "inserted"}}, ag.Session().Snapshot()...)
+	ag.Session().Rewrite(shifted, "")
+	if _, err := c.BranchAt(turns[0], ""); !errors.Is(err, ErrBranchStale) {
+		t.Fatalf("a boundary shifted by an earlier rewrite: err = %v, want ErrBranchStale", err)
 	}
 }

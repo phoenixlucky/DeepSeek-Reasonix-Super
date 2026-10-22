@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { t } from "../i18n";
 import { reason } from "../i18n/kernel";
+import logoWordmark from "../assets/logo-wordmark.svg";
 import { HttpError } from "../port/port";
 import type { AgentPort, Protocol, ProviderProbe, ProviderSetup } from "../port/port";
 import { KIND_LABEL, nameFrom } from "./vendors";
@@ -11,6 +12,7 @@ interface Props {
   port: AgentPort;
   setup: ProviderSetup;
   onDone: () => void;
+  onSkip?: () => void;
 }
 
 // Shortcuts fill the address, nothing more. A service missing from this row is
@@ -68,7 +70,7 @@ function failed(e: unknown): Failed {
 // it belongs to is the user's business, so this asks where and with what, then
 // lets the endpoint answer the rest — protocol, model list, image support are
 // all knowable by asking, and a person cannot be expected to know them.
-export function Onboarding({ port, setup, onDone }: Props) {
+export function Onboarding({ port, setup, onDone, onSkip }: Props) {
   const [pick, setPick] = useState(SHORTCUTS[0].label);
   const [url, setUrl] = useState(SHORTCUTS[0].url);
   const [completed, setCompleted] = useState("");
@@ -171,8 +173,10 @@ export function Onboarding({ port, setup, onDone }: Props) {
   return (
     <div className="onb-stage">
       <header className="onb-brandbar" onDoubleClick={zoomOnTitleBar}>
-        <span className="onb-brandmark" aria-hidden="true">R</span>
-        <span className="onb-brandname"><b>reasonix</b><small>studio</small></span>
+        <span className="onb-lockup">
+          <img className="onb-wordmark" src={logoWordmark} alt="Reasonix Studio" draggable={false} />
+          <small className="onb-brandsub" aria-hidden="true">studio</small>
+        </span>
         <WindowControls />
       </header>
       <div className="onb-shell">
@@ -336,6 +340,11 @@ export function Onboarding({ port, setup, onDone }: Props) {
         >
           {t(busy ? (found ? "正在保存…" : "正在连接…") : found ? "开始" : "连接并继续")}
         </button>
+        {onSkip && (
+          <button type="button" className="onb-skip" data-action="onboarding.skip" disabled={busy} onClick={onSkip}>
+            {t("稍后再说")}
+          </button>
+        )}
 
         <div className="onb-note">
           {t("key 保存在本机配置中，不会上传至任何第三方。模型、推理强度与执行设定均有默认值，可随时在输入框上方调整。")}

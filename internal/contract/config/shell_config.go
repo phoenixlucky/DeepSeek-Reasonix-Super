@@ -15,15 +15,21 @@ import (
 // auto if absent). Path optionally points at a specific shell executable. Env
 // adds KEY=value variables to every bash command's environment.
 type ShellConfig struct {
-	Prefer string            `toml:"prefer"`
-	Path   string            `toml:"path"`
-	Env    map[string]string `toml:"env"`
+	Prefer string `toml:"prefer"`
+	Path   string `toml:"path"`
+	// Args are launcher arguments for Path (wsl.exe -d <distro> -- /bin/bash).
+	// They are the user's alone: a project cannot set or inherit them.
+	Args []string          `toml:"args"`
+	Env  map[string]string `toml:"env"`
 }
 
 // warnShellEnvProblems reports [tools.shell] env the load could not honour: a
 // project table it discarded, and entries that cannot become environment entries
 // (the bash tool drops those, so they would silently never take effect).
 func warnShellEnvProblems(cfg *Config, projectMeta toml.MetaData) {
+	if projectMeta.IsDefined("tools", "shell", "args") {
+		cfg.addLoadWarning("project reasonix.toml sets [tools.shell] args, which is user-global; it was ignored")
+	}
 	if projectMeta.IsDefined("tools", "shell", "env") {
 		cfg.addLoadWarning("project reasonix.toml sets [tools.shell] env, which is user-global; it was ignored")
 	}

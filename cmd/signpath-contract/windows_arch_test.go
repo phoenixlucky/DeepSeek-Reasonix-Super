@@ -191,16 +191,11 @@ func TestPublishRefusesAPartialWindowsSet(t *testing.T) {
 	root := parseWorkflowFile(t, "../../.github/workflows/release-studio.yml")
 	publish := mappingValue(jobsOf(t, root), "publish")
 	run := mappingScalar(stepNamed(t, publish, "Collect artifacts"), "run")
-	if !strings.Contains(run, `"$count" -lt 10`) {
-		t.Error("publish does not require at least 10 ReasonixStudio-* packages")
+	if !strings.Contains(run, "bash scripts/verify-studio-artifacts.sh dist") {
+		t.Fatal("publish does not run the complete artifact-set verifier")
 	}
-	for _, name := range []string{
-		"ReasonixStudio-windows-amd64-installer.exe", "ReasonixStudio-windows-arm64-installer.exe",
-		"ReasonixStudio-windows-amd64.zip", "ReasonixStudio-windows-arm64.zip",
-		"ReasonixStudio-linux-*.deb", "ReasonixStudio-linux-*.rpm",
-	} {
-		if !strings.Contains(run, "'"+name+"'") {
-			t.Errorf("publish does not require %s by name", name)
-		}
+	ci := parseWorkflowFile(t, "../../.github/workflows/ci.yml")
+	if !nodeContains(ci, "scripts/studio-artifacts.test.mjs") {
+		t.Fatal("CI does not exercise missing Windows/Linux/macOS artifacts against the publication verifier")
 	}
 }

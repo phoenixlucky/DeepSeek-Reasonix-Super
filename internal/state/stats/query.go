@@ -21,7 +21,10 @@ type DailyTokens struct {
 	Turns      int              `json:"turns"`          // completed turns
 	CacheHit   int64            `json:"cacheHit"`       // cached input tokens that day
 	CacheMiss  int64            `json:"cacheMiss"`      // uncached input tokens that day
-	Cost       []pricing.Money  `json:"cost,omitempty"` // one entry per billing currency
+	Cost       []pricing.Money  `json:"cost,omitempty"` // billed, one entry per billing currency
+	// EstimateCost is what a plan's API-priced estimates add up to; it never
+	// shares a figure with Cost.
+	EstimateCost []pricing.Money `json:"estimateCost,omitempty"`
 }
 
 // ModelUsage is one model's aggregate within the range.
@@ -55,12 +58,19 @@ type RangeStats struct {
 	// Cost is one entry per billing currency: summing two would have to invent
 	// an exchange rate, and the rate a turn was billed at is not today's.
 	Cost []pricing.Money `json:"cost,omitempty"`
+	// EstimateCost is the API-priced estimate of what subscription-equivalent
+	// connections used, one entry per currency. It is not money paid and is kept
+	// out of Cost, so a plan's estimate never reads as a charge.
+	EstimateCost []pricing.Money `json:"estimateCost,omitempty"`
 	// CostEstimated marks a total that folded in at least one quote priced from
 	// a fallback rate card. A surface labelling the sum "paid" has to say so.
-	CostEstimated bool   `json:"costEstimated,omitempty"`
-	ActiveDays    int    `json:"active_days"`
-	TopModel      string `json:"top_model"`
-	TopProvider   string `json:"top_provider"`
+	CostEstimated bool `json:"costEstimated,omitempty"`
+	// CostIncomplete marks a total that counted usage for at least one call
+	// whose money is unknown. Cost is then a floor, not the whole bill.
+	CostIncomplete bool   `json:"costIncomplete,omitempty"`
+	ActiveDays     int    `json:"active_days"`
+	TopModel       string `json:"top_model"`
+	TopProvider    string `json:"top_provider"`
 	// Series
 	Daily     []DailyTokens   `json:"daily"`
 	Models    []ModelUsage    `json:"models"`
@@ -125,11 +135,11 @@ func (w *Writer) queryJSONL(f SourceFilter) (RangeStats, error) {
 	}
 	modelTotals := map[string]int64{}
 	providerTotals := map[string]int64{}
-	totalCost := map[string]pricing.Amount{}
+	totalCost := newCostBooks()
 	active := map[string]bool{} // day -> active
 	for _, day := range days {
 		recs := recordsByDay[day]
-		dayCost := map[string]pricing.Amount{}
+		dayCost := newCostBooks()
 		dayTotals := map[string]int64{}
 		dayTurns := 0
 		dayRequests := 0
@@ -176,9 +186,13 @@ func (w *Writer) queryJSONL(f SourceFilter) (RangeStats, error) {
 				dayTotals[model] += t
 			}
 			if currency, amount := usageEntry(day, rec).CostIn(view); currency != "" {
-				dayCost[currency] += pricing.Amount(amount)
-				totalCost[currency] += pricing.Amount(amount)
-				out.CostEstimated = out.CostEstimated || rec.CostEstimated
+				mode := usagecatalog.CostMode(rec.BillingMode)
+				dayCost.add(mode, currency, pricing.Amount(amount))
+				totalCost.add(mode, currency, pricing.Amount(amount))
+				out.CostEstimated = out.CostEstimated || (mode == "" && rec.CostEstimated)
+			}
+			if rec.CostComplete != nil && !*rec.CostComplete {
+				out.CostIncomplete = true
 			}
 			dayActive = dayActive || rec.Total > 0 || requests > 0
 		}
@@ -201,7 +215,7 @@ func (w *Writer) queryJSONL(f SourceFilter) (RangeStats, error) {
 			dayRequests, dayTurns, dayCacheHit, dayCacheMiss))
 	}
 	out.ActiveDays = len(active)
-	out.Cost = moneySorted(totalCost)
+	out.Cost, out.EstimateCost = moneySorted(totalCost.billed), moneySorted(totalCost.estimate)
 	out.Models = modelsSorted(modelTotals)
 	out.Providers = providersSorted(providerTotals)
 	if len(out.Models) > 0 {
@@ -230,10 +244,10 @@ func rangeStatsFromRollups(f SourceFilter, days []string, rows []usagecatalog.Ro
 	}
 	modelTotals := map[string]int64{}
 	providerTotals := map[string]int64{}
-	totalCost := map[string]pricing.Amount{}
+	totalCost := newCostBooks()
 	active := map[string]bool{}
 	for _, day := range days {
-		dayCost := map[string]pricing.Amount{}
+		dayCost := newCostBooks()
 		dayModels := map[string]int64{}
 		dayProviders := map[string]int64{}
 		dayRequests, dayTurns := int64(0), int64(0)
@@ -267,9 +281,12 @@ func rangeStatsFromRollups(f SourceFilter, days []string, rows []usagecatalog.Ro
 				if currency == "" || entry.Amount == 0 {
 					continue
 				}
-				dayCost[currency] += pricing.Amount(entry.Amount)
-				totalCost[currency] += pricing.Amount(entry.Amount)
-				out.CostEstimated = out.CostEstimated || entry.Estimated
+				dayCost.add(entry.Mode, currency, pricing.Amount(entry.Amount))
+				totalCost.add(entry.Mode, currency, pricing.Amount(entry.Amount))
+				out.CostEstimated = out.CostEstimated || (entry.Mode == "" && entry.Estimated)
+			}
+			if row.CostIncomplete > 0 {
+				out.CostIncomplete = true
 			}
 			if row.Total > 0 || row.Requests > 0 {
 				active[day] = true
@@ -277,10 +294,10 @@ func rangeStatsFromRollups(f SourceFilter, days []string, rows []usagecatalog.Ro
 		}
 		out.Daily = append(out.Daily, DailyTokens{Day: day, Total: int(sum(dayModels)), ByModel: dayModels, ByProvider: dayProviders,
 			Requests: int(dayRequests), Turns: int(dayTurns), CacheHit: dayCacheHit, CacheMiss: dayCacheMiss,
-			Cost: moneySorted(dayCost)})
+			Cost: moneySorted(dayCost.billed), EstimateCost: moneySorted(dayCost.estimate)})
 	}
 	out.ActiveDays = len(active)
-	out.Cost = moneySorted(totalCost)
+	out.Cost, out.EstimateCost = moneySorted(totalCost.billed), moneySorted(totalCost.estimate)
 	out.Models = modelsSorted(modelTotals)
 	out.Providers = providersSorted(providerTotals)
 	if len(out.Models) > 0 {
@@ -301,14 +318,29 @@ func rangeStatsFromRollups(f SourceFilter, days []string, rows []usagecatalog.Ro
 }
 
 // dailyRow assembles one day of the trend series.
-func dailyRow(day string, byModel, byProvider map[string]int64, cost map[string]pricing.Amount,
+func dailyRow(day string, byModel, byProvider map[string]int64, cost costBooks,
 	requests, turns int, cacheHit, cacheMiss int64,
 ) DailyTokens {
 	return DailyTokens{
 		Day: day, Total: int(sum(byModel)), ByModel: byModel, ByProvider: byProvider,
 		Requests: requests, Turns: turns, CacheHit: cacheHit, CacheMiss: cacheMiss,
-		Cost: moneySorted(cost),
+		Cost: moneySorted(cost.billed), EstimateCost: moneySorted(cost.estimate),
 	}
+}
+
+// costBooks tallies cost per currency, billed and estimated apart.
+type costBooks struct{ billed, estimate map[string]pricing.Amount }
+
+func newCostBooks() costBooks {
+	return costBooks{billed: map[string]pricing.Amount{}, estimate: map[string]pricing.Amount{}}
+}
+
+func (b costBooks) add(mode, currency string, amount pricing.Amount) {
+	if mode == usagecatalog.ModeEstimate {
+		b.estimate[currency] += amount
+		return
+	}
+	b.billed[currency] += amount
 }
 
 // moneySorted renders the tally in a stable currency order so a repeated query

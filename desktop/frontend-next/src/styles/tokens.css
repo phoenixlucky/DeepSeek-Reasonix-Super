@@ -42,7 +42,7 @@
 @property --nav-w { syntax: "<length>"; inherits: true; initial-value: 0px }
 @property --rail-w { syntax: "<length>"; inherits: true; initial-value: 264px }
 @property --side-w { syntax: "<length>"; inherits: true; initial-value: 316px }
-@property --dock-w { syntax: "<length>"; inherits: true; initial-value: 560px }
+@property --dock-w { syntax: "<length>"; inherits: false; initial-value: 560px }
 
 @property --win-ar { syntax: "<number>"; inherits: true; initial-value: 1.6 }
 
@@ -50,8 +50,8 @@
     interpolate-size: allow-keywords;
     --nav-open: 48px;
 
-    --call-sym: 28px; --call-gap: 14px;
-    --rail-open: 264px; --side-open: 316px; --dock-open: 560px; --dock-left-min: 236px; --pane-gutter: 12px;
+    --call-sym: calc(28px * var(--d-scale, 1)); --call-gap: calc(14px * var(--d-scale, 1));
+    --rail-open: 264px; --side-open: 316px; --dock-open: 560px; --dock-left-min: 236px; --pane-gutter: calc(12px * var(--d-scale, 1));
     --page: oklch(95.8% .0092 85); --surface: oklch(98.9% .0046 85);
     --raised: oklch(100% 0 85); --overlay: oklch(93.1% .0138 85);
     --border: oklch(87.6% .0184 85); --hair: oklch(91.7% .0126 85);
@@ -71,7 +71,7 @@
     --syn-key: oklch(47% .155 305); --syn-str: oklch(45% .105 150);
     --syn-num: oklch(50% .125 58); --syn-fn: oklch(46% .135 255);
 
-    --accent-ink: #884F00; --warn-ink: oklch(51% .120 45); --ok-ink: #286F44; --err-ink: #AF362E;
+    --accent-ink: #884F00; --warn-ink: oklch(51% .120 45); --ok-ink: #286F44; --err-ink: #AF362E; --net-ink: oklch(43% .150 267);
 
     --cat-1: #2a78d6; --cat-2: #eb6834; --cat-3: #1baf7a; --cat-4: #eda100; --cat-5: #e87ba4;
     --io-up: var(--cat-1); --io-down: var(--cat-5);
@@ -114,15 +114,19 @@
 
     --y-say: 21px;
 
-    --y-close: 4px; --close-h: 26px;
+    --y-close: 4px; --close-h: calc(26px * var(--d-scale, 1));
 
     --track-display: -.018em;
     --track-tight: -.02em; --track-lead: .06em; --track-cap: .12em;
 
-    --r-xs: 4px; --r-sm: 6px; --r-md: 9px; --r-lg: 12px; --r-pill: 999px;
+    --r-xs: calc(4px * var(--r-scale, 1)); --r-sm: calc(6px * var(--r-scale, 1));
+    --r-md: calc(9px * var(--r-scale, 1)); --r-lg: calc(12px * var(--r-scale, 1)); --r-pill: 999px;
 
-    --fs-micro: 11px; --fs-meta: 12px; --fs-ui: 13px;
-    --fs-lead: 15px; --fs-title: 17px; --fs-display: 22px;
+    --sp-1: 2px; --sp-2: 4px; --sp-3: 6px; --sp-4: 8px;
+    --sp-5: 10px; --sp-6: 12px; --sp-7: 16px; --sp-8: 24px;
+
+    --fs-micro: calc(11px * var(--fs-scale, 1)); --fs-meta: calc(12px * var(--fs-scale, 1)); --fs-ui: calc(13px * var(--fs-scale, 1));
+    --fs-lead: calc(15px * var(--fs-scale, 1)); --fs-title: calc(17px * var(--fs-scale, 1)); --fs-display: calc(22px * var(--fs-scale, 1));
 
     --read: 16px;
 
@@ -145,7 +149,7 @@
     --syn-key: oklch(78% .125 305); --syn-str: oklch(78% .105 150);
     --syn-num: oklch(80% .105 58); --syn-fn: oklch(76% .110 255);
     --accent-ink: var(--accent); --warn-ink: var(--warn);
-    --ok-ink: var(--ok); --err-ink: var(--err);
+    --ok-ink: var(--ok); --err-ink: oklch(71% .150 27); --net-ink: var(--net);
     --cat-1: #3987e5; --cat-2: #d95926; --cat-3: #199e70; --cat-4: #c98500; --cat-5: #d55181;
     --face-sunk: oklch(14.2% .014 255); --face-code: oklch(16.4% .015 255);
     --float: oklch(25.5% .018 255); --float-hi: oklch(31% .020 255);
@@ -169,7 +173,7 @@
     --syn-key: oklch(78% .125 305); --syn-str: oklch(78% .105 150);
     --syn-num: oklch(80% .105 58); --syn-fn: oklch(76% .110 255);
     --accent-ink: var(--accent); --warn-ink: var(--warn);
-    --ok-ink: var(--ok); --err-ink: var(--err);
+    --ok-ink: var(--ok); --err-ink: oklch(71% .150 27); --net-ink: var(--net);
     --cat-1: #3987e5; --cat-2: #d95926; --cat-3: #199e70; --cat-4: #c98500; --cat-5: #d55181;
     --face-sunk: oklch(14.2% .014 255); --face-code: oklch(16.4% .015 255);
     --float: oklch(25.5% .018 255); --float-hi: oklch(31% .020 255);
@@ -190,7 +194,7 @@
     --warn: oklch(57.5% .118 45); --add: var(--ok); --del: var(--err);
     --syn-key: oklch(47% .155 305); --syn-str: oklch(45% .105 150);
     --syn-num: oklch(50% .125 58); --syn-fn: oklch(46% .135 255);
-    --accent-ink: #884F00; --warn-ink: oklch(51% .120 45); --ok-ink: #286F44; --err-ink: #AF362E;
+    --accent-ink: #884F00; --warn-ink: oklch(51% .120 45); --ok-ink: #286F44; --err-ink: #AF362E; --net-ink: oklch(43% .150 267);
 
     --cat-1: #2a78d6; --cat-2: #eb6834; --cat-3: #1baf7a; --cat-4: #eda100; --cat-5: #e87ba4;
     --face-sunk: oklch(95% .0092 85); --face-code: oklch(97.6% .0057 85);

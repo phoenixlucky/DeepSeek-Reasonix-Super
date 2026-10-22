@@ -196,7 +196,9 @@ func TestRecoveryBlockSurfacesConcreteReason(t *testing.T) {
 		Blocked: true,
 		Message: "blocked: Auto stopped repeating this operation after 3 consecutive failures: write a.go. Other operations remain available.",
 	}}
-	a := New(nil, reg, sessionstore.NewSession(""), Options{RecoveryGate: gate}, event.Discard)
+	a := New(nil, reg, sessionstore.NewSession(""), Options{RecoveryGate: gate,
+		CheckTargetAccess: allowTestFileAccess,
+	}, event.Discard)
 	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{
 		ID: "blocked-write", Name: "write_file", Arguments: `{"path":"a.go","content":"x"}`,
 	})

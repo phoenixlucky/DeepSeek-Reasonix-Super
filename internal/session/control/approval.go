@@ -157,7 +157,7 @@ func (a *approvalManager) preApprovedForDecisionOptions(tool, subject string, ar
 		return a.sessionGrantAllowsLocked(tool, subject)
 	}
 	if requireHuman {
-		return a.posture.mode == ToolApprovalYolo || a.sessionGrantAllowsLocked(tool, subject)
+		return a.requiredHumanAnsweredLocked(tool, subject)
 	}
 	return a.bypassAllowsLocked(tool, subject, args) || a.sessionGrantAllowsLocked(tool, subject)
 }
@@ -165,6 +165,16 @@ func (a *approvalManager) preApprovedForDecisionOptions(tool, subject string, ar
 func (a *approvalManager) preApprovedForRequiredHuman(tool, subject string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.requiredHumanAnsweredLocked(tool, subject)
+}
+
+// requiredHumanAnsweredLocked is whether YOLO or a session grant stands in for
+// the person on a call that needs one. A fresh-human tool is never answered that
+// way: its card says so, and a grant for it is not something the host records.
+func (a *approvalManager) requiredHumanAnsweredLocked(tool, subject string) bool {
+	if requiresFreshApprovalTool(tool) {
+		return false
+	}
 	return a.posture.mode == ToolApprovalYolo || a.sessionGrantAllowsLocked(tool, subject)
 }
 
@@ -310,9 +320,12 @@ func (p *promptIDs) issue() string {
 // event (see ReplayPendingPrompts).
 type pendingAsk struct {
 	questions []event.AskQuestion
+	engaged   chan struct{}
 	reply     chan []event.AskAnswer
 	queued    bool // registered but not yet shown; replay must skip it
 	origin    *event.AskOrigin
+	// skipAt is when the host will skip the question; zero when it never will.
+	skipAt time.Time
 }
 
 // registerAsk records the pending question batch under an identity already
@@ -323,7 +336,7 @@ func (a *approvalManager) registerAsk(id string, questions []event.AskQuestion, 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	reply := make(chan []event.AskAnswer, 1)
-	a.asks[id] = pendingAsk{questions: questions, reply: reply, queued: true, origin: origin}
+	a.asks[id] = pendingAsk{questions: questions, engaged: make(chan struct{}), reply: reply, queued: true, origin: origin}
 	return reply
 }
 
@@ -352,6 +365,30 @@ func (a *approvalManager) markAskEmitted(id string) {
 	}
 }
 
+// setAskSkipAt records when an emitted question will be skipped.
+func (a *approvalManager) setAskSkipAt(id string, at time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if p, ok := a.asks[id]; ok {
+		p.skipAt = at
+		a.asks[id] = p
+	}
+}
+
+// skipInMs is what is left of the wait a frontend should show: zero when the
+// question is never skipped or the person has taken it over.
+func (p pendingAsk) skipInMs(now time.Time) int64 {
+	if p.skipAt.IsZero() {
+		return 0
+	}
+	select {
+	case <-p.engaged:
+		return 0
+	default:
+	}
+	return max(p.skipAt.Sub(now).Milliseconds(), 1)
+}
+
 // queuedAsks reports asks registered but not yet shown.
 func (a *approvalManager) queuedAsks() int {
 	a.mu.Lock()
@@ -370,15 +407,6 @@ func (a *approvalManager) cancelAsk(id string) {
 	a.mu.Lock()
 	delete(a.asks, id)
 	a.mu.Unlock()
-}
-
-// resolveAsk removes and returns the pending ask for id (AnswerQuestion path).
-func (a *approvalManager) resolveAsk(id string) (pendingAsk, bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	p, ok := a.asks[id]
-	delete(a.asks, id)
-	return p, ok
 }
 
 // clearAll drops every in-flight prompt without signaling — the cancel path,
@@ -481,7 +509,8 @@ func (a *approvalManager) waitContext(ctx context.Context) (context.Context, con
 }
 
 // snapshotPrompts copies the in-flight prompts for re-emission to a reconnected
-// frontend (ReplayPendingPrompts).
+// frontend (ReplayPendingPrompts). AllowsPersist is the tool's own grant; the
+// controller narrows it to what can be written down now.
 func (a *approvalManager) snapshotPrompts() ([]event.Approval, []event.Ask) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -491,7 +520,7 @@ func (a *approvalManager) snapshotPrompts() ([]event.Approval, []event.Ask) {
 		approvals = append(approvals, event.Approval{
 			ID: id, Tool: p.tool, Subject: p.subject, Reason: p.reason, ReasonCode: ExplicitApprovalCode(p.tool, p.subject),
 			RawInput: append(json.RawMessage(nil), p.rawInput...), Fresh: p.fresh,
-			AllowsSession: session, AllowsPersist: persist && a.persists,
+			AllowsSession: session, AllowsPersist: persist,
 			Kind: p.kind, Recovery: p.recovery,
 		})
 	}
@@ -502,7 +531,7 @@ func (a *approvalManager) snapshotPrompts() ([]event.Approval, []event.Ask) {
 		if p.queued {
 			continue
 		}
-		asks = append(asks, event.Ask{ID: id, Questions: p.questions, Origin: p.origin})
+		asks = append(asks, event.Ask{ID: id, Questions: p.questions, Origin: p.origin, SkipInMs: p.skipInMs(time.Now())})
 	}
 	return approvals, asks
 }
@@ -614,7 +643,7 @@ func ParseToolApprovalMode(mode string) (string, bool) {
 // narrow operation in interactive or headless mode.
 func RequiresFreshHumanApprovalTool(tool string) bool {
 	switch tool {
-	case planApprovalTool, memoryRememberTool, memoryForgetTool, SandboxEscapeApprovalTool, ManagedConfigWriteApprovalTool, NetworkEgressApprovalTool:
+	case planApprovalTool, memoryRememberTool, memoryForgetTool, permission.ConfirmTool, permission.OriginConfirmTool, SandboxEscapeApprovalTool, ManagedConfigWriteApprovalTool, NetworkEgressApprovalTool, PaidSearchApprovalTool, MCPSignInApprovalTool, MCPScopeUpgradeApprovalTool, SettingApprovalTool, SettingElevatedApprovalTool:
 		return true
 	default:
 		return false
@@ -652,7 +681,7 @@ func approvalGrantsForRequest(tool string, fresh, requireHuman bool) (session, p
 
 func allowsFreshSessionGrantTool(tool string) bool {
 	switch tool {
-	case SandboxEscapeApprovalTool, ManagedConfigWriteApprovalTool, NetworkEgressApprovalTool:
+	case SandboxEscapeApprovalTool, ManagedConfigWriteApprovalTool, NetworkEgressApprovalTool, PaidSearchApprovalTool, MCPSignInApprovalTool, SettingApprovalTool:
 		return true
 	default:
 		return false

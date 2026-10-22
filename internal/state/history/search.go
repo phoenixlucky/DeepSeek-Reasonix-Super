@@ -382,7 +382,7 @@ func extractDocuments(src sourceFile, msgs []provider.Message, kinds map[Kind]bo
 		switch msg.Role {
 		case provider.RoleUser:
 			if kinds[KindUserText] && strings.TrimSpace(msg.Content) != "" {
-				docs = appendDoc(docs, src, i, msg.Role, KindUserText, "", stripComposePrefixes(msg.Content))
+				docs = appendDoc(docs, src, i, msg.Role, KindUserText, "", sessionstore.UserSaidText(msg.Content))
 			}
 		case provider.RoleAssistant:
 			if kinds[KindAssistantText] && strings.TrimSpace(msg.Content) != "" {
@@ -450,7 +450,7 @@ func renderMessage(idx int, msg provider.Message) string {
 	var b strings.Builder
 	switch msg.Role {
 	case provider.RoleUser:
-		fmt.Fprintf(&b, "[%d user]\n%s", idx, truncate(stripComposePrefixes(msg.Content), 2000))
+		fmt.Fprintf(&b, "[%d user]\n%s", idx, truncate(sessionstore.UserSaidText(msg.Content), 2000))
 	case provider.RoleAssistant:
 		if strings.TrimSpace(msg.Content) != "" {
 			fmt.Fprintf(&b, "[%d assistant]\n%s", idx, truncate(msg.Content, 2000))

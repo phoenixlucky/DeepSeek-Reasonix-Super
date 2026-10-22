@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"reasonix/internal/runtime/taskcontract"
 	"reasonix/internal/safety/evidence"
@@ -431,6 +432,30 @@ func TestUnverifiedChangeNamesTheDeclinedCheck(t *testing.T) {
 	}
 	if detail != `python3 -c "import calc; assert calc.add(2,3)==5; print('ok')"` {
 		t.Fatalf("detail = %q, want the bare command: the sentence about it belongs to the frontend's language", detail)
+	}
+}
+
+// A declined check too long for the card is cut short, and the cut must not
+// land inside a character: the card would show a replacement glyph there.
+func TestUnverifiedChangeCutsALongCheckAtACharacter(t *testing.T) {
+	head := "pnpm vitest run src/"
+	command := head + strings.Repeat("a", unreadCheckLimit-len(head)-1) + "表单.test.ts"
+	rep := Build(nil, ledgerOf(
+		wrote("form.ts"),
+		read("form.ts"),
+		evidence.Receipt{
+			ToolName: "bash", Success: true, OutputBytes: 8,
+			Command:      command,
+			Verification: evidence.VerificationNotVerification,
+		},
+	), nil)
+	detail := gapDetail(rep, "unverified_change")
+	if !utf8.ValidString(detail) {
+		t.Fatalf("detail = %q: the cut split a character", detail)
+	}
+	kept, cut := strings.CutSuffix(detail, "…")
+	if !cut || kept == "" || !strings.HasPrefix(command, kept) {
+		t.Fatalf("detail = %q, want a leading part of %q and a cut mark", detail, command)
 	}
 }
 

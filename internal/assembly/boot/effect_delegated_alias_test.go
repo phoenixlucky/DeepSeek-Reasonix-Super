@@ -67,7 +67,11 @@ func TestEffectDelegatedWorkspaceAliasWrite(t *testing.T) {
 				}
 			}
 			p := &delegatedAliasProvider{path: path, written: make(chan struct{})}
-			c := build(p, event.Discard)
+			c := build(p, event.FuncSink(func(e event.Event) {
+				if e.Kind == event.ToolResult && e.Tool.Name == "write_file" {
+					t.Logf("delegated writer result: %+v", e.Tool)
+				}
+			}))
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			done := make(chan struct{})

@@ -256,15 +256,15 @@ func TestDefaultRootDirectoriesAreWhereTheyAlwaysWere(t *testing.T) {
 }
 
 // The locks root shares the OS cache directory with the cache root, so it owns
-// only its own two subdirectories — otherwise a size report counts the whole
-// cache twice and a reader sees storage that is not there.
+// only its own subdirectories — otherwise a size report counts the whole cache
+// twice and a reader sees storage that is not there.
 func TestLocksRootOwnsOnlyItsLockDirectories(t *testing.T) {
 	owned := RootOwns(RootLocks)
-	if len(owned) != 2 {
-		t.Fatalf("locks owns %v, want its two lock directories", owned)
+	if len(owned) != 3 {
+		t.Fatalf("locks owns %v, want its three lock directories", owned)
 	}
 	base := RootDir(RootLocks)
-	for _, dir := range []string{WorkspaceLeaseDir(), RepairMutationLockDir()} {
+	for _, dir := range []string{WorkspaceLeaseDir(), RepairMutationLockDir(), MemoryLockDir()} {
 		rel, err := filepath.Rel(base, dir)
 		if err != nil || !slices.Contains(owned, rel) {
 			t.Fatalf("%q is not among the declared entries %v", dir, owned)

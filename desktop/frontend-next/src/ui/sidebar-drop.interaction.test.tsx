@@ -10,6 +10,7 @@ import { host } from "../port/host";
 import { useAddWorkspace } from "./addws";
 import { install as installDrops } from "./filedrop";
 import { Sidebar } from "./Sidebar";
+import logoWordmark from "../assets/logo-wordmark.svg";
 import { NO_PAGING } from "./treewindow";
 
 let clock = Date.now();
@@ -30,11 +31,12 @@ function draw(collapsed = false) {
   const reload = vi.fn(async () => {});
   function Harness() {
     const [error, setError] = useState("");
-    const adder = useAddWorkspace(hub, reload, (e) => setError(String(e)));
+    const adder = useAddWorkspace(hub, reload, (e) => setError(String(e)), (workspace) => open({ root: workspace.root }));
     return <>
       {error && <div role="alert">{error}</div>}
       <Sidebar
         onFiles={vi.fn()}
+        onView={vi.fn()}
         hub={hub} collapsed={collapsed} navShown={false} paging={NO_PAGING} tree={[]} treeRead runtimes={[]} runs={{}} active="remote-pane"
         activeWorkspace={undefined} liveIds={() => []} pinned={new Set()} onPin={() => {}}
         remotes={null} remoteTrees={{}} reloadRemotes={async () => {}} reloadRemoteTrees={async () => {}}
@@ -94,11 +96,11 @@ it("refuses multiple paths without adding only part of the drop", async () => {
   expect(add).not.toHaveBeenCalled();
 });
 
-it("ignores dropped text and links without reporting a missing folder path", () => {
+it.each(["text/plain", "text/uri-list"])("ignores %s without treating unadvertised data as a folder path", (type) => {
   const { add, open } = draw();
   clock += 1000;
   fireEvent.drop(document.querySelector(".rail")!, {
-    dataTransfer: { types: ["text/plain"], files: [], getData: () => "https://example.com" },
+    dataTransfer: { types: [type], files: [], getData: () => "https://example.com" },
   });
   expect(screen.queryByRole("alert")).toBeNull();
   expect(add).not.toHaveBeenCalled();
@@ -118,7 +120,7 @@ it("keeps the add action busy until selection finishes and does not admit anothe
   open.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
   drop([folder.root]);
   await waitFor(() => expect(open).toHaveBeenCalledOnce());
-  const picker = screen.getByRole("button", { name: "打开或新建项目…" });
+  const picker = screen.getByRole("button", { name: "打开项目" });
   expect(picker.hasAttribute("data-busy")).toBe(true);
   drop(["/work/other"]);
   expect(add).toHaveBeenCalledOnce();
@@ -157,10 +159,19 @@ it("shows a folder-drop hint only while hovering a visible, idle sidebar", async
   expect(screen.queryByText("松开以添加项目文件夹")).toBeNull();
 });
 
-it("preserves the existing Add folder picker path", async () => {
+it("opens a session in the folder the picker added, the same as a drop does", async () => {
   const { add, pick, open } = draw();
   pick.mockResolvedValueOnce("/work/picked");
-  await userEvent.click(screen.getByRole("button", { name: "打开或新建项目…" }));
+  await userEvent.click(screen.getByRole("button", { name: "打开项目" }));
   await waitFor(() => expect(add).toHaveBeenCalledWith("/work/picked"));
-  expect(open).not.toHaveBeenCalled();
+  await waitFor(() => expect(open).toHaveBeenCalledExactlyOnceWith({ root: folder.root }));
+});
+
+it("draws the official wordmark with the Studio subtitle", () => {
+  draw();
+  const mark = document.querySelector<HTMLImageElement>(".studio-brand-logo");
+  expect(mark?.tagName).toBe("IMG");
+  expect(mark?.getAttribute("src")).toBe(logoWordmark);
+  expect(mark?.draggable).toBe(false);
+  expect(document.querySelector(".studio-brand-sub")?.textContent).toBe("studio");
 });

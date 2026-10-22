@@ -6,8 +6,14 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"strings"
+
 	"reasonix/internal/contract/config"
+	"reasonix/internal/contract/event"
+	"reasonix/internal/contract/provider"
+	"reasonix/internal/runtime/agent"
 	"reasonix/internal/session/control"
+	"reasonix/internal/state/sessionstore"
 )
 
 func declareWindow(t *testing.T, base, body string) *http.Response {
@@ -156,5 +162,38 @@ func TestSetContextWindowRefusedWithoutGrant(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("POST /context/window without the grant = %d, want 403", resp.StatusCode)
+	}
+}
+
+// A class total says tool output is heavy; the endpoint also names the message
+// that made it so, by size and producing tool and never by its text.
+func TestContextEndpointNamesTheLargestHoldersWithoutTheirText(t *testing.T) {
+	sess := sessionstore.NewSession("system")
+	executor := agent.New(nil, nil, sess, agent.Options{ContextWindow: 128000}, event.Discard)
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "look at the logs"})
+	sess.Add(provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "a", Name: "read_file"}}})
+	sess.Add(provider.Message{Role: provider.RoleTool, ToolCallID: "a", Content: "SECRET-" + strings.Repeat("x", 8000)})
+	bc := NewBroadcaster()
+	ctrl := control.New(control.Options{Runner: executor, Executor: executor, Sink: bc})
+	srv := httptest.NewServer(operatorHandler(New(ctrl, bc, config.ServeConfig{})))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/context")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw := new(strings.Builder)
+	var body contextView
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Largest) == 0 || body.Largest[0].Class != "output" || body.Largest[0].Tool != "read_file" {
+		t.Fatalf("largest = %+v, want the read_file result first", body.Largest)
+	}
+	encoded, _ := json.Marshal(body)
+	raw.Write(encoded)
+	if strings.Contains(raw.String(), "SECRET") || strings.Contains(raw.String(), "look at the logs") {
+		t.Fatalf("the response carries message text: %s", raw)
 	}
 }

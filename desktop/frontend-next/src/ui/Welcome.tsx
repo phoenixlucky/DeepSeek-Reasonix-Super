@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { t } from "../i18n";
+import logoWordmark from "../assets/logo-wordmark.svg";
 
 interface Props {
   // full plays the whole sequence; short stops after the introduction, for a
@@ -20,14 +21,7 @@ interface Props {
 const COLLAPSE_MS = 9600;
 const SHORT_MS = 6200;
 
-// Welcome is the opening sequence: aurora on a fixed dark ground, the R drawn
-// and then traced by a light, the wordmark swept by a highlight, three lines
-// of introduction, and a collapse that turns the whole group into the header
-// of whatever comes next. It plays once per machine.
-//
-// The ground is dark whatever the app theme is. This is a ceremony rather than
-// a screen of the app, the way an OS out-of-box sequence does not follow the
-// user's colour scheme.
+// The opening scene keeps a dark ground across application themes.
 export function Welcome({ variant, children, replay, onDone }: Props) {
   const [leaving, setLeaving] = useState(false);
   const done = useRef(false);
@@ -71,13 +65,10 @@ export function Welcome({ variant, children, replay, onDone }: Props) {
       <div className="oobe-vig" />
 
       <div className="oobe-scene">
-        <svg className="oobe-mark" viewBox="0 0 16 16" aria-hidden="true">
-          <path className="base" pathLength={100} d="M4.7 2.9V13.1" />
-          <path className="base" pathLength={100} d="M4.7 2.9h4.2a2.9 2.9 0 0 1 0 5.8H4.7" />
-          <path className="base" pathLength={100} d="M9 8.7l3.3 4.4" />
-          <path className="lume" pathLength={100} d="M4.7 13.1V2.9h4.2a2.9 2.9 0 0 1 0 5.8H4.7l3.6 4.4" />
-        </svg>
-        <h1 className="oobe-brand">Reasonix Studio</h1>
+        <div className="oobe-lockup">
+          <img className="oobe-mark" src={logoWordmark} alt="Reasonix" draggable={false} />
+          <h1 className="oobe-brand" aria-label="Reasonix Studio">studio</h1>
+        </div>
         <p className="oobe-sub">coding agent</p>
 
         <div className="oobe-lines" aria-live="polite">

@@ -3,6 +3,7 @@ package sandbox
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 )
@@ -218,8 +219,10 @@ func resolveWithLinks(path string) (string, []string) {
 		return filepath.Clean(path), nil
 	}
 	var links []string
-	pending := splitPath(abs)
-	cur := string(filepath.Separator)
+	// A volume ("C:") is the start of the walk, not a component of it.
+	vol := filepath.VolumeName(abs)
+	pending := splitPath(strings.TrimPrefix(abs, vol))
+	cur := vol + string(filepath.Separator)
 	for hops := 0; len(pending) > 0; {
 		part := pending[0]
 		pending = pending[1:]
@@ -235,7 +238,7 @@ func resolveWithLinks(path string) (string, []string) {
 		if err != nil {
 			return filepath.Join(append([]string{next}, pending...)...), links
 		}
-		if info.Mode()&os.ModeSymlink == 0 {
+		if !isLinkMode(info.Mode()) {
 			cur = next
 			continue
 		}
@@ -245,11 +248,18 @@ func resolveWithLinks(path string) (string, []string) {
 		}
 		links = append(links, next)
 		if filepath.IsAbs(target) {
-			cur = string(filepath.Separator)
+			tv := filepath.VolumeName(target)
+			cur = tv + string(filepath.Separator)
+			target = strings.TrimPrefix(target, tv)
 		}
 		pending = append(splitPath(target), pending...)
 	}
 	return cur, links
+}
+
+// isLinkMode: a symlink, or on Windows a junction, which Go reports as irregular.
+func isLinkMode(m os.FileMode) bool {
+	return m&os.ModeSymlink != 0 || (runtime.GOOS == "windows" && m&os.ModeIrregular != 0)
 }
 
 func splitPath(p string) []string {

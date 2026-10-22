@@ -25,7 +25,7 @@ export function noteTool(execs: Executions, tool: Tool, settled: boolean): Execu
   const id = tool.id;
   if (!id) return execs;
   const was = execs[id];
-  const name = tool.resolvedName || tool.name;
+  const name = tool.resolvedName || tool.name || was?.name || "";
   const failed = settled ? !!tool.err : was?.failed;
   if (was && was.name === name && was.failed === failed) return execs;
   return { ...execs, [id]: { name, ...(failed === undefined ? {} : { failed }) } };

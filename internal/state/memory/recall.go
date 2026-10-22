@@ -78,13 +78,20 @@ func (t recallTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 		}
 		return formatMemoryHits(in.Query, hits, omitted), nil
 	case "read":
-		m, ok := readMemoryByName(t.store, in.Name)
+		m, ok, err := readMemoryByName(t.store, in.Name)
+		if err != nil {
+			return "", err
+		}
 		if !ok {
 			return "", fmt.Errorf("memory %q not found", slug(in.Name))
 		}
 		return formatMemory(t.store, m), nil
 	case "list":
-		return formatMemoryList(t.store, filterMemories(t.store.ListAll(), memType, memScope), limit), nil
+		memories, err := t.store.ListAll()
+		if err != nil {
+			return "", err
+		}
+		return formatMemoryList(t.store, filterMemories(memories, memType, memScope), limit), nil
 	case "":
 		return "", fmt.Errorf("operation is required")
 	default:
@@ -116,7 +123,11 @@ func searchMemories(ctx context.Context, store Store, query string, typ Type, sc
 	if err != nil {
 		return nil, 0, err
 	}
-	memories := filterMemories(store.ListAll(), typ, scope)
+	all, err := store.ListAll()
+	if err != nil {
+		return nil, 0, err
+	}
+	memories := filterMemories(all, typ, scope)
 	docs := make([]memoryDoc, 0, len(memories))
 	for _, m := range memories {
 		if err := ctx.Err(); err != nil {
@@ -211,7 +222,7 @@ func filterMemories(memories []Memory, typ Type, scope FactScope) []Memory {
 	return out
 }
 
-func readMemoryByName(store Store, name string) (Memory, bool) {
+func readMemoryByName(store Store, name string) (Memory, bool, error) {
 	return store.Read(name)
 }
 

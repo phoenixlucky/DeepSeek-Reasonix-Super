@@ -52,7 +52,7 @@ func retrySameRevisionDivergedRewrite(s *sessionstore.Session, path string, err 
 }
 
 func (c *Controller) snapshot(markActivity, forceRewrite, shutdownRecovery bool) error {
-	_, err := c.snapshotWithDurability(markActivity, forceRewrite, shutdownRecovery)
+	_, err := c.guardedSnapshotWithDurability(markActivity, forceRewrite, shutdownRecovery)
 	return err
 }
 

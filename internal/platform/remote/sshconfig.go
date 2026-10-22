@@ -2,6 +2,7 @@ package remote
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -21,15 +22,20 @@ import (
 // parser remains a compatibility fallback when the OpenSSH executable is not
 // available.
 type SSHConfigSource struct {
-	cfg             *ssh_config.Config
-	path            string
-	openSSHPath     string
-	aliases         []string
-	resolveOpenSSH  func(context.Context, string, string) ([]byte, error)
+	cfg            *ssh_config.Config
+	path           string
+	openSSHPath    string
+	aliases        []string
+	resolveOpenSSH func(context.Context, string, string) ([]byte, error)
+	// openSSHTimeout bounds one `ssh -G`; zero is openSSHDefaultTimeout.
+	openSSHTimeout  time.Duration
 	effectiveMu     sync.Mutex
 	effectiveByHost map[string]EffectiveSSHConfig
 	effectiveErr    map[string]error
 }
+
+// openSSHDefaultTimeout is how long one `ssh -G` may run before it is abandoned.
+const openSSHDefaultTimeout = 15 * time.Second
 
 // EffectiveSSHConfig is the subset of `ssh -G` output consumed by Reasonix.
 // Keeping every IdentityFile is important: OpenSSH permits the directive to be
@@ -138,7 +144,7 @@ func (s *SSHConfigSource) EffectiveWithError(alias string) (EffectiveSSHConfig, 
 	var effective EffectiveSSHConfig
 	var resolveErr error
 	if s.resolveOpenSSH != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), cmp.Or(s.openSSHTimeout, openSSHDefaultTimeout))
 		output, err := s.resolveOpenSSH(ctx, s.openSSHPath, alias)
 		cancel()
 		if err == nil {

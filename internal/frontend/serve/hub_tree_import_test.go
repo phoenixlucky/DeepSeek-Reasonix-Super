@@ -262,3 +262,42 @@ func TestImportLegacyAttributesReadAndWriteFailuresToTheirOwnClass(t *testing.T)
 		}
 	}
 }
+
+// Sessions that go back into the folder they were made in are only reachable
+// if that folder has a place in the list: the tree lists remembered folders and
+// open panes, and the importer's fallback workspace is neither.
+func TestImportLegacyListsTheProjectsItRoutedSessionsBackInto(t *testing.T) {
+	home := testenv.TempDir(t)
+	t.Setenv("REASONIX_HOME", home)
+	t.Setenv("REASONIX_STATE_HOME", home)
+	root := testenv.TempDir(t)
+	project := testenv.TempDir(t)
+	h := NewHub(HubOptions{})
+	hubRuntime(t, h, root)
+	srv := httptest.NewServer(operatorHandler(h))
+	defer srv.Close()
+
+	old := testenv.TempDir(t)
+	sessions := filepath.Join(old, "sessions")
+	if err := os.MkdirAll(sessions, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := `{"role":"user","content":"hello from the old project"}` + "\n" + `{"role":"assistant","content":"hi"}` + "\n"
+	if err := os.WriteFile(filepath.Join(sessions, "a.jsonl"), []byte(log), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	meta, _ := json.Marshal(map[string]string{"workspace": project})
+	if err := os.WriteFile(filepath.Join(sessions, "a.meta.json"), meta, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := importLegacy(t, srv, old, root); got.Imported != 1 {
+		t.Fatalf("imported %d, want 1", got.Imported)
+	}
+	for _, ws := range hubGet[[]treeWorkspace](t, srv, "/tree") {
+		if filepath.Clean(ws.Root) == filepath.Clean(project) && ws.Remembered && len(ws.Sessions) == 1 {
+			return
+		}
+	}
+	t.Fatalf("the project %s with its imported session is not in the tree", project)
+}

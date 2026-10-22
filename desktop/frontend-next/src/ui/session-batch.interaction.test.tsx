@@ -23,28 +23,65 @@ function draw(rows = sessions, scope: "all" | "archived" = "all", folded = new S
   const onOpen = vi.fn().mockResolvedValue(undefined);
   const onFocus = vi.fn();
   const onError = vi.fn();
+  const add = vi.fn();
   const reload = vi.fn().mockResolvedValue(undefined);
   let live: string[] = [];
   const props = { hub: hub as never, tree: [{ root: "/w", name: "Project", sessions: rows }] as TreeWorkspace[],
     treeRead: true, runtimes: [{ id: "r1" }] as never, active: "r1", folded, onFold: vi.fn(), reload,
     onOpen, onFocus, onClose, liveIds: (ids: string[]) => ids.filter((id) => live.includes(id)), runs: {},
-    scope, onArchive, onRename: vi.fn(), onError, adder: { add: vi.fn(), close: vi.fn(), at: null } as never };
+    scope, onArchive, onRename: vi.fn(), onError, adder: { add, close: vi.fn(), at: null } as never };
   const view = render(<RailSearch><Workspaces {...props} /></RailSearch>);
-  return { hub, onArchive, onClose, onOpen, onFocus, onError, reload,
+  return { hub, onArchive, onClose, onOpen, onFocus, onError, reload, add,
     live: (ids: string[]) => { live = ids; view.rerender(<RailSearch><Workspaces {...props}
       runs={Object.fromEntries(ids.map((id) => [id, { run: "running", live: true }]))} /></RailSearch>); },
     update: (tree: TreeWorkspace[]) => { props.tree = tree; view.rerender(<RailSearch><Workspaces {...props} /></RailSearch>); },
     fold: (roots: Set<string>) => { props.folded = roots; view.rerender(<RailSearch><Workspaces {...props} /></RailSearch>); } };
 }
 
+async function startSelection() {
+  await userEvent.click(screen.getByRole("button", { name: "项目列表的更多操作" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "选择本机会话" }));
+}
+
 async function selectAll() {
-  await userEvent.click(screen.getByRole("button", { name: "选择本机会话" }));
+  await startSelection();
   await userEvent.click(screen.getByRole("button", { name: "全选当前显示的会话" }));
 }
 
+it("keeps the batch entry in the project list menu without occupying an idle toolbar", async () => {
+  draw();
+  expect(document.querySelector(".session-batch-entry, .session-batch")).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: "选择本机会话" })).toBeNull();
+  const more = screen.getByRole("button", { name: "项目列表的更多操作" });
+  await userEvent.click(more);
+  expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "选择本机会话" }));
+  await userEvent.keyboard("{Escape}");
+  expect(screen.queryByRole("menuitem", { name: "选择本机会话" })).toBeNull();
+  expect(document.activeElement).toBe(more);
+  await startSelection();
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(screen.getByText("已选 0 个会话")).toBeTruthy();
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "完成选择" }));
+});
+
+it.each([{ rows: [] }, { rows: sessions }])("disables selection when no local sessions are displayed: $rows", async ({ rows }) => {
+  draw(rows, "all", new Set(["/w"]));
+  await userEvent.click(screen.getByRole("button", { name: "项目列表的更多操作" }));
+  expect((screen.getByRole("menuitem", { name: "选择本机会话" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it("keeps opening projects and the list menu outside the project tree", async () => {
+  const pane = draw();
+  await userEvent.click(screen.getByRole("button", { name: "打开项目" }));
+  expect(pane.add).toHaveBeenCalledOnce();
+  expect(screen.queryByRole("treeitem", { name: /这台机器/ })).toBeNull();
+  await startSelection();
+  expect(screen.getByText("Alpha")).toBeTruthy();
+});
+
 it("selects rows with clicks and the keyboard without opening or focusing a pane", async () => {
   const pane = draw();
-  await userEvent.click(screen.getByRole("button", { name: "选择本机会话" }));
+  await startSelection();
   const alpha = screen.getByRole("treeitem", { name: /Alpha/ });
   await userEvent.click(alpha);
   const beta = screen.getByRole("treeitem", { name: /Beta/ });
@@ -53,10 +90,12 @@ it("selects rows with clicks and the keyboard without opening or focusing a pane
   expect(alpha.getAttribute("aria-selected")).toBe("true");
   expect(beta.getAttribute("aria-selected")).toBe("true");
   expect(screen.getByText("已选 2 个会话")).toBeTruthy();
+  await userEvent.dblClick(screen.getByText("Alpha"));
+  expect(screen.queryByRole("textbox", { name: "重命名该会话" })).toBeNull();
   expect(pane.onOpen).not.toHaveBeenCalled();
   expect(pane.onFocus).not.toHaveBeenCalled();
   await userEvent.click(screen.getByRole("button", { name: "完成选择" }));
-  expect(document.activeElement).toBe(screen.getByRole("button", { name: "选择本机会话" }));
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "项目列表的更多操作" }));
   await userEvent.click(beta);
   expect(pane.onOpen).toHaveBeenCalledWith({ root: "/w", sessionPath: "/sessions/b.jsonl" });
 });
@@ -188,7 +227,7 @@ it("drops deleted selections when a tree refresh removes their canonical rows", 
   expect(pane.onArchive).toHaveBeenCalledTimes(1);
 });
 
-it("removes hidden selections when a project or the local machine is folded", async () => {
+it("removes hidden selections when projects are folded", async () => {
   const pane = draw();
   await selectAll();
   pane.update([
@@ -205,12 +244,12 @@ it("removes hidden selections when a project or the local machine is folded", as
   await userEvent.click(screen.getByRole("button", { name: "取消当前显示会话的选择" }));
   expect(screen.getByText("已选 0 个会话")).toBeTruthy();
   await userEvent.click(screen.getByRole("button", { name: "全选当前显示的会话" }));
-  await userEvent.click(screen.getByRole("treeitem", { name: /这台机器/ }));
+  pane.fold(new Set(["/w", "/other"]));
   expect(screen.getByText("已选 0 个会话")).toBeTruthy();
   expect((screen.getByRole("button", { name: "删除所选会话" }) as HTMLButtonElement).disabled).toBe(true);
   expect(pane.onArchive).not.toHaveBeenCalled();
   await userEvent.click(screen.getByRole("button", { name: "完成选择" }));
-  expect(document.activeElement).toBe(screen.getByRole("treeitem", { name: /这台机器/ }));
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "项目列表的更多操作" }));
 });
 
 it("selects every loaded row of a search matching the project name, and only those", async () => {

@@ -26,7 +26,7 @@ func TestEffectInlineSkillInvocationReachesProviderPinned(t *testing.T) {
 		{"slash with task", func(c *control.Controller) { c.Submit("/probe tidy the notes") }, "PROBE BODY\nthen run /other\n\nArguments: tidy the notes\n</skill-pin>", "/probe tidy the notes", false},
 		{"chip bare", func(c *control.Controller) {
 			c.SubmitInvocationDisplay("/probe", "", []control.InvocationRequest{{Name: "probe", Kind: "skill"}})
-		}, "PROBE BODY\nthen run /other\n</skill-pin>", "", false},
+		}, "PROBE BODY\nthen run /other\n</skill-pin>", "/probe", false},
 		{"chip with task", func(c *control.Controller) {
 			c.SubmitInvocationDisplay("/probe tidy the notes", "tidy the notes", []control.InvocationRequest{{Name: "probe", Kind: "skill"}})
 		}, "PROBE BODY\nthen run /other\n\nArguments: tidy the notes\n</skill-pin>", "tidy the notes", false},
@@ -41,7 +41,7 @@ func TestEffectInlineSkillInvocationReachesProviderPinned(t *testing.T) {
 		}, "PROBE BODY\nthen run /other\n\nArguments: tidy the notes\n</skill-pin>", "tidy the notes", false},
 		{"two chips bare", func(c *control.Controller) {
 			c.SubmitInvocationDisplay("/probe /other", "", []control.InvocationRequest{{Name: "probe", Kind: "skill"}, {Name: "other", Kind: "skill"}})
-		}, "PROBE BODY\nthen run /other\n</skill-pin>", "", true},
+		}, "PROBE BODY\nthen run /other\n</skill-pin>", "/probe /other", true},
 		{"two chips with task", func(c *control.Controller) {
 			c.SubmitInvocationDisplay("/probe /other tidy the notes", "tidy the notes", []control.InvocationRequest{{Name: "probe", Kind: "skill"}, {Name: "other", Kind: "skill"}})
 		}, "PROBE BODY\nthen run /other\n</skill-pin>", "tidy the notes", true},

@@ -128,5 +128,9 @@ func (s *Store) gateSkill(skills []Skill, slashName string) (Skill, error) {
 	if err := s.ValidateInvocation(sk); err != nil {
 		return Skill{}, err
 	}
-	return s.Prepare(sk), nil
+	sk = s.Prepare(sk)
+	if sk.completionError != nil {
+		return Skill{}, sk.completionError
+	}
+	return sk, nil
 }

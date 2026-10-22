@@ -1,0 +1,32 @@
+name: Deploy website
+
+# GitHub requires workflow_dispatch to be registered on the default branch.
+# The production implementation is the same workflow path on website.
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Optional product release version associated with this publication"
+        required: false
+        default: ""
+        type: string
+      release_request:
+        description: "Optional release workflow correlation ID"
+        required: false
+        default: ""
+        type: string
+      studio_version:
+        description: "Studio version that must be present in the generated changelog"
+        required: false
+        default: ""
+        type: string
+
+permissions: {}
+
+jobs:
+  require-website:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "::error::Deploy the website with --ref website; production is restricted to that branch."
+          exit 1

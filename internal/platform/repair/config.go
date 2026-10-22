@@ -92,10 +92,7 @@ func inspectAndRepairConfigUnlocked(opts ConfigOptions) (ConfigReport, error) {
 		opts.Now = time.Now
 	}
 	global := config.UserConfigPath()
-	project := filepath.Join(opts.Root, "reasonix.toml")
-	if opts.Root == "" || opts.Root == "." {
-		project = "reasonix.toml"
-	}
+	project := config.ProjectConfigPath(opts.Root)
 	paths := []struct{ scope, path string }{{"global", global}, {"project", project}}
 	report := ConfigReport{Checks: make([]ConfigCheck, 0, len(paths)), Applied: []string{}}
 	tx := opts.repairTransaction
@@ -205,19 +202,16 @@ func configRepairTargetPaths(opts ConfigOptions) ([]string, error) {
 		}
 		return paths
 	}
-	project := filepath.Join(opts.Root, "reasonix.toml")
-	if opts.Root == "" || opts.Root == "." {
-		project = "reasonix.toml"
-	}
+	project := config.ProjectConfigPaths(opts.Root)
 	switch opts.OnlyScope {
 	case "global":
 		return globalPaths(), nil
 	case "project":
-		return []string{project}, nil
+		return project, nil
 	default:
 		paths := globalPaths()
 		if opts.IncludeProject {
-			paths = append(paths, project)
+			paths = append(paths, project...)
 		}
 		return paths, nil
 	}

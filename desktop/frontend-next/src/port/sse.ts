@@ -1,12 +1,13 @@
+import type { SurfaceActionRequest, SurfaceActionRecord } from "./surface";
 import { PLAN_ACTIONS, type PlanAction } from "./session";
-import type { AccountState, AgentPort, ChipCall, CompactionSettings, Completion, DeviceGrant, ProviderProbe, UpdateProgress, StudioLogs, VersionHub, VersionNotes, ApprovalMode, ApprovalVerdict, Checkpoint, RewindPlan, RewindResult, RewindUndo, RewindScope, HistoryMessage, HostTodo, BrowserTab, ModelEntry, Preset, ProviderSetup, RoleAssignments, RoleOverride, SessionEntry, SessionStatus, WalletReading, HookDryRun, HookEntry, MemoryCatalog, MemoryEdit, MemoryEntry, UsageQuery, UsageReport, McpDraft, PluginExport, Queue, Queued, NotifyPrefs, TrayPrefs, WorkspaceInfo } from "./port";
+import type { AccountState, AgentPort, ChipCall, CompactionSettings, Completion, DeviceGrant, UpdateProgress, StudioLogs, VersionHub, VersionNotes, ApprovalMode, ApprovalVerdict, Checkpoint, RewindPlan, RewindResult, RewindUndo, RewindScope, HistoryMessage, HostTodo, BrowserTab, ModelEntry, Preset, ProviderSetup, RoleAssignments, RoleOverride, SessionEntry, SessionStatus, WalletReading, MemoryCatalog, MemoryEdit, MemoryEntry, UsageQuery, UsageReport, Queue, Queued, NotifyPrefs, TrayPrefs, WorkspaceInfo } from "./port";
 import { HttpError, type CommitProposal, type CommitRequest, type CommitResult, type WorkspaceFile, type WorkspaceFiles } from "./port";
 import { SseWorkspace } from "./sse_workspace";
 import type { StoragePlan, StorageQuery, StorageState } from "./storage";
 import type { ExecutionGraphRead, TrajectoryRead, WireEvent } from "./wire";
 import { host } from "./host";
 import { current } from "../i18n";
-import { openLiveStream } from "./livestream";
+import { subscribeStream } from "./sse_subscribe";
 
 // The running project is the default, so its requests stay the bare path they
 // have always been and only a cross-project read carries the folder.
@@ -46,11 +47,11 @@ export class SsePort extends SseWorkspace implements AgentPort {
     return r.models ?? [];
   }
 
-  complete(line: string, cursor: number) {
+  complete(line: string, cursor: number, signal?: AbortSignal) {
     // The kernel renders the built-in verbs, and the language it would pick is
     // the process's. Only this window knows what it is drawing in.
     const q = new URLSearchParams({ line, cursor: String(cursor), lang: current() });
-    return this.get<Completion>("/complete?" + q);
+    return signal ? this.getUntil<Completion>("/complete?" + q, signal) : this.get<Completion>("/complete?" + q);
   }
 
   async refinePrompt(draft: string, signal?: AbortSignal) {
@@ -63,38 +64,6 @@ export class SsePort extends SseWorkspace implements AgentPort {
     });
     if (!res.ok) await SsePort.fail("/prompt/refine", res);
     return ((await res.json()) as { text: string }).text;
-  }
-
-  async exportPlugin(name: string): Promise<PluginExport> {
-    const res = await fetch(this.base + "/plugins/" + encodeURIComponent(name) + "/export", {
-      credentials: "same-origin",
-    });
-    if (!res.ok) await SsePort.fail(`/plugins/${encodeURIComponent(name)}/export`, res);
-    const required = (res.headers.get("X-Reasonix-Required-Env") ?? "").split(",").filter(Boolean);
-    const blob = await res.blob();
-    // A shell with a save dialog puts the archive where it is asked to; the
-    // anchor below is the browser's own way and the only one a tab has.
-    const saved = await host().saveBytes(`${name}.zip`, new Uint8Array(await blob.arrayBuffer()));
-    if (saved !== null) return { required, savedTo: saved || undefined };
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${name}.zip`;
-    a.click();
-    URL.revokeObjectURL(url);
-    return { required };
-  }
-
-  async dryRunHook(h: HookEntry): Promise<HookDryRun> {
-    const res = await fetch(this.base + "/hooks/dry-run", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      credentials: "same-origin",
-      body: JSON.stringify({ event: h.event, match: h.match, command: h.command, timeout: h.timeout, cwd: h.cwd }),
-    });
-    const body = (await res.json().catch(() => ({}))) as HookDryRun & { error?: string };
-    if (!res.ok) throw new Error(body.error || `/hooks/dry-run: ${res.status}`);
-    return body;
   }
 
   usage(days: number, source?: string): Promise<UsageReport>;
@@ -138,53 +107,6 @@ export class SsePort extends SseWorkspace implements AgentPort {
     return this.post("/memory/restore", { name, revision });
   }
 
-  async trustMcp(name: string, digest: string) {
-    const res = await fetch(this.base + "/mcp/trust", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      credentials: "same-origin",
-      body: JSON.stringify({ name, digest }),
-    });
-    const body = (await res.json().catch(() => ({}))) as { state?: string; tools?: number | unknown[]; error?: string };
-    if (!res.ok && !body.error) throw new Error(`/mcp/trust: ${res.status}`);
-    return { state: body.state ?? (res.ok ? "ready" : "failed"), tools: typeof body.tools === "number" ? body.tools : body.tools?.length, error: body.error };
-  }
-  async reconnectMcp(name: string) {
-    const res = await fetch(this.base + "/mcp/reconnect", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      credentials: "same-origin",
-      body: JSON.stringify({ name }),
-    });
-    const body = (await res.json().catch(() => ({}))) as { state?: string; tools?: number; error?: string };
-    if (!res.ok && !body.error) throw new Error(`/mcp/reconnect: ${res.status}`);
-    return { state: body.state ?? (res.ok ? "ready" : "failed"), tools: body.tools, error: body.error };
-  }
-
-  async parseMcp(input: string): Promise<McpDraft> {
-    const res = await fetch(this.base + "/mcp/parse", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      credentials: "same-origin",
-      body: JSON.stringify({ input }),
-    });
-    const body = (await res.json().catch(() => ({}))) as McpDraft & { error?: string };
-    if (!res.ok) throw new Error(body.error || `/mcp/parse: ${res.status}`);
-    return { servers: body.servers ?? [], risks: body.risks ?? [] };
-  }
-
-  async probeProvider(baseUrl: string, apiKey: string): Promise<ProviderProbe> {
-    const res = await fetch(this.base + "/providers/probe", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      credentials: "same-origin",
-      body: JSON.stringify({ baseUrl, apiKey }),
-    });
-    const text = await res.text();
-    if (!res.ok) throw new Error(text.trim() || `/providers/probe: ${res.status}`);
-    return JSON.parse(text) as ProviderProbe;
-  }
-
   async welcomeSeen(): Promise<boolean> {
     const res = await this.get<{ seen: boolean }>("/welcome");
     return !!res.seen;
@@ -198,8 +120,8 @@ export class SsePort extends SseWorkspace implements AgentPort {
     return this.get<RoleAssignments>("/roles");
   }
 
-  setRole(role: string, ref: string) {
-    return this.post("/roles", { role, ref });
+  setRole(role: string, ref: string, effort?: string) {
+    return this.post("/roles", { role, ref, effort });
   }
 
   roleOverrides() {
@@ -228,8 +150,8 @@ export class SsePort extends SseWorkspace implements AgentPort {
   // Which build runs belongs to the application, not to a pane: a remote pane's
   // base names another machine, whose version is not the one this window would
   // install. So these two ignore this port's base, the way the tray does.
-  async versions(): Promise<VersionHub> {
-    const res = await fetch("/studio/versions", { credentials: "same-origin" });
+  async versions(refresh = false): Promise<VersionHub> {
+    const res = await fetch(refresh ? "/studio/versions?refresh=1" : "/studio/versions", { credentials: "same-origin" });
     if (!res.ok) await SsePort.fail("/studio/versions", res);
     return (await res.json()) as VersionHub;
   }
@@ -375,15 +297,8 @@ export class SsePort extends SseWorkspace implements AgentPort {
     return (await res.json()) as TrayPrefs;
   }
 
-  async accountPoll(deviceCode: string) {
-    const res = await fetch(this.base + "/account/poll", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      credentials: "same-origin",
-      body: JSON.stringify({ deviceCode }),
-    });
-    if (!res.ok) throw new Error(await res.text());
-    return (await res.json()) as { status: "pending" | "complete"; slowDown?: boolean };
+  accountPoll(deviceCode: string) {
+    return this.post0<{ status: "pending" | "complete"; slowDown?: boolean }>("/account/poll", { deviceCode });
   }
 
   accountLogout() {
@@ -398,12 +313,32 @@ export class SsePort extends SseWorkspace implements AgentPort {
     return this.post("/workspace", { path });
   }
 
-  isolateWorkspace() {
-    return this.post("/workspace", { isolate: true });
+  isolateWorkspace(selection?: import("./workspace").WorktreeSelection) {
+    return this.post("/workspace", { isolate: true, worktree: selection });
+  }
+
+  worktreeSources() {
+    return this.get<import("./workspace").WorktreeSources>("/workspace/worktree-sources");
+  }
+
+  prepareWorktree(id: string, selection: import("./workspace").WorktreeSelection) {
+    return this.post0<import("./workspace").WorktreePreparation>("/workspace/prepare", { id, selection });
+  }
+
+  worktreePreparation(id: string) {
+    return this.get<import("./workspace").WorktreePreparation>(`/workspace/prepare/${encodeURIComponent(id)}`);
+  }
+
+  cancelWorktreePreparation(id: string) {
+    return this.post0<import("./workspace").WorktreePreparation>(`/workspace/prepare/${encodeURIComponent(id)}/cancel`);
   }
 
   async openInEditor(): Promise<{ editor: string; root: string }> {
     return this.post0<{ editor: string; root: string }>("/workspace/editor");
+  }
+
+  async openDocument(path: string): Promise<void> {
+    await this.post0("/workspace/open-document", { path });
   }
 
   revealsFiles() {
@@ -449,8 +384,8 @@ export class SsePort extends SseWorkspace implements AgentPort {
     return this.post("/delete-session", { name });
   }
 
-  async proposeCommit(signal?: AbortSignal) {
-    const res = await fetch(this.base + "/commit/propose", {
+  async proposeCommit(signal?: AbortSignal, repo?: string) {
+    const res = await fetch(this.base + "/commit/propose" + (repo ? `?repo=${encodeURIComponent(repo)}` : ""), {
       method: "POST", headers: { "content-type": "application/json" }, credentials: "same-origin", body: "{}", signal,
     });
     if (!res.ok) await SsePort.fail("/commit/propose", res);
@@ -469,12 +404,26 @@ export class SsePort extends SseWorkspace implements AgentPort {
     return this.get<WorkspaceFiles>(`/workspace/files${params.size ? `?${params}` : ""}`);
   }
 
-  workspaceFile(path: string) {
-    return this.get<WorkspaceFile>(`/workspace/file?path=${encodeURIComponent(path)}`);
+  workspaceFile(path: string, root?: string) {
+    return this.get<WorkspaceFile>(`/workspace/file?path=${encodeURIComponent(path)}${root ? `&root=${encodeURIComponent(root)}` : ""}`);
   }
 
-  workspaceImageURL(path: string) {
-    return `${this.base}/workspace/image?path=${encodeURIComponent(path)}`;
+  async workspacePreviewInfo(ref: import("./workspace").FileRef, signal?: AbortSignal) {
+    const query = new URLSearchParams({ path: ref.path, ...(ref.root ? { root: ref.root } : {}) });
+    const res = await fetch(`${this.base}/workspace/preview/info?${query}`, { credentials: "same-origin", signal });
+    if (!res.ok) await SsePort.fail("/workspace/preview/info", res);
+    return await res.json() as import("./workspace").PreviewInfo;
+  }
+
+  async workspacePreviewContent(ref: import("./workspace").FileRef, signal?: AbortSignal) {
+    const query = new URLSearchParams({ path: ref.path, ...(ref.root ? { root: ref.root } : {}) });
+    const res = await fetch(`${this.base}/workspace/preview/content?${query}`, { credentials: "same-origin", signal });
+    if (!res.ok) await SsePort.fail("/workspace/preview/content", res);
+    return { data: await res.arrayBuffer(), version: res.headers.get("X-Preview-Version") ?? "" };
+  }
+
+  workspaceImageURL(path: string, root?: string) {
+    return `${this.base}/workspace/image?path=${encodeURIComponent(path)}${root ? `&root=${encodeURIComponent(root)}` : ""}`;
   }
   saveWorkspaceFile(file: WorkspaceFile) {
     return this.put0<WorkspaceFile>("/workspace/file", file);
@@ -517,162 +466,11 @@ export class SsePort extends SseWorkspace implements AgentPort {
     return this.post("/rewind/undo", { transactionId });
   }
 
-  /** subscribe delivers the kernel's events, in order, with no holes it did not
-   *  announce. Frames that matter are numbered, so a break in the numbers is
-   *  the client noticing it missed something rather than a gap it renders as a
-   *  quiet turn — and the two transports differ only in how they fetch the
-   *  missing frames back, not in what a gap means.
-   *
-   *  onGap fires when the replay log can no longer close one. The hole is the
-   *  transport's fact; which authority each read model returns to — /history,
-   *  the run graph — is the caller's.
-   *
-   *  bootstrap is how a read model with a snapshot of its own joins without a
-   *  seam: it reads one and answers with the frame that snapshot is at least as
-   *  new as. Frames are held from before the transport is attached until the
-   *  replay after that number has landed, so nothing between the two is
-   *  skipped. The number is the whole stream's, never one model's — a frame of
-   *  any kind carries the cursor past it, or the next number reads as a hole. */
+  /** The kernel's events in order, with no holes it did not announce; see
+   *  subscribeStream for how a gap, a bootstrap and a paused connection work. */
   subscribe(onEvent: (ev: WireEvent) => void, onGap?: () => void, bootstrap?: () => Promise<number>) {
-    // Frames arriving while a recovery request is in flight wait for it: the
-    // whole point is that the reducer sees one ordered stream, and delivering
-    // the new frame first would put a result ahead of the dispatch it answers.
-    // null until the stream states a position: 0 cannot tell a subscriber that
-    // just attached from one that has seen the stream start.
-    let seen: number | null = null;
-    // A bootstrapping subscription holds from before the transport is attached:
-    // the shell's bus has no connection to open, so it is already delivering,
-    // and a frame taken live here would be folded ahead of the replay's.
-    let booting = !!bootstrap;
-    let recovering = booting;
-    let held: WireEvent[] = [];
-    let live = true;
-
-    const deliver = (ev: WireEvent) => {
-      // The cursor is the record of what has been folded, and the replay and
-      // the live stream reach the same frames — a snapshot's own watermark
-      // included. Whichever arrives second is the same fact twice.
-      if (ev.seq && seen !== null && ev.seq <= seen) return;
-      if (ev.seq) seen = Math.max(seen ?? 0, ev.seq);
-      onEvent(ev);
-    };
-
-    const flush = () => {
-      recovering = false;
-      const queued = held;
-      held = [];
-      for (const ev of queued) deliver(ev);
-    };
-
-    const recover = async (after: number) => {
-      recovering = true;
-      try {
-        const res = await fetch(`${this.base}/events/replay?lastEventId=${after}`, { credentials: "same-origin" });
-        if (!res.ok) throw new Error(String(res.status));
-        const body = (await res.json()) as { frames?: WireEvent[]; complete?: boolean };
-        if (!live) return;
-        for (const ev of body.frames ?? []) deliver(ev);
-        if (!body.complete) onGap?.();
-      } catch {
-        // The frames are gone and asking again would not bring them back. The
-        // transcript is the one source that can still answer.
-        if (live) onGap?.();
-      } finally {
-        flush();
-      }
-    };
-
-    // What the snapshot and the replay overlap on folds twice onto the same
-    // state; what falls between them is gone for good. So the read names where
-    // it stands, and the stream resumes from there — one number, one stream.
-    const bootstrapFrom = async (read: () => Promise<number>) => {
-      let at: number | null = null;
-      try {
-        at = await read();
-      } catch {
-        // Nothing to resume onto. Holding the stream any longer would stall the
-        // view rather than repair it, so it runs live and says it is behind.
-        if (live) onGap?.();
-      }
-      if (!live) return;
-      if (at === null) {
-        booting = false;
-        flush();
-        return;
-      }
-      seen = at;
-      booting = false;
-      await recover(at);
-    };
-
-    const accept = (ev: WireEvent) => {
-      // The stream describing itself: a watermark states the number the client
-      // should have reached, which is the only way to notice a frame lost at
-      // the end of a turn. Neither reaches the reducer.
-      if (ev.kind === "stream_watermark") {
-        // The first one states where this subscriber attached: a live-only
-        // subscription replays nothing before it, so nothing before it was lost.
-        // A bootstrap states that position from its snapshot instead, and taking
-        // it from here would baseline the cursor over frames already held.
-        if (seen === null) {
-          if (!booting) seen = ev.seq ?? 0;
-          return;
-        }
-        if (!recovering && ev.seq && ev.seq > seen) void recover(seen);
-        return;
-      }
-      if (ev.kind === "stream_gap") {
-        // The hole reaches the caller either way — it is the whole stream's,
-        // not the bootstrapping model's — but the number it carries is not a
-        // position this subscriber reached.
-        if (!booting) seen = Math.max(seen ?? 0, ev.seq ?? 0);
-        onGap?.();
-        return;
-      }
-      if (recovering) {
-        held.push(ev);
-        return;
-      }
-      // Numbering that goes backwards is a different stream, not a gap: the
-      // server restarted and is counting from one again. Inferred rather than
-      // carried as a stream id — a resumed client is never sent a lower number
-      // than it holds, so nothing else produces this. Without it the client
-      // compares against a watermark that will never be reached again and
-      // silently stops noticing losses.
-      if (ev.seq && seen && ev.seq < seen) {
-        seen = ev.seq;
-        onGap?.();
-        onEvent(ev);
-        return;
-      }
-      if (ev.seq && seen && ev.seq > seen + 1) {
-        held.push(ev);
-        void recover(seen);
-        return;
-      }
-      deliver(ev);
-    };
-
-    const feed = (raw: string) => {
-      try {
-        accept(JSON.parse(raw) as WireEvent);
-      } catch {
-        // A malformed frame must not tear down the stream.
-      }
-    };
-    // EventSource resumes on its own: it reconnects carrying the last id it
-    // saw, and the server replays from there. Recovery here is for the frames
-    // shed without the connection ever dropping, and a replacement stream for
-    // one that went silent without dropping resumes from the same cursor.
-    const detach = openLiveStream(
-      () => this.base + "/events" + (seen === null ? "" : `?lastEventId=${seen}`),
-      feed,
-    );
-    if (bootstrap) void bootstrapFrom(bootstrap);
-    return () => {
-      live = false;
-      detach();
-    };
+    const lane = this.mux && this.rt && this.base === `/rt/${this.rt}` ? this.rt : undefined;
+    return subscribeStream(this.base, onEvent, onGap, bootstrap, lane);
   }
 
   submit(text: string, chips?: ChipCall) {
@@ -701,7 +499,7 @@ export class SsePort extends SseWorkspace implements AgentPort {
     return this.post0<BrowserTab>("/browser/open", { url, newTab });
   }
   browserClose(tab: string) {
-    return this.post0<void>("/browser/close", { tab });
+    return this.post("/browser/close", { tab });
   }
   async readQueued(itemId: string) {
     const r = await this.get<{ envelope?: { displayText?: string } }>("/inbox/items/" + encodeURIComponent(itemId));
@@ -718,9 +516,6 @@ export class SsePort extends SseWorkspace implements AgentPort {
   }
   moveQueued(itemId: string, toIndex: number) {
     return this.post("/inbox/move", { id: itemId, toIndex });
-  }
-  cancelJob(jobId: string) {
-    return this.post("/jobs/" + encodeURIComponent(jobId) + "/cancel");
   }
   retryQueued(itemId: string) {
     return this.post("/inbox/items/" + encodeURIComponent(itemId) + "/retry");
@@ -750,19 +545,15 @@ export class SsePort extends SseWorkspace implements AgentPort {
       persist: verdict === "always",
     });
   }
-  answer(id: string, answers: { questionId: string; selected: string[] }[]) {
+  answer(id: string, answers: { questionId: string; selected: string[]; value?: Record<string, unknown> }[]) {
     return this.postAcked("/answer", {
       id,
-      answers: answers.map((a) => ({ QuestionID: a.questionId, Selected: a.selected })),
+      answers: answers.map((a) => ({ QuestionID: a.questionId, Selected: a.selected, ...(a.value !== undefined ? { Value: a.value } : {}) })),
     });
   }
-  async invokeExtensionAction(name: string) {
-    const out = await this.post0<{ message?: string }>("/extensions/action", { name });
-    return out.message ?? "";
-  }
-  submitExtensionForm(pluginId: string, surfaceId: string, values: Record<string, unknown>) {
-    return this.post("/extensions/submit", { pluginId, surfaceId, values });
-  }
+  surfaceAction(request: SurfaceActionRequest) {return this.post0<Queued>("/surfaces/action",request);}
+  surfaceActionState(callId: string) {return this.get<SurfaceActionRecord>("/surfaces/"+encodeURIComponent(callId)+"/action");}
+  engageQuestion(id: string) { return this.postAcked("/answer", { id, engage: true }); }
   setPlanMode(on: boolean) {
     return this.post("/plan", { on });
   }

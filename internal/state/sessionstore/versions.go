@@ -1,6 +1,7 @@
 package sessionstore
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -55,11 +56,15 @@ func ListSessionVersions(dir string) (map[string][]SessionVersion, error) {
 		return nil, err
 	}
 	out := map[string][]SessionVersion{}
+	known := newKnownNotSuperseded(dir, entries)
 	for _, e := range entries {
 		if e.IsDir() || !store.IsSessionTranscriptName(e.Name()) {
 			continue
 		}
 		full := filepath.Join(dir, e.Name())
+		if known.has(e, full) {
+			continue
+		}
 		meta, ok, err := LoadBranchMeta(full)
 		if err != nil || !ok || !meta.Superseded || meta.ParentID == "" || !IsVisibleSession(full) {
 			continue
@@ -111,4 +116,29 @@ func sameMessages(a, b []provider.Message) bool {
 		}
 	}
 	return true
+}
+
+// knownNotSuperseded is the sessions the folder's remembered listing already
+// told apart from versions. Reading every sidecar to find the few versions
+// costs a file open per session on each sidebar refresh; the listing keeps
+// the answer beside the stamps that prove it is still true.
+type knownNotSuperseded struct {
+	idx    listIndex
+	stamps stampSet
+}
+
+func newKnownNotSuperseded(dir string, entries []fs.DirEntry) knownNotSuperseded {
+	if len(entries) < listIndexMin {
+		return knownNotSuperseded{}
+	}
+	return knownNotSuperseded{idx: loadListIndex(dir), stamps: newStampSet(entries)}
+}
+
+func (k knownNotSuperseded) has(e fs.DirEntry, full string) bool {
+	entry, ok := k.idx.Entries[e.Name()]
+	if !ok || entry.Skip {
+		return false
+	}
+	print, visible := k.stamps.of(e, full)
+	return visible && print == entry.Print
 }

@@ -81,3 +81,28 @@ describe("a proxied sub-agent while its call is still open", () => {
     expect(after([proxied, marked, step]).items.filter((i) => i.t === "tool")).toHaveLength(1);
   });
 });
+
+describe("the model a child ran on", () => {
+  const ran = (id: string, phase: string, model: string, effort: string, parentId?: string): SessionEvent =>
+    ({ kind: "tool_progress", tool: { id, parentId, name: "reasonix.subagent.status", output: phase, profile: { model, effort } } }) as SessionEvent;
+
+  it("replaces the dispatch-time reading on the child's card without renaming or reopening it", () => {
+    const s = after([dispatch("c1"), ran("c1", "running", "prov/model-x", "high")]);
+    expect(card(s).tool.profile).toMatchObject({ name: "flash-fill", model: "prov/model-x", effort: "high" });
+    expect(card(s).tool.name).toBe("use_capability");
+  });
+
+  it("is still on the card after the run was interrupted", () => {
+    const s = after([dispatch("c1"), ran("c1", "running", "prov/model-x", "high"), ran("c1", "cancelled", "prov/model-x", "high")]);
+    expect(card(s).tool.profile?.model).toBe("prov/model-x");
+  });
+
+  it("goes to the batch item it belongs to, not to the batch", () => {
+    const batch = { kind: "tool_dispatch", tool: { id: "b1", name: "use_capability", profile: { name: "fleet", count: 2 } } } as SessionEvent;
+    const item = (id: string) => ({ kind: "tool_dispatch", tool: { id, parentId: "b1", name: "use_capability", profile: { name: "task", count: 1 } } }) as SessionEvent;
+    const s = after([batch, item("i1"), item("i2"), ran("i1", "running", "m/one", "low"), ran("i2", "running", "m/two", "high")]);
+    const top = card(s);
+    expect(top.tool.profile?.model).toBeUndefined();
+    expect(top.children.map((c) => c.profile?.model)).toEqual(["m/one", "m/two"]);
+  });
+});

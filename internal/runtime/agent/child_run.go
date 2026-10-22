@@ -37,6 +37,10 @@ func RunSubAgentWithSession(ctx context.Context, prov provider.Provider, reg *to
 	if sess == nil {
 		return "", fmt.Errorf("sub-agent session is nil")
 	}
+	if err := BindChildComposition(ctx, sess, true); err != nil {
+		return "", err
+	}
+	restrictChildComposition(ctx, reg)
 	// Isolate temporary files for this run before any tool execution.
 	ctx = tool.WithoutGoalTurnRecorder(ctx)
 	if opts.MemoryQueue != nil {
@@ -334,6 +338,9 @@ func newDelegatedAgent(ctx context.Context, prov provider.Provider, reg *tool.Re
 	if _, _, asker, ok := CallContext(ctx); ok && asker != nil {
 		sub.SetAsker(asker)
 	}
+	if opts.OnStart != nil {
+		opts.OnStart(sub)
+	}
 	return sub
 }
 
@@ -586,6 +593,9 @@ func formatHostReceipts(summary evidence.ChildEvidenceSummary, claims writeclaim
 		b.WriteString("\n  " + HostReceiptsViolationLabel + ": ")
 		b.WriteString(joinBoundedReceipts(violations))
 	}
+	if claims.Optimistic {
+		b.WriteString("\n  " + HostReceiptsUnfencedLabel + ": " + hostReceiptsUnfencedText)
+	}
 	return b.String()
 }
 
@@ -609,6 +619,13 @@ func hostReceiptCommands(summary evidence.ChildEvidenceSummary) []string {
 const HostReceiptsHeader = "Host receipts (recorded by the host as the sub-agent ran, not claimed by it):"
 
 const HostReceiptsViolationLabel = "OUTSIDE DECLARED write_paths"
+
+// HostReceiptsUnfencedLabel marks a run that held no path fence: it ran under
+// optimistic claims, so shell and MCP writes were observed after the fact and
+// were never confined to a path.
+const HostReceiptsUnfencedLabel = "NOT FENCED"
+
+const hostReceiptsUnfencedText = "optimistic sub-agent claims were in force; shell and MCP writes are only observed after the run, not confined to any path"
 
 func joinBoundedReceipts(items []string) string {
 	if len(items) <= hostReceiptsMaxItems {

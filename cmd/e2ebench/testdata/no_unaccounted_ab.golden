@@ -1,0 +1,60 @@
+## e2ebench A/B: `a.json` vs `b.json`
+
+| Metric | A | B |
+|---|---:|---:|
+| Solved | 1/2 (50%) | 1/2 (50%) |
+| Pass@1 | 50% | 50% |
+| TTFT median | 0ms | 0ms |
+| TTCS median | 1m00s | 45.0s |
+| TTCS p90 | 1m00s | 45.0s |
+| Cache hit | n/a | n/a |
+| First-request cache hit | n/a | n/a |
+| Overthinking damage | n/a | n/a |
+| Model requests / solved | 16.0 | 14.0 |
+| Planner requests / solved | 0.0 | 0.0 |
+| Model rounds / solved | 0.0 | 0.0 |
+| Tool calls / solved | 24.0 | 24.0 |
+| Tokens / solved | 2400.0 | 2200.0 |
+| Wall seconds / solved | 150.0 | 135.0 |
+| Cost / solved | 0.1 | 0.0 |
+
+**Marginal utility (A − B):** accuracy +0.0pp · wall/task +7.5s
+
+| Class | A solved | B solved | Δ accuracy | A wall/task | B wall/task | Δ wall |
+|---|---:|---:|---:|---:|---:|---:|
+| bugfix | 1/1 | 1/1 | +0.0pp | 60.0s | 45.0s | +15.0s |
+| perf | 0/1 | 0/1 | +0.0pp | 90.0s | 90.0s | +0.0s |
+
+
+### Pareto: accuracy vs TTCS
+
+```
+Accuracy
+ 100% |                                              
+      |                                              
+      |                                              
+      |                                              
+      |                                              
+      |                                              
+      |   B                                     ✗    
+      |                                              
+  40% |                                              
+      +----------------------------------------------→ TTCS
+       43.5s                                    1m01s
+       A=a  B=b
+```
+
+- ⚠️ `a` is **dominated** by `b`: at least as accurate and no slower — the unambiguous alarm
+- ✅ `b` is on the Pareto frontier (50% solved, TTCS median 45.0s)
+
+
+### Reproduction
+
+- capability set: unknown (a report records no capability set)
+- task prompts: same 2 task ids and prompts
+- not compared: commit, build, configuration, grader, task files other than the prompt
+
+| Rate | A | B | B − A (95% CI) | |
+|---|---:|---:|---:|---|
+| grader pass (solvable) | 1/2 | 1/2 | +0.0pp (-57.3, +57.3) | within noise |
+<sub>Per-solved figures divide each arm's accounted totals (failures included) by its accounted solves.</sub>

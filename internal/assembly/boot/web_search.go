@@ -18,6 +18,10 @@ var searchUnavailableNotice = map[config.WebSearchReason]string{
 }
 
 func addWebSearch(reg *tool.Registry, cfg *config.Config, proxy netclient.ProxySpec, sink event.Sink) {
+	if len(cfg.Tools.WebSearchBackends) > 0 {
+		addSearchChain(reg, cfg, proxy, sink)
+		return
+	}
 	selection := cfg.ResolveWebSearch()
 	if selection.Err != nil {
 		reason, _ := config.WebSearchReasonOf(selection.Err)

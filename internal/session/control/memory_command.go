@@ -30,7 +30,11 @@ func MemoryCompletionData(set *memory.Set) (refs, archives []string) {
 		return []string{}, []string{}
 	}
 	seen := map[string]bool{}
-	for _, fact := range set.Store.ListAll() {
+	facts, err := set.Store.ListAll()
+	if err != nil {
+		return []string{}, []string{}
+	}
+	for _, fact := range facts {
 		for _, ref := range []string{fact.ID, fact.Name} {
 			ref = strings.TrimSpace(ref)
 			if ref == "" || seen[ref] {
@@ -40,7 +44,11 @@ func MemoryCompletionData(set *memory.Set) (refs, archives []string) {
 			refs = append(refs, ref)
 		}
 	}
-	for _, archived := range set.Store.ListArchived() {
+	archived, err := set.Store.ListArchived()
+	if err != nil {
+		return []string{}, []string{}
+	}
+	for _, archived := range archived {
 		if path := strings.TrimSpace(archived.Path); path != "" {
 			archives = append(archives, path)
 		}
@@ -138,7 +146,10 @@ func setMemoryActivation(api MemoryControl, ref string, pin bool) string {
 	if set == nil {
 		return i18n.M.ListMemoryNone
 	}
-	fact, ok := set.Store.Read(ref)
+	fact, ok, err := set.Store.Read(ref)
+	if err != nil {
+		return "memory: " + err.Error()
+	}
 	if !ok {
 		return fmt.Sprintf("memory %q not found", ref)
 	}
@@ -163,7 +174,10 @@ func verifyMemory(api MemoryControl, ref string) string {
 	if set == nil {
 		return i18n.M.ListMemoryNone
 	}
-	fact, ok := set.Store.Read(ref)
+	fact, ok, err := set.Store.Read(ref)
+	if err != nil {
+		return "memory: " + err.Error()
+	}
 	if !ok {
 		return fmt.Sprintf("memory %q not found", ref)
 	}
@@ -182,7 +196,11 @@ func renderMemorySubjects(set *memory.Set) string {
 	}
 	type holder struct{ key, line string }
 	var rows []holder
-	for _, fact := range set.Store.ListAll() {
+	facts, err := set.Store.ListAll()
+	if err != nil {
+		return "memory: " + err.Error()
+	}
+	for _, fact := range facts {
 		key := memory.NormalizeSubjectKey(fact.SubjectKey)
 		if key == "" {
 			continue
@@ -252,8 +270,14 @@ func RenderMemorySummary(set *memory.Set, now time.Time) string {
 	if set == nil {
 		return i18n.M.ListMemoryNone
 	}
-	facts := set.Store.ListAll()
-	archives := set.Store.ListArchived()
+	facts, err := set.Store.ListAll()
+	if err != nil {
+		return "memory: " + err.Error()
+	}
+	archives, err := set.Store.ListArchived()
+	if err != nil {
+		return "memory: " + err.Error()
+	}
 	if len(set.Docs) == 0 && len(facts) == 0 && len(archives) == 0 {
 		return i18n.M.ListMemoryNone
 	}
@@ -312,7 +336,7 @@ func RenderMemorySummary(set *memory.Set, now time.Time) string {
 }
 
 func renderMemoryRecall(recall memory.RecallResult) string {
-	if strings.TrimSpace(recall.Query) == "" && len(recall.Hits) == 0 && recall.Suppressed == "" {
+	if strings.TrimSpace(recall.Query) == "" && len(recall.Hits) == 0 && recall.SuppressionCode == "" {
 		return "last memory recall: none"
 	}
 	var b strings.Builder
@@ -320,7 +344,7 @@ func renderMemoryRecall(recall memory.RecallResult) string {
 	fmt.Fprintf(&b, "  budget=%d/%d omitted=%d (limit=%d budget=%d)",
 		recall.UsedChars, recall.CharBudget, recall.OmittedByLimit+recall.OmittedByBudget,
 		recall.OmittedByLimit, recall.OmittedByBudget)
-	if recall.Suppressed != "" {
+	if recall.SuppressionCode != "" {
 		fmt.Fprintf(&b, " suppressed=%s", memoryOneLine(recall.Suppressed))
 	}
 	b.WriteByte('\n')
@@ -339,11 +363,18 @@ func renderMemoryRevisions(api MemoryControl, ref string) string {
 	if set == nil {
 		return i18n.M.ListMemoryNone
 	}
-	active, ok := set.Store.Read(ref)
+	active, ok, err := set.Store.Read(ref)
+	if err != nil {
+		return "memory revisions: " + err.Error()
+	}
 	if !ok {
 		return fmt.Sprintf("memory revisions: memory %q not found", ref)
 	}
-	revisions := append([]memory.Memory{active}, api.MemoryRevisions(active.ID)...)
+	history, err := api.MemoryRevisions(active.ID)
+	if err != nil {
+		return "memory revisions: " + err.Error()
+	}
+	revisions := append([]memory.Memory{active}, history...)
 	sort.SliceStable(revisions, func(i, j int) bool {
 		return revisions[i].Revision > revisions[j].Revision
 	})
@@ -366,7 +397,10 @@ func renderMemoryArchives(set *memory.Set) string {
 	if set == nil {
 		return i18n.M.ListMemoryNone
 	}
-	archives := set.Store.ListArchived()
+	archives, err := set.Store.ListArchived()
+	if err != nil {
+		return "memory: " + err.Error()
+	}
 	if len(archives) == 0 {
 		return "archived memories: none"
 	}
@@ -519,11 +553,12 @@ func (c *Controller) ForgetMemory(name string) error {
 }
 
 // QueueMemory implements memory.Queue: when the model runs the remember/forget
-// tool, the tool calls this with a note that rides the next turn so the change
-// applies this session without touching the cache-stable prefix. It also
-// refreshes the snapshot a memory panel reads.
-func (c *Controller) QueueMemory(note string) {
-	c.memory.queue(note)
+// tool, the tool calls this with the typed facts it wrote. The write refreshes
+// the snapshot a memory panel reads and records those facts as delivered, so the
+// next recall re-checks their own files; the note itself does not ride the turn,
+// because the tool result is already in the conversation.
+func (c *Controller) QueueMemory(note string, delivered ...memory.Memory) {
+	c.memory.queue(note, delivered...)
 }
 
 // ClaimAutoMemoryWrite consumes the one-shot create-only authorization issued
@@ -532,7 +567,7 @@ func (c *Controller) ClaimAutoMemoryWrite(args json.RawMessage) bool {
 	return c.memory.claimAutoRemember(args)
 }
 
-func (c *Controller) MemoryRevisions(ref string) []memory.Memory {
+func (c *Controller) MemoryRevisions(ref string) ([]memory.Memory, error) {
 	return c.memory.revisions(ref)
 }
 

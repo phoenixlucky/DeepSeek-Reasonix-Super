@@ -32,7 +32,7 @@ func TestMigrationBackupExactBytesAndIsolation(t *testing.T) {
 	if report, err := store.MigrateV2(); err != nil || report.Migrated != 2 {
 		t.Fatalf("migration = %+v, %v", report, err)
 	}
-	index := store.Index()
+	index := mustStore(t, store).Index()
 	for _, dir := range store.dirs() {
 		backup := filepath.Join(dir, ".migration-backup", "original-name.md")
 		if got := mustReadString(t, backup); got != originals[dir] {
@@ -52,17 +52,17 @@ func TestMigrationBackupExactBytesAndIsolation(t *testing.T) {
 		if !ok || active.Revision != 1 || active.Scope != store.scopeForDir(dir) {
 			t.Fatalf("active = %+v, %v", active, ok)
 		}
-		if len(store.Revisions(active.ID)) != 0 {
+		if len(mustStore(t, store).Revisions(active.ID)) != 0 {
 			t.Fatal("backup entered revision history")
 		}
 		if err := os.WriteFile(filepath.Join(dir, ".migration-backup", "ghost.md"), []byte("backup-only-secret-marker"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if len(store.ListAll()) != 2 || len(store.List()) != 1 || store.Index() != index {
+	if len(mustStore(t, store).ListAll()) != 2 || len(mustStore(t, store).List()) != 1 || mustStore(t, store).Index() != index {
 		t.Fatal("backup changed active catalog/index")
 	}
-	if _, ok := store.Read("ghost"); ok {
+	if _, ok := mustStore(t, store).Read("ghost"); ok {
 		t.Fatal("backup became active")
 	}
 	for _, dir := range store.dirs() {

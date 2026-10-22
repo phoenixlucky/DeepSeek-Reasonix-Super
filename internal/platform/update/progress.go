@@ -26,6 +26,9 @@ type Progress struct {
 	Total    int64  `json:"total"`
 	Err      string `json:"err,omitempty"`
 	Code     string `json:"code,omitempty"` // why a failed move failed, as a dotted code
+	// Stalls counts connections dropped for delivering nothing; the download
+	// resumes after each, so a rising count is why the bar is not moving.
+	Stalls int `json:"stalls,omitempty"`
 	// DeltaSkipped is why an offered chunked update was abandoned for the full
 	// package, as a dotted code; empty when none was offered or it was used.
 	DeltaSkipped string `json:"delta_skipped,omitempty"`

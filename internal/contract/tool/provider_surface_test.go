@@ -97,3 +97,41 @@ func TestStableSegmentIsIdenticalWhateverTheContext(t *testing.T) {
 		}
 	}
 }
+
+func shownNames(r *Registry) []string { return namesOf(r.ProviderSchemas(context.Background())) }
+
+func plainRegistry() *Registry {
+	r := NewRegistry()
+	for _, name := range []string{"alpha", "zulu", "mike"} {
+		r.Add(surfaceTool{name: name})
+	}
+	return r
+}
+
+func TestShowToProviderMovesOneNameAndLeavesTheRestAlone(t *testing.T) {
+	r := plainRegistry()
+	r.SetProviderVisibleTools([]string{"alpha"})
+	rev := r.SchemaRevision()
+	r.ShowToProvider(true, "zulu")
+	if names := shownNames(r); len(names) != 2 || r.SchemaRevision() == rev {
+		t.Fatalf("after showing zulu: %v", names)
+	}
+	rev = r.SchemaRevision()
+	r.ShowToProvider(true, "zulu")
+	if r.SchemaRevision() != rev {
+		t.Fatal("showing a name already shown moved the schema revision")
+	}
+	r.ShowToProvider(false, "zulu", "never-registered")
+	if names := shownNames(r); len(names) != 1 || names[0] != "alpha" {
+		t.Fatalf("after hiding zulu: %v", names)
+	}
+}
+
+func TestShowToProviderWithoutARestrictionChangesNothing(t *testing.T) {
+	r := plainRegistry()
+	rev := r.SchemaRevision()
+	r.ShowToProvider(false, "alpha")
+	if r.SchemaRevision() != rev || len(shownNames(r)) != 3 {
+		t.Fatal("hiding from an unrestricted registry changed what it shows")
+	}
+}

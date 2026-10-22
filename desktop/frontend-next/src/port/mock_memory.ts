@@ -1,4 +1,12 @@
-import type { MemoryEntry } from "./port";
+import type { MemoryCatalog, MemoryEntry } from "./port";
+
+export function mockMemoryCatalog(memories: MemoryEntry[]): MemoryCatalog {
+  return {
+    memories: memories.map((m) => ({ ...m })),
+    recallQuery: "缓存命中率为什么会掉",
+    indexPath: "~/.reasonix/projects/reasonix/memory/MEMORY.md",
+  };
+}
 
 // The memory shelf the window opens onto with no kernel behind it. Data only:
 // how a save or a restore moves it is the port's, and lives beside the calls

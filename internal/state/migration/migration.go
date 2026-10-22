@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"reasonix/internal/contract/config"
@@ -47,6 +48,9 @@ type Result struct {
 	SessionImports []SessionImport
 	SessionErrs    []error
 	SessionSkips   []SessionSkip
+	// Workspaces are the folders an explicit import routed sessions back into:
+	// each still exists on disk and now holds sessions of its own.
+	Workspaces []string
 	// Unrecognised is set when an explicit import found no 1.x session
 	// store under the chosen folder, as opposed to finding nothing new.
 	Unrecognised bool
@@ -149,9 +153,9 @@ func RunLegacySessionImportFrom(sourceRoot string, sink event.Sink) Result {
 }
 
 // RunLegacySessionImportInto is the desktop recovery form. Sessions whose
-// historical workspace still exists keep that workspace; orphaned or unscoped
-// sessions land in fallbackDest so the user can see and resume them instead of
-// being copied into the global store that the workspace sidebar cannot list.
+// historical workspace still exists keep that workspace; ones whose workspace is
+// gone, and stores that carry no workspace concept, land in fallbackDest, where the
+// sidebar can list them. A Desktop conversation that records no workspace is left in the source.
 func RunLegacySessionImportInto(sourceRoot, fallbackDest string, sink event.Sink) Result {
 	sink = event.Sync(sink)
 	emit := func(level event.Level, text string) {
@@ -160,7 +164,13 @@ func RunLegacySessionImportInto(sourceRoot, fallbackDest string, sink event.Sink
 	result := Result{}
 	sourceRoot = strings.TrimSpace(sourceRoot)
 	emit(event.LevelInfo, "migration rescue: scanning explicit legacy sessions from "+sourceRoot)
-	sources, closeRoot, err := explicitLegacySessionSources(sourceRoot)
+	var routed []string
+	note := func(root string) {
+		if !slices.Contains(routed, root) {
+			routed = append(routed, root)
+		}
+	}
+	sources, closeRoot, err := explicitLegacySessionSources(sourceRoot, note)
 	defer closeRoot()
 	if err != nil {
 		result.SessionErrs = append(result.SessionErrs, err)
@@ -179,13 +189,19 @@ func RunLegacySessionImportInto(sourceRoot, fallbackDest string, sink event.Sink
 		var err error
 		var skipped []sessionstore.SkippedSession
 		if src.v4 {
-			n, skipped, err = sessionstore.ImportV4From(src.store, fallbackDest, src.route)
+			n, skipped, err = sessionstore.ImportV4From(src.store, fallbackDest, src.route, startMeta(src.archived))
 			for i := range skipped {
 				skipped[i].Path = filepath.Join(src.dir, filepath.FromSlash(skipped[i].Path))
 			}
 		} else {
 			var rep *sessionstore.LegacyReport
-			n, rep, err = sessionstore.ImportLegacySessionsFromExplicitDir(src.dir, fallbackDest, config.ProjectSessionDir)
+			n, rep, err = sessionstore.ImportLegacySessionsFromExplicitDir(src.dir, fallbackDest, func(root string) string {
+				dir := config.ProjectSessionDir(root)
+				if dir != "" {
+					note(root)
+				}
+				return dir
+			})
 			skipped = rep.Skipped
 		}
 		for _, sk := range skipped {
@@ -206,6 +222,7 @@ func RunLegacySessionImportInto(sourceRoot, fallbackDest string, sink event.Sink
 	if len(result.SessionImports) == 0 && len(result.SessionErrs) == 0 && len(result.SessionSkips) == 0 {
 		emit(event.LevelInfo, "migration rescue: no legacy sessions needed migration from "+sourceRoot)
 	}
+	result.Workspaces = routed
 	emit(event.LevelInfo, result.Summary())
 	return result
 }
@@ -519,12 +536,38 @@ func migrateLegacySessionSources(sink event.Sink, verbose bool) sessionMigration
 	return result
 }
 
+// startMeta builds the meta an imported conversation begins with, asking the 1.x
+// archive list. A conversation the old shell had filed away keeps that mark, so
+// it lands in Archived rather than in the everyday list.
+func startMeta(archived func(sessionID string) bool) func(sessionID string) sessionstore.BranchMeta {
+	if archived == nil {
+		return nil
+	}
+	return func(sessionID string) sessionstore.BranchMeta {
+		return sessionstore.BranchMeta{Archived: archived(sessionID)}
+	}
+}
+
+// isArchived turns the 1.x archive list into the predicate the importer asks for.
+// A nil or empty list archives nothing, which is what an install that never
+// archived anything means.
+func isArchived(hidden map[string]bool) func(sessionID string) bool {
+	if len(hidden) == 0 {
+		return nil
+	}
+	return func(sessionID string) bool { return hidden[sessionID] }
+}
+
 type explicitSessionSource struct {
 	dir   string
 	label string
 	v4    bool
 	store fs.FS
-	route func(sessionID string) string
+	route func(sessionstore.V4Origin) sessionstore.V4Placement
+	// archived answers whether 1.x had filed this conversation away. The archive
+	// list lived in the desktop shell, so a migration that ignores it turns every
+	// archived conversation into an active one.
+	archived func(sessionID string) bool
 }
 
 func parseLegacyRescueArgs(args string) (source string, explicit bool, err error) {
@@ -568,7 +611,7 @@ func trimMatchingQuotes(s string) string {
 // explicitLegacySessionSources finds the session stores under a user-picked
 // folder. Every probe goes through one os.Root, so a symlink inside the folder
 // cannot lead the scan outside it.
-func explicitLegacySessionSources(picked string) ([]explicitSessionSource, func(), error) {
+func explicitLegacySessionSources(picked string, note func(root string)) ([]explicitSessionSource, func(), error) {
 	picked = strings.TrimSpace(picked)
 	if picked == "" {
 		return nil, func() {}, fmt.Errorf("--from requires a legacy directory path")
@@ -580,7 +623,7 @@ func explicitLegacySessionSources(picked string) ([]explicitSessionSource, func(
 	tree := root.FS()
 	var out []explicitSessionSource
 	seen := map[string]bool{}
-	add := func(rel string, v4 bool, route func(string) string) {
+	add := func(rel string, v4 bool, route func(sessionstore.V4Origin) sessionstore.V4Placement, archived func(string) bool) {
 		if seen[rel] {
 			return
 		}
@@ -593,25 +636,26 @@ func explicitLegacySessionSources(picked string) ([]explicitSessionSource, func(
 		}
 		seen[rel] = true
 		dir := filepath.Join(picked, filepath.FromSlash(rel))
-		out = append(out, explicitSessionSource{dir: dir, label: dir, v4: v4, store: sub, route: route})
+		out = append(out, explicitSessionSource{dir: dir, label: dir, v4: v4, store: sub, route: route, archived: archived})
 	}
 	for _, home := range []string{".", ".reasonix", "reasonix"} {
-		add(path.Join(home, "sessions"), false, nil)
-		add(path.Join(home, "sessions-v4"), true, nil)
-		add(path.Join(home, "desktop-sessions-v5", "by-id"), true, routeToOwner(desktopSessionOwners(tree, home)))
+		hidden := desktopArchivedSessions(tree, home)
+		add(path.Join(home, "sessions"), false, nil, nil)
+		add(path.Join(home, "sessions-v4"), true, nil, isArchived(hidden))
+		add(path.Join(home, "desktop-sessions-v5", "by-id"), true, routeV4(desktopSessionOwners(tree, home), note), isArchived(hidden))
 		projects, _ := fs.ReadDir(tree, path.Join(home, "projects"))
 		for _, project := range projects {
 			if !project.IsDir() {
 				continue
 			}
 			dir := path.Join(home, "projects", project.Name())
-			add(path.Join(dir, "sessions"), false, nil)
-			add(path.Join(dir, "sessions-v4"), true, nil)
+			add(path.Join(dir, "sessions"), false, nil, nil)
+			add(path.Join(dir, "sessions-v4"), true, nil, isArchived(hidden))
 		}
 	}
 	if len(out) == 0 {
-		add(".", false, nil)
-		add(".", true, nil)
+		add(".", false, nil, nil)
+		add(".", true, nil, nil)
 	}
 	return out, func() { _ = root.Close() }, nil
 }

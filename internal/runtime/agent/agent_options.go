@@ -18,6 +18,15 @@ import (
 	"strings"
 )
 
+// Steerer is how the host speaks to a running sub-agent. Both methods report
+// whether the child was inside a run to take it: on false nothing was queued.
+// Steer is the user's guidance; SteerHostNotice is the runtime's own, which the
+// child is told the user did not send.
+type Steerer interface {
+	Steer(text string) bool
+	SteerHostNotice(text string) bool
+}
+
 // Options configures an Agent.
 type Options struct {
 	MaxSteps int
@@ -57,6 +66,9 @@ type Options struct {
 	// provider instance. It is attached to emitted Usage events so downstream
 	// usage accounting can attribute tokens to the exact model.
 	ModelRef string
+	// RequestEffort is the depth this agent's requests carry over its provider's
+	// built one: a sub-agent sharing its parent's provider starts on the parent's.
+	RequestEffort string
 	// EventSource names the producer of this agent's settled frames — executor
 	// unless a caller says otherwise, so a two-model stream says which model
 	// wrote each one rather than leaving it to be inferred.
@@ -65,6 +77,8 @@ type Options struct {
 	RequireVisibleFinal bool
 	// Gate is the per-call permission gate. nil disables gating.
 	Gate Gate
+	// CheckTargetAccess applies workspace path policy before hooks or previews.
+	CheckTargetAccess tool.TargetAccessCheck
 	// ReadOnlyExecution enables a permanent host-side read-only boundary for
 	// planner and research agents. It is intentionally independent of Plan mode
 	// so a stale collaboration flag cannot authorize a dynamic writer target.
@@ -121,6 +135,10 @@ type Options struct {
 	WriteScheduler *writeclaim.SubagentScheduler
 	// WriteWorkspaceRoot normalizes parent write reservations.
 	WriteWorkspaceRoot string
+	// OnStart receives the agent a delegated run executes as, once, before it
+	// runs, so the host can reach it while it works. Nothing else about the run
+	// changes: the guidance it admits is read at the next tool boundary.
+	OnStart func(Steerer)
 	// ObserveRoot is where an unclassified call's effect is observed by walking
 	// the workspace before and after it. Set it only for an agent no other
 	// foreground writer runs beside; empty falls back to WriteWorkspaceRoot.
@@ -138,6 +156,10 @@ type Options struct {
 	// WorkspaceVCS names the workspace's version control ("" for none) for
 	// the turn block. Resolved once by the host, never probed per turn.
 	WorkspaceVCS string
+	// WorkspaceUnversioned says the host established that no version-control
+	// root encloses the workspace. Unset means unknown, which keeps the
+	// delivery contract whole.
+	WorkspaceUnversioned bool
 
 	// WorkspaceLease serializes Delivery mutations across sessions that target
 	// the same workspace. nil preserves source compatibility for direct Agent
@@ -158,6 +180,11 @@ type Options struct {
 	// Deprecated: prefer AgentPreset + turn TaskPolicy. Still honored when
 	// AgentPreset is empty for one compatibility version of direct constructors.
 	DeliveryProfile bool
+
+	// WaiveOwedChecks is the user's choice to drop the check, review and
+	// sign-off a turn that changed files owes before it may finish. It never
+	// comes from a project file.
+	WaiveOwedChecks bool
 
 	// AgentPreset is the session role setting (balanced|delivery). Empty
 	// falls back to balanced unless DeliveryProfile is true (then delivery).
@@ -210,6 +237,11 @@ type Options struct {
 	// depth 0; child subagents are depth 1. MaxSubagentDepth caps delegation.
 	SubagentDepth    int
 	MaxSubagentDepth int
+
+	// ProviderRetries is how many times a failed connection or header phase is
+	// retried: 0 keeps the provider package's default, provider.RetriesUntilCancelled
+	// removes the limit.
+	ProviderRetries int
 
 	// Extensions is the frozen extension dispatcher for this agent's controller
 	// generation (Extension Protocol v2). Nil means no runtime packages are

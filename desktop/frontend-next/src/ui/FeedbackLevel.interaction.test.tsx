@@ -218,3 +218,13 @@ describe("the row beside the rest of the panel", () => {
     expect(document.querySelector(".fbk-level")).toBeNull();
   });
 });
+
+describe("the level card says what a shipped report is", () => {
+  it("describes the progress line with a sentence of its own", async () => {
+    await shown(MID);
+    const progress = document.querySelector(".fbk-level-progress")!;
+    const id = progress.getAttribute("aria-describedby");
+    expect(id).toBeTruthy();
+    expect(document.getElementById(id!)?.textContent?.trim()).not.toBe("");
+  });
+});

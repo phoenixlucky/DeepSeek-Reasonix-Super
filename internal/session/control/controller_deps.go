@@ -13,7 +13,7 @@ import (
 	"reasonix/internal/ext/plugin"
 	"reasonix/internal/ext/skill"
 	"reasonix/internal/model/billing"
-	"reasonix/internal/platform/gitcmd"
+	"reasonix/internal/platform/gitrepos"
 	"reasonix/internal/runtime/agent"
 	"reasonix/internal/runtime/goaleval"
 	"reasonix/internal/runtime/guardian"
@@ -50,11 +50,15 @@ type controllerDeps struct {
 	committer CommitDrafter
 	// commitMu serialises commits so two confirmations cannot interleave.
 	commitMu sync.Mutex
+	// repos keeps the workspace's repositories until its structure changes.
+	repos gitrepos.Finder
 	// goalUsageTee accounts billable usage events into the active goal turn's
 	// observational token total. It wraps the public sink when the caller didn't provide one.
 	goalUsageTee *goalUsageTee
-	sink         event.Sink
-	policy       permission.Policy
+	// extPrompts counts the prompts extensions queued since the user last wrote.
+	extPrompts extensionPrompts
+	sink       event.Sink
+	policy     permission.Policy
 	// subagentGate is the shared gate every headless-only sub-agent surface
 	// reads from (see Options.SubagentGate). Nil when the caller didn't build
 	// one — sub-agents then keep whatever gate they were constructed with.
@@ -67,6 +71,7 @@ type controllerDeps struct {
 	modelRef            string
 	effort              string
 	providerFingerprint string
+	effortSel           effortSelection    // set by an in-place depth change; see effort_in_place.go
 	modelModes          []config.ModelMode // what SetModelMode accepts; see model_modes.go
 	modelFace           *ModelFace         // what the build resolved for the session's model; see model_face.go
 	sessionDir          string
@@ -74,8 +79,11 @@ type controllerDeps struct {
 	// the reloadable stores) — the skills slice of the Capabilities concern. See
 	// skill.go.
 	skills              skillSet
+	rules               rulesSet
 	date                dateAnchor
+	scratch             scratchAnchor
 	skillRunner         skill.SubagentRunner
+	side                sideSet // see side_session.go
 	readOnlySkillRunner skill.SubagentRunner
 	skillProfile        skill.ProfileResolver
 	hooks               *hook.Runner // session hook runner; nil-safe (no hooks configured)
@@ -95,6 +103,7 @@ type controllerDeps struct {
 	// when the provider declares none). Captured at build so a model/key switch —
 	// which rebuilds the controller — refreshes it.
 	balance *billing.Cache
+	tariff  TariffSource
 
 	feedback FeedbackOptions
 
@@ -102,6 +111,7 @@ type controllerDeps struct {
 	// tools spawn into it; Compose drains its completion notes into the next turn;
 	// Close cancels its still-running jobs.
 	jobs      *jobs.Manager
+	subagents SubagentReader
 	taskStore taskmonitor.WriteStore
 	// workspaceLease is the Delivery writer owner shared with the executor.
 	// It is exposed only through a sanitized state snapshot for Desktop recovery.
@@ -121,13 +131,21 @@ type controllerDeps struct {
 	// stalls an approval or status poll on c.mu. See goal.go.
 	goals goalMachine
 
+	// dispatch is the state behind the cross-project dispatch tool; see peer_dispatch.go.
+	dispatch dispatchState
+
+	// goalRetry is the unattended retry of an evaluator pause; see goal_retry.go.
+	goalRetry goalRetry
+	// awaitResume is the unattended wait behind an await_user gate; see await_resume.go.
+	awaitResume awaitResume
+
 	// Base for @-refs and slash path refs, cwd for user "!" commands and command
 	// discovery, and the guard root for checkpoint restore writes. Frontends read
 	// it through WorkspaceRoot().
 	workspaceRoot string
-	// workspaceRepo is workspaceRoot's git identity, resolved before any turn ran.
-	workspaceRepo gitcmd.Repo
-	posture       PostureEvidence
+	// repo is workspaceRoot's git identity, resolved before any turn ran.
+	repo    repoSlot
+	posture PostureEvidence
 	// refused owes the model the calls the host refused, once.
 	refused promptFailureDebt
 
@@ -162,8 +180,10 @@ func newControllerDeps(opts Options, sink event.Sink, usageTee *goalUsageTee, ru
 		modelFace:              faceOfEntry(opts.ModelEntry),
 		sessionDir:             opts.SessionDir,
 		date:                   newDateAnchor(opts.Clock),
+		scratch:                scratchAnchor{temp: opts.SessionTemp},
 		skills:                 newSkillSet(opts.Skills, opts.AllSkills, opts.SkillStore, opts.AllSkillStore, opts.DisableImplicitSkillInvocation, opts.WorkspaceRoot),
 		skillRunner:            opts.SkillRunner,
+		side:                   sideSet{factory: opts.SideFactory},
 		readOnlySkillRunner:    opts.ReadOnlySkillRunner,
 		skillProfile:           opts.SkillProfile,
 		hooks:                  opts.Hooks,
@@ -175,16 +195,18 @@ func newControllerDeps(opts Options, sink event.Sink, usageTee *goalUsageTee, ru
 		onRemember:             opts.OnRemember,
 		sessionRecoveryMeta:    opts.SessionRecoveryMeta,
 		balance:                opts.Balance,
+		tariff:                 opts.Tariff,
 		feedback:               opts.Feedback,
 		jobs:                   opts.Jobs,
+		subagents:              opts.Subagents,
 		taskStore:              opts.TaskStore,
 		workspaceLease:         opts.WorkspaceLease,
-		mcp:                    newMcpManager(opts.Host, opts.Registry, pluginCtx, opts.MCPDefaultCallTimeout),
+		mcp:                    newMcpManager(opts.Host, opts.Registry, pluginCtx, opts.MCPDefaultCallTimeout, hostFactNotice(opts.Executor)),
 		mcpConfigureSpec:       opts.MCPConfigureSpec,
 		capabilityRuntime:      opts.CapabilityRuntime,
 		ablation:               opts.Ablation,
 		workspaceRoot:          opts.WorkspaceRoot,
-		workspaceRepo:          opts.WorkspaceRepo,
+		repo:                   repoSlot{repo: opts.WorkspaceRepo},
 		posture:                opts.Posture,
 		runtimeOwner:           runtimeOwner,
 		approval:               newApprovalManager(opts.Policy, ToolApprovalAsk, opts.ApprovalTimeout, opts.OnRemember != nil),
@@ -200,4 +222,11 @@ func (c *Controller) publishPerProjectContext(opts Options) {
 // WorkspaceRepo is the workspace's git identity as the session resolved it when
 // it opened. Host git reads the workspace through it rather than rediscovering
 // the repository from files the session's own commands may have written.
-func (c *Controller) WorkspaceRepo() gitcmd.Repo { return c.workspaceRepo }
+
+// Executor returns the underlying agent when present (nil for pure runners).
+func (c *Controller) Executor() *agent.Agent {
+	if c == nil {
+		return nil
+	}
+	return c.executor
+}

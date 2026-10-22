@@ -151,7 +151,7 @@ test("only issues the bot filed with the source label are ours", () => {
   assert.equal(isOurs({ ...ok, labels: [] }), false);
 });
 
-function fakes({ replies = [], ackFails = false, repliesFails = null, issueOf = (n) => ({ ...BOT, number: n, comments: 1 }), comments = [], commentFails = false, recent = [], recordedFails = false, pendingFails = null, open = [], pending = [item()], issues = {}, changed = [], timeline = [], pulls = {}, tags = [], stable = null, releaseAt = null } = {}) {
+function fakes({ replies = [], ackFails = false, repliesFails = null, issueOf = (n) => ({ ...BOT, number: n, comments: 1 }), comments = [], commentFails = false, reopenFails = false, recent = [], recordedFails = false, pendingFails = null, open = [], withdrawn = [], withdrawnFails = null, closeFails = false, pending = [item()], issues = {}, changed = [], timeline = [], pulls = {}, tags = [], stable = null, releaseAt = null } = {}) {
   const calls = [];
   return {
     calls,
@@ -159,6 +159,7 @@ function fakes({ replies = [], ackFails = false, repliesFails = null, issueOf = 
     worker: {
       pending: async () => { if (pendingFails) throw pendingFails; return pending; },
       open: async () => open,
+      withdrawn: async () => { if (withdrawnFails) throw withdrawnFails; return withdrawn; },
       recorded: async (r, b) => { calls.push(["recorded", r, b]); if (recordedFails) throw new Error("boom"); },
       status: async (r, b) => calls.push(["status", r, b]),
       replies: async () => { if (repliesFails) throw repliesFails; return replies; },
@@ -172,6 +173,9 @@ function fakes({ replies = [], ackFails = false, repliesFails = null, issueOf = 
       getIssue: async (n) => { calls.push(["getIssue", n]); return issues[n] ?? issueOf(n); },
       recentComments: async (n) => { calls.push(["comments", n]); return comments; },
       comment: async (n, body) => { calls.push(["comment", n, body]); if (commentFails) throw new Error("gh boom"); },
+      updateComment: async (id, body) => calls.push(["updateComment", id, body]),
+      close: async (n) => { calls.push(["close", n]); if (closeFails) throw new Error("gh close boom"); },
+      reopen: async (n) => { calls.push(["reopen", n]); if (reopenFails) throw new Error("gh reopen boom"); },
       timeline: async (n) => { calls.push(["timeline", n]); return timeline; },
       getPull: async (n) => pulls[n],
     },
@@ -330,7 +334,7 @@ test("an unreachable worker is a warning, not a failed job", async () => {
     const deps = liveDeps({ FEEDBACK_ADMIN_TOKEN: "t" });
     const logs = [];
     const { failures } = await run({ ...deps, log: (m) => logs.push(m) });
-    assert.equal(failures.length, 3);
+    assert.equal(failures.length, 4);
     assert.ok(logs.every((m) => m.startsWith("::warning::") && m.includes("ECONNREFUSED")));
   } finally {
     globalThis.fetch = real;
@@ -366,6 +370,34 @@ test("a user reply becomes one bot comment on its issue, then is acked", async (
   assert.deepEqual(writes(d), ["getIssue", "comments", "comment", "ack"]);
   assert.equal(postedBodies(d)[0], renderReply(reply()));
   assert.deepEqual(d.calls.find((c) => c[0] === "ack"), ["ack", "r1"]);
+});
+
+// A reply to a fixed report means the fix did not hold. The converter has
+// already moved the ticket back to recorded; the issue follows it.
+test("a reply to an issue closed as completed reopens it after commenting, then acks", async () => {
+  const closed = (n) => ({ ...BOT, number: n, comments: 1, state: "closed", state_reason: "completed" });
+  const d = fakes({ pending: [], replies: [reply()], issueOf: closed });
+  assert.deepEqual((await run(d)).failures, []);
+  assert.deepEqual(writes(d), ["getIssue", "comments", "comment", "reopen", "ack"]);
+});
+
+test("an open issue, or one closed by a maintainer's decision, is never reopened by a reply", async () => {
+  for (const [state, state_reason] of [["open", null], ["closed", "not_planned"], ["closed", "duplicate"]]) {
+    const d = fakes({ pending: [], replies: [reply()], issueOf: (n) => ({ ...BOT, number: n, comments: 1, state, state_reason }) });
+    await run(d);
+    assert.ok(!writes(d).includes("reopen"), `${state}/${state_reason}`);
+  }
+});
+
+test("a failed reopen is a warning, keeps the reply unacked and does not post twice on retry", async () => {
+  const closed = (n) => ({ ...BOT, number: n, comments: 1, state: "closed", state_reason: "completed" });
+  const a = fakes({ pending: [], replies: [reply()], issueOf: closed, reopenFails: true });
+  assert.equal((await run(a)).failures.length, 1);
+  assert.ok(!writes(a).includes("ack"));
+  const mine = { user: { login: "github-actions[bot]" }, body: renderReply(reply()) };
+  const b = fakes({ pending: [], replies: [reply()], issueOf: closed, comments: [mine] });
+  await run(b);
+  assert.deepEqual(writes(b), ["getIssue", "comments", "reopen", "ack"]);
 });
 
 test("replies are idempotent: a comment carrying the marker is adopted, a forged one is not", async () => {
@@ -434,4 +466,106 @@ test("contact is never read, rendered or sent by the converter", async () => {
   assert.ok(!renderBody(item({ contact: secret })).includes(secret) && !renderReply(reply({ contact: secret })).includes(secret));
   const source = readFileSync(new URL("./feedback-sync.mjs", import.meta.url), "utf8");
   assert.ok(!/contact/i.test(source), "the converter must not name a contact field at all");
+});
+
+const shotUrl = (k) => `${ATTACHMENT_PREFIX}${k}`;
+const withImages = (released) => reply({ attachments: [{ name: "a.png", contentType: "image/png", url: shotUrl("abcdefghijklmnop"), released }, { name: "b.png", contentType: "image/png", released: false }] });
+
+test("a reply's released images are shown under it and a held one is said to be waiting, only when images exist", () => {
+  const text = renderReply(withImages(true));
+  assert.ok(text.includes(`![image 1](${shotUrl("abcdefghijklmnop")})`));
+  assert.ok(text.includes("1 image attached, not public: awaiting maintainer review."));
+  assert.ok(text.trimEnd().endsWith(replyMarker("r1")));
+  assert.ok(!renderReply(reply()).includes("awaiting maintainer review"));
+  assert.ok(!renderReply(reply({ attachments: [] })).includes("awaiting maintainer review"));
+  const none = renderReply(reply({ attachments: [{ name: "a.png", url: "https://evil.example/x.png", released: true }] }));
+  assert.ok(!none.includes("evil.example") && none.includes("1 image attached, not public"));
+});
+
+test("a comment already written is edited in place when the images changed, acked, and the issue is not reopened again", async () => {
+  const closed = (n) => ({ ...BOT, number: n, comments: 1, state: "closed", state_reason: "completed" });
+  const before = { id: 7001, user: { login: "github-actions[bot]" }, body: renderReply(withImages(false)) };
+  const d = fakes({ pending: [], replies: [withImages(true)], issueOf: closed, comments: [before] });
+  assert.deepEqual((await run(d)).failures, []);
+  assert.deepEqual(writes(d), ["getIssue", "comments", "updateComment", "ack"]);
+  const update = d.calls.find((c) => c[0] === "updateComment");
+  assert.equal(update[1], 7001);
+  assert.ok(update[2].includes(`![image 1](${shotUrl("abcdefghijklmnop")})`));
+});
+
+test("removed images are edited out of the mirrored comment, leaving no dangling link", async () => {
+  const before = { id: 7002, user: { login: "github-actions[bot]" }, body: renderReply(withImages(true)) };
+  const d = fakes({ pending: [], replies: [reply({ attachments: [] })], comments: [before] });
+  await run(d);
+  const update = d.calls.find((c) => c[0] === "updateComment");
+  assert.ok(update && !update[2].includes(ATTACHMENT_PREFIX) && !update[2].includes("awaiting maintainer review"));
+});
+
+test("a forged comment carrying the marker is never edited; a fresh comment is posted instead", async () => {
+  const forged = { id: 9, user: { login: "mallory" }, body: renderReply(withImages(false)) };
+  const d = fakes({ pending: [], replies: [withImages(true)], comments: [forged] });
+  await run(d);
+  assert.ok(!writes(d).includes("updateComment"));
+  assert.deepEqual(writes(d), ["getIssue", "comments", "comment", "ack"]);
+});
+
+test("a comment that is already current is neither edited nor reposted", async () => {
+  const same = { id: 5, user: { login: "github-actions[bot]" }, body: renderReply(withImages(true)) };
+  const d = fakes({ pending: [], replies: [withImages(true)], comments: [same] });
+  await run(d);
+  assert.deepEqual(writes(d), ["getIssue", "comments", "ack"]);
+});
+
+const WITHDRAWN = (over = {}) => ({ receipt: R, issueNumber: 777, issueUrl: "https://github.com/esengine/DeepSeek-Reasonix/issues/777", ...over });
+const mirror = (over = {}) => ({ ...BOT, number: 777, state: "open", body: `text\n\n${marker(R)}`, ...over });
+const closes = (d) => d.calls.filter((c) => c[0] === "close");
+
+test("withdrawn: the mirror issue of a withdrawn report is closed as not planned, with a note", async () => {
+  const d = fakes({ pending: [], withdrawn: [WITHDRAWN()], issues: { 777: mirror() } });
+  assert.equal((await run(d)).failures.length, 0);
+  assert.deepEqual(closes(d), [["close", 777]]);
+  const note = d.calls.find((c) => c[0] === "comment");
+  assert.equal(note[1], 777);
+  assert.match(note[2], /withdrew/);
+});
+
+test("withdrawn: an issue that is already closed is left alone, so a repeat run writes nothing", async () => {
+  const d = fakes({ pending: [], withdrawn: [WITHDRAWN()], issues: { 777: mirror({ state: "closed", state_reason: "not_planned" }) } });
+  await run(d);
+  assert.equal(closes(d).length, 0);
+  assert.equal(d.calls.filter((c) => c[0] === "comment").length, 0);
+});
+
+test("withdrawn: only the mirror of that very report is closed, never another issue the worker names", async () => {
+  for (const issue of [
+    mirror({ body: `text\n\n${marker("FB-AAAA-AAAA")}` }),
+    mirror({ user: { login: "someone" } }),
+    mirror({ labels: [] }),
+    mirror({ pull_request: {} }),
+  ]) {
+    const d = fakes({ pending: [], withdrawn: [WITHDRAWN()], issues: { 777: issue } });
+    await run(d);
+    assert.equal(closes(d).length, 0);
+  }
+});
+
+test("withdrawn: a dry run writes nothing, and a read or close failure never stops the rest", async () => {
+  const dry = fakes({ pending: [], withdrawn: [WITHDRAWN()], issues: { 777: mirror() } });
+  await run(dry, { dryRun: true });
+  assert.equal(closes(dry).length, 0);
+  assert.equal(dry.calls.filter((c) => c[0] === "comment").length, 0);
+
+  const broken = fakes({ pending: [], withdrawnFails: new Error("worker down") });
+  assert.equal((await run(broken)).failures.length, 1);
+
+  const stuck = fakes({ pending: [], withdrawn: [WITHDRAWN(), WITHDRAWN({ receipt: "FB-BBBB-0002", issueNumber: 778 })], issues: { 777: mirror(), 778: mirror({ number: 778, body: `t\n\n${marker("FB-BBBB-0002")}` }) }, closeFails: true });
+  const { failures } = await run(stuck);
+  assert.equal(failures.length, 2);
+  assert.equal(stuck.calls.filter((c) => c[0] === "comment").length, 0);
+});
+
+test("withdrawn: a malformed list entry is skipped", async () => {
+  const d = fakes({ pending: [], withdrawn: [{ receipt: "nope", issueNumber: 7 }, WITHDRAWN({ issueNumber: "x" }), WITHDRAWN({ issueNumber: -1 })], issues: { 777: mirror() } });
+  await run(d);
+  assert.equal(closes(d).length, 0);
 });

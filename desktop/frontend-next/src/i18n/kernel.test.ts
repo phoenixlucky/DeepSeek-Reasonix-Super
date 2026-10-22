@@ -24,6 +24,24 @@ const coded = (message: string, code: string, params?: Record<string, string | n
 // upstream of this — dotted codes, sentinels, typed families — buys nothing if
 // the last hop prints the English that rode along for the log.
 describe("what a reader is told a refusal was", () => {
+  it("names unavailable composition dependencies and offers a recovery path", () => {
+    const error = coded("fallback", "agent_composition.mcp_unavailable", { module: "docs", detail: "http 401" });
+    expect(reason(error)).toContain("MCP 服务 docs");
+    expect(reason(error)).toContain("http 401");
+    expect(reason(error)).toContain("认证");
+    localStorage.setItem(STORAGE, "en"); boot();
+    expect(reason(error)).toContain("MCP server docs");
+    expect(reason(error)).toContain("authentication");
+    const resource = coded("fallback", "agent_composition.unavailable", { module: "extension:tools", detail: "link leaves source directory" });
+    expect(reason(resource)).toContain("extension:tools");
+    expect(reason(resource)).toContain("link leaves source directory");
+  });
+  it("explains unreadable memory directories in both languages", () => {
+    const refusal = coded("fixture fallback", "memory.directory_unreadable");
+    expect(reason(refusal)).toBe("无法读取记忆目录，请检查权限或存储状态后重试");
+    localStorage.setItem(STORAGE, "en"); boot();
+    expect(reason(refusal)).toBe("Cannot read the memory directory; check permissions or storage and try again");
+  });
   it("asks for a currency retry when its runtime owner changed", () => {
     const refusal = coded("fixture fallback", "display_currency.runtime_changed");
     expect(reason(refusal)).toBe("运行时已更换，费用显示币种未保存，请重试");
@@ -92,10 +110,10 @@ describe("what a reader is told a refusal was", () => {
   // authority never actually left the kernel.
   it("explains the project limit in Chinese and English", () => {
     const error = coded("storage limit", "workspace.limit_reached");
-    expect(reason(error)).toBe("项目列表已满（32 个），请先移除一个项目再添加");
+    expect(reason(error)).toBe("项目列表已到你设置的上限（desktop.max_workspaces），请先移除一个项目再添加");
     localStorage.setItem(STORAGE, "en");
     boot();
-    expect(reason(error)).toBe("The project list is full (32 projects); remove one before adding another");
+    expect(reason(error)).toBe("The project list is at the limit you set (desktop.max_workspaces); remove one before adding another");
   });
 
   it("does not move when the kernel rewords the same code", () => {
@@ -112,6 +130,17 @@ describe("what a reader is told a refusal was", () => {
     expect(said).toContain("mac-mini.local");
   });
 
+  it("names the module and the cause when a composition is unavailable, in both languages", () => {
+    const refusal = coded("fixture fallback", "agent_composition.unavailable", { module: "tools:browser_act", detail: "Required module is unavailable or was revoked." });
+    localStorage.setItem(STORAGE, "zh");
+    boot();
+    expect(reason(refusal)).toContain("tools:browser_act");
+    expect(reason(refusal)).toContain("Required module is unavailable or was revoked.");
+    localStorage.setItem(STORAGE, "en");
+    boot();
+    expect(reason(refusal)).toContain("tools:browser_act");
+    expect(reason(refusal)).toContain("Required module is unavailable or was revoked.");
+  });
   it("fills a code's sentence from the params, not from the kernel's prose", () => {
     const said = reason(coded("workspace has 3 open panes", "workspace.has_open_panes", { n: 3 }));
     expect(said).toContain("3");

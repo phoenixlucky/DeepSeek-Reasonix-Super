@@ -26,14 +26,15 @@ func (s *Server) saveShellSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Prefer string `json:"prefer"`
-		Path   string `json:"path"`
+		Prefer string   `json:"prefer"`
+		Path   string   `json:"path"`
+		Args   []string `json:"args"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&body); err != nil {
 		badBody(w)
 		return
 	}
-	if err := s.ctl().SaveShellSettings(body.Prefer, body.Path); err != nil {
+	if err := s.ctl().SaveShellSettings(body.Prefer, body.Path, body.Args...); err != nil {
 		saveFailed(w, http.StatusBadRequest, "shell.rejected", err)
 		return
 	}

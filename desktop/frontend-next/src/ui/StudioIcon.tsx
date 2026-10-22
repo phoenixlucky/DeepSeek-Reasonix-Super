@@ -2,7 +2,6 @@ import type { SVGProps } from "react";
 
 // Exact outline geometry used by the Reasonix Studio prototype.
 const PATHS = {
-  brand: "M6 20V4h7a5 5 0 0 1 0 10H6m7 0 6 6",
   folder: "M3 7V5h6l3 3h9v12H3V7z",
   reveal: "M12 20H3V5h6l3 3h9v4M15 20l6-6M16 14h5v5",
   file: "M14 3H5v18h14V8l-5-5v5h5M8 12h8M8 16h5",
@@ -13,6 +12,8 @@ const PATHS = {
   arrow: "M12 20V4m-6 6 6-6 6 6",
   close: "m6 6 12 12M6 18 18 6",
   expand: "M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7",
+  collapseAll: "M18 10h-4v-4M20 4l-6 6M6 14h4v4M10 14l-6 6",
+  expandAll: "M16 20h4v-4M14 14l6 6M8 4H4v4M4 4l6 6",
   check: "m5 12 4 4L19 6",
   globe: "M3 12h18M12 3c-5 5-5 13 0 18 5-5 5-13 0-18M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0",
   code: "m8 6-6 6 6 6m8-12 6 6-6 6M14 3l-4 18",
@@ -23,6 +24,7 @@ const PATHS = {
   panel: "M4 5h16v14H4V5zM9 5v14",
   shield: "m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3zM8 12l3 3 5-6",
   branch: "M6 5a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm0 0v12m12-8a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm0 0a6 6 0 0 1-6 6H6m0 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z",
+  fork: "M3 12h5c2 0 3-1 4-2l8-7m-6 0h6v6M8 12c2 0 3 1 4 2l8 7m-6 0h6v-6",
   layers: "m12 3 10 5-10 5L2 8l10-5zM2 12l10 5 10-5M2 16l10 5 10-5",
   spark: "m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3z",
   agent: "M11 3l1.7 4.3L17 9l-4.3 1.7L11 15l-1.7-4.3L5 9l4.3-1.7L11 3zM19 14l.8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8L19 14zM4 3l.5 1.5L6 5l-1.5.5L4 7l-.5-1.5L2 5l1.5-.5L4 3z",
@@ -37,6 +39,7 @@ const PATHS = {
   external: "M14 3h7v7M21 3 11 13M10 3H3v18h18v-7",
   plug: "M8 3v5m8-5v5M5 8h14v4a7 7 0 0 1-14 0V8M12 19v3",
   download: "M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4",
+  chat: "M4 5h16v10H9l-5 4V5z",
   list: "M9 5h12M9 12h12M9 19h12M3 5h.01M3 12h.01M3 19h.01",
   edit: "m4 16 12-12 4 4L8 20H4v-4zM13 7l4 4",
   rewind: "M9 14 4 9l5-5M4 9h11a5 5 0 0 1 0 10h-4",

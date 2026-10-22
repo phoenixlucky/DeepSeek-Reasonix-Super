@@ -110,12 +110,12 @@ func TestAskWithNoTimeoutSettingKeepsWaiting(t *testing.T) {
 // its wait carries no ask deadline, the agent's own question does.
 func TestExternalFormIsNeverSkippedByTheAskTimeout(t *testing.T) {
 	c, _ := askTimeoutController(t, 10)
-	own, cancelOwn := c.askWaitContext(context.Background(), nil)
+	_, own, cancelOwn := c.askWaitContext(context.Background(), nil)
 	defer cancelOwn()
 	if _, ok := own.Deadline(); !ok {
 		t.Fatal("the agent's own question carries no ask deadline")
 	}
-	form, cancelForm := c.askWaitContext(context.Background(), &event.AskOrigin{Kind: event.AskOriginMCP})
+	_, form, cancelForm := c.askWaitContext(context.Background(), &event.AskOrigin{Kind: event.AskOriginMCP})
 	defer cancelForm()
 	if _, ok := form.Deadline(); ok {
 		t.Fatal("an MCP form was given the ask timeout")
@@ -359,4 +359,111 @@ func TestAnswerRacingTheTimerResolvesExactlyOnce(t *testing.T) {
 			t.Fatalf("iteration %d: %d timed_out receipts for timedOut=%v", i, receiptsTimed, timedOut)
 		}
 	}
+}
+
+// A person watching the card can see that the question will be skipped and how
+// soon: the ask carries the remaining wait, and a reconnecting frontend is told
+// what is left, not the whole wait again.
+func TestAskAnnouncesWhenItWillBeSkipped(t *testing.T) {
+	c, sink := askTimeoutController(t, 10)
+	t.Cleanup(c.Close)
+	go func() { _, _ = c.Ask(t.Context(), askQ) }()
+	var shown event.Ask
+	waitUntil(t, func() bool {
+		sink.mu.Lock()
+		defer sink.mu.Unlock()
+		for _, ev := range sink.events {
+			if ev.Kind == event.AskRequest {
+				shown = ev.Ask
+				return true
+			}
+		}
+		return false
+	})
+	if shown.SkipInMs < 9000 || shown.SkipInMs > 10000 {
+		t.Fatalf("SkipInMs = %d, want about the 10 s setting", shown.SkipInMs)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	_, asks := c.approval.snapshotPrompts()
+	if len(asks) != 1 || asks[0].SkipInMs <= 0 || asks[0].SkipInMs >= shown.SkipInMs {
+		t.Fatalf("replayed ask = %+v, want less wait left than the %d ms first announced", asks, shown.SkipInMs)
+	}
+}
+
+func TestAskWithNoTimeoutAnnouncesNoSkip(t *testing.T) {
+	c, sink := askTimeoutController(t, 0)
+	t.Cleanup(c.Close)
+	go func() { _, _ = c.Ask(t.Context(), askQ) }()
+	waitUntil(t, func() bool {
+		sink.mu.Lock()
+		defer sink.mu.Unlock()
+		return len(sink.events) > 0
+	})
+	for _, ev := range sink.events {
+		if ev.Kind == event.AskRequest && ev.Ask.SkipInMs != 0 {
+			t.Fatalf("an ask that is never skipped announced %d ms", ev.Ask.SkipInMs)
+		}
+	}
+}
+
+func TestEngagingAQuestionTellsEveryFrontendItWillNotBeSkipped(t *testing.T) {
+	c, sink := askTimeoutController(t, 10)
+	t.Cleanup(c.Close)
+	go func() { _, _ = c.Ask(t.Context(), askQ) }()
+	var id string
+	waitUntil(t, func() bool {
+		sink.mu.Lock()
+		defer sink.mu.Unlock()
+		for _, ev := range sink.events {
+			if ev.Kind == event.AskRequest {
+				id = ev.Ask.ID
+				return true
+			}
+		}
+		return false
+	})
+	if !c.EngageQuestion(id) {
+		t.Fatal("the shown question refused engagement")
+	}
+	sink.mu.Lock()
+	var engaged, announced int
+	for _, ev := range sink.events {
+		switch {
+		case ev.Kind == event.AskEngaged && ev.Ask.ID == id:
+			engaged++
+		case ev.Kind == event.AskRequest:
+			announced++
+		}
+	}
+	sink.mu.Unlock()
+	if engaged != 1 || announced != 1 {
+		t.Fatalf("engaging made %d engaged events and %d question announcements, want 1 and 1: only AskRequest may put a question on screen", engaged, announced)
+	}
+	c.EngageQuestion(id)
+	sink.mu.Lock()
+	again := 0
+	for _, ev := range sink.events {
+		if ev.Kind == event.AskEngaged {
+			again++
+		}
+	}
+	sink.mu.Unlock()
+	if again != 1 {
+		t.Fatalf("engaging twice told the frontends %d times, want once", again)
+	}
+	if _, asks := c.approval.snapshotPrompts(); len(asks) != 1 || asks[0].SkipInMs != 0 {
+		t.Fatalf("a reconnecting frontend is told %+v for an engaged question", asks)
+	}
+}
+
+func waitUntil(t *testing.T, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition not reached")
 }

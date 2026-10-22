@@ -4,7 +4,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "./testkit";
 import { Backup } from "./Backup";
-import { BackupRestore } from "./BackupRestore";
+import { accountBackupSource, BackupRestore } from "./BackupRestore";
 import { MockPort } from "../port/mock";
 import type { AgentPort, BackupEntry } from "../port/port";
 
@@ -64,7 +64,7 @@ describe("cloud backup", () => {
   it("holds a command back until its own consent box is ticked, and sends that consent", async () => {
     const port = new MockPort() as unknown as AgentPort;
     const apply = vi.spyOn(port, "applyBackup");
-    render(<BackupRestore port={port} backup={entry} onClose={() => {}} />);
+    render(<BackupRestore port={port} source={accountBackupSource(port, entry)} onClose={() => {}} />);
 
     await userEvent.type(document.querySelector<HTMLInputElement>('input[type="password"]')!, "a long passphrase");
     await userEvent.click(screen.getByRole("button", { name: "预览差异" }));

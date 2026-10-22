@@ -24,7 +24,7 @@ func validateAnswerIsolation(tasks []task) error {
 		if t.answerRoot == "" {
 			continue
 		}
-		if !sandbox.Available() {
+		if !sandbox.ConfinesByDefault() {
 			return fmt.Errorf("%s contains answer material, but this host has no OS read sandbox", t.answerRoot)
 		}
 		roots, err := answerReadRoots(t.answerRoot)

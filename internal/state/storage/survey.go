@@ -200,21 +200,53 @@ func measureRoot(ctx context.Context, id config.RootID, dir string, budget time.
 func measureOwned(ctx context.Context, id config.RootID, dir string, count *tally) bool {
 	owned := config.RootOwns(id)
 	if len(owned) == 0 {
-		return measure(ctx, dir, count)
+		return measure(ctx, dir, count, neighbourEntries(id, dir))
 	}
 	missing := true
 	for _, name := range owned {
-		if !measure(ctx, filepath.Join(dir, name), count) {
+		if !measure(ctx, filepath.Join(dir, name), count, nil) {
 			missing = false
 		}
 	}
 	return missing
 }
 
+// neighbourEntries are the top-level names another root declares in dir. A root
+// that declares nothing is sole occupant only when no other root lives in the
+// same folder; otherwise it is credited with the rest, never with what a
+// neighbour owns.
+func neighbourEntries(id config.RootID, dir string) map[string]bool {
+	here, err := os.Stat(dir)
+	if err != nil {
+		return nil
+	}
+	var skip map[string]bool
+	for _, other := range config.RootIDs() {
+		if other == id {
+			continue
+		}
+		names := config.RootOwns(other)
+		if len(names) == 0 {
+			continue
+		}
+		there, err := os.Stat(config.RootDir(other))
+		if err != nil || !os.SameFile(here, there) {
+			continue
+		}
+		if skip == nil {
+			skip = map[string]bool{}
+		}
+		for _, name := range names {
+			skip[name] = true
+		}
+	}
+	return skip
+}
+
 // measure walks dir into count. It counts what it can reach and records the
 // first refusal rather than aborting: an unreadable subtree is a smaller number
 // plus a reason, which is more use than no number at all.
-func measure(ctx context.Context, dir string, count *tally) (missing bool) {
+func measure(ctx context.Context, dir string, count *tally, skip map[string]bool) (missing bool) {
 	// Asked before the walk rather than inferred from it: a root nothing has
 	// written yet and a root that refused to be read are different answers,
 	// and the walk reports both as the same first callback error.
@@ -225,12 +257,18 @@ func measure(ctx context.Context, dir string, count *tally) (missing bool) {
 		count.fail(err.Error())
 		return false
 	}
-	walkErr := count.walk(dir, func(_ string, entry fs.DirEntry, err error) error {
+	walkErr := count.walk(dir, func(path string, entry fs.DirEntry, err error) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
 		if err != nil {
 			count.fail(err.Error())
+			return nil
+		}
+		if len(skip) > 0 && filepath.Dir(path) == filepath.Clean(dir) && skip[entry.Name()] {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		if entry.IsDir() {
@@ -286,3 +324,8 @@ func isDirAt(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
 }
+
+// VolumeOf answers what the volume holding dir has left, for a caller that
+// wants one answer rather than a survey; a volume that cannot be read comes
+// back with a zero Total.
+func VolumeOf(dir string) Volume { return readVolume(dir) }

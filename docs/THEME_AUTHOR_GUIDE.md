@@ -86,6 +86,21 @@ The authoritative vocabulary is the kernel's [`Tokens` map](../internal/ext/them
 
 The frontend maps the vocabulary to CSS variables in [`theme.ts`](../desktop/frontend-next/src/ui/theme.ts). The kernel's [`TestThemeTokenVocabularyMatchesTheFrontend`](../internal/ext/theme/tokens_test.go) checks that both sides agree.
 
+`accent` paints filled controls; `accentFg` is text on that fill. Optional
+`accentInk` paints accent-coloured text on ordinary surfaces and tinted washes.
+
+When absent, Studio mixes 65% `accent` with 35% `fg` (or the current text colour).
+Choose these as separate contrast pairs. Older readers ignore `accentInk` and
+continue loading the other schema-version-1 tokens.
+
+The built-in **清白蓝 / Clear Blue** (`official-clear-blue`) and **茶绿 / Tea Green**
+(`official-tea-green`) are plain light/dark palettes. They use no wallpaper, sky,
+font or radius overrides. They are opt-in; an empty `desktop.theme_pack` still
+selects the unchanged default.
+
+Foundation palettes share the default reading
+surface and respect the reader's size, weight and contrast preferences.
+
 Status colours such as `ok`, `warn` and `err` belong to Studio and cannot be
 recoloured by a pack. `sidebar` and `chat` are not current token names.
 An unknown token or invalid value is dropped, while valid tokens still load;

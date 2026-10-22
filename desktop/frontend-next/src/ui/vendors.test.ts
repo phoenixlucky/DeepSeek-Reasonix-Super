@@ -82,3 +82,17 @@ describe("sourceNameUsable", () => {
     [" company-relay.1_x ", true], ["Relay_1.x-y", true],
   ])("%j -> %s", (name, ok) => expect(sourceNameUsable(name)).toBe(ok));
 });
+
+describe("hostOf", () => {
+  it("keeps a port that is not the scheme's default, so two ports are two accounts", async () => {
+    const { accountKey, hostOf } = await import("./vendors");
+    expect(hostOf("http://127.0.0.1:8788/v1")).toBe("127.0.0.1:8788");
+    expect(hostOf("https://API.DeepSeek.com:443/v1")).toBe("api.deepseek.com");
+    expect(accountKey(hostOf("http://127.0.0.1:8788/v1"), "K")).not.toBe(accountKey(hostOf("http://127.0.0.1:8756/v1"), "K"));
+  });
+
+  it("leaves the port out of every name", () => {
+    expect(vendorLabel("relay.example:8788")).toBe(vendorLabel("relay.example"));
+    expect(nameFrom("http://relay.example:8788/v1")).toBe("relay");
+  });
+});

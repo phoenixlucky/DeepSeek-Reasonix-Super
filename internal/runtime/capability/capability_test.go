@@ -128,6 +128,7 @@ func TestRouteDeliveryPromotesMatchedBuiltinSkills(t *testing.T) {
 func TestRouteMatchesNamedMCPServerNotVendorMentions(t *testing.T) {
 	entries := ToolEntries([]tool.ContractEntry{{
 		Name:        "mcp__github__search_issues",
+		MCP:         &tool.MCPBinding{Server: "github", RawName: "search_issues", CapabilityID: "mcp-tool:github/search_issues"},
 		Description: "search GitHub issues",
 		ReadOnly:    true,
 	}})

@@ -68,6 +68,8 @@ type updateSink struct {
 	// parent sampling and background sub-agents may Emit concurrently.
 	speculativeToolIDs map[string]struct{}
 	activeAttemptID    string
+	msgIDs             messageIDs
+	elicitModes        elicitModes
 	mu                 sync.Mutex
 	turnCtx            context.Context
 }
@@ -91,8 +93,8 @@ func (s *updateSink) bindApprove(fn func(id string, allow, session, persist bool
 
 // bindAnswer installs the controller's AnswerQuestion callback for AskRequest
 // events.
-func (s *updateSink) bindAnswer(fn func(id string, answers []event.AskAnswer)) {
-	s.answer = fn
+func (s *updateSink) bindAnswer(fn func(id string, answers []event.AskAnswer) error) {
+	s.answer = func(id string, answers []event.AskAnswer) { _ = fn(id, answers) }
 }
 
 // bindStatus installs the vendor-status observer. It receives typed events,
@@ -150,7 +152,7 @@ func (s *updateSink) Emit(e event.Event) {
 		if e.Text == "" {
 			return
 		}
-		s.send(messageChunk{SessionUpdate: "agent_message_chunk", Content: textBlock(e.Text)})
+		s.send(messageChunk{SessionUpdate: "agent_message_chunk", MessageID: s.liveMessageID(), Content: textBlock(e.Text)})
 
 	case event.StreamAttempt:
 		// Attempt bookkeeping only. ACP still skips partial ToolDispatch (no
@@ -186,6 +188,7 @@ func (s *updateSink) Emit(e event.Event) {
 		s.send(toolCall{
 			SessionUpdate: "tool_call",
 			ToolCallID:    e.Tool.ID,
+			Name:          e.Tool.Name,
 			Title:         e.Tool.Name,
 			Kind:          toolKindFor(e.Tool.Name),
 			Status:        "pending",
@@ -370,12 +373,13 @@ func (s *updateSink) replay(msgs []provider.Message) {
 			// Same display filter as live emission: goal markers and evidence
 			// blocks stay in history for parsing but never reach the client.
 			if display := agent.DisplayAssistantText(m.Content); display != "" {
-				s.send(messageChunk{SessionUpdate: "agent_message_chunk", Content: textBlock(display)})
+				s.send(messageChunk{SessionUpdate: "agent_message_chunk", MessageID: s.msgIDs.replayed(), Content: textBlock(display)})
 			}
 			for _, tc := range m.ToolCalls {
 				s.send(toolCall{
 					SessionUpdate: "tool_call",
 					ToolCallID:    tc.ID,
+					Name:          tc.Name,
 					Title:         tc.Name,
 					Kind:          toolKindFor(tc.Name),
 					Status:        "completed",
@@ -413,11 +417,12 @@ func (s *updateSink) requestPermission(ctx context.Context, a event.Approval) {
 	if a.Subject != "" {
 		title = a.Tool + " " + a.Subject
 	}
-	options := approvalOptions(a.Tool, a.Subject, a.Fresh)
+	options := approvalOptions(a.Tool, a.Subject, a.Fresh, a.AllowsPersist)
 	params := PermissionRequestParams{
 		SessionID: s.sessionID,
 		ToolCall: PermissionToolCall{
 			ToolCallID: "gate-" + a.ID,
+			Name:       a.Tool,
 			Title:      title,
 			Kind:       toolKindFor(a.Tool),
 			Status:     "pending",
@@ -437,6 +442,8 @@ func (s *updateSink) requestPermission(ctx context.Context, a event.Approval) {
 				allow = true
 			case OptAllowAlways:
 				allow, session = true, true
+			case optAllowPersist:
+				allow, session, persist = true, true, true
 			}
 		}
 	}
@@ -492,10 +499,11 @@ func (s *updateSink) requestAsk(ctx context.Context, a event.Ask) {
 	if s.answer == nil {
 		return
 	}
-	// ACP has nothing but the permission prompt to show a question in, and a
-	// server's form drawn there reads as the agent asking leave. It is declined.
+	// A server's form drawn in the permission prompt reads as the agent asking
+	// leave, so it goes through elicitation/create when the client advertised the
+	// mode and is declined otherwise.
 	if a.Origin != nil {
-		s.answer(a.ID, nil)
+		s.answer(a.ID, s.elicit(ctx, a))
 		return
 	}
 	answers := make([]event.AskAnswer, 0, len(a.Questions))
@@ -567,8 +575,14 @@ func (s *updateSink) requestAskQuestion(ctx context.Context, askID string, q eve
 }
 
 func approvalSessionOptionName(tool, subject string) string {
+	if tool == control.PaidSearchApprovalTool {
+		return "Allow " + subject + " (charged per request) for this session"
+	}
 	if tool == control.SandboxEscapeApprovalTool {
 		return "Use real environment for this session"
+	}
+	if tool == control.SettingApprovalTool {
+		return "Allow changes to " + subject + " for this session"
 	}
 	if tool == control.NetworkEgressApprovalTool {
 		return "Allow " + subject + " for this session"
@@ -577,9 +591,26 @@ func approvalSessionOptionName(tool, subject string) string {
 	return "Allow " + sessionRule + " for this session"
 }
 
-func approvalOptions(tool, subject string, fresh bool) []PermissionOption {
+// optAllowPersist is the choice that records the answer in the user's settings.
+// ACP names no such kind, so it travels as an allow_always option with its own id.
+const optAllowPersist PermissionOptionKind = "allow_persist"
+
+// approvalOptions renders what an answer may grant. persist is the host's own
+// statement that the answer can be written down; only a paid backend, whose
+// consent is meant to outlive the session, has the choice drawn.
+func approvalOptions(tool, subject string, fresh, persist bool) []PermissionOption {
+	if tool == control.PaidSearchApprovalTool {
+		options := []PermissionOption{
+			{OptionID: string(OptAllowOnce), Name: "Allow", Kind: OptAllowOnce},
+			{OptionID: string(OptAllowAlways), Name: approvalSessionOptionName(tool, subject), Kind: OptAllowAlways},
+		}
+		if persist {
+			options = append(options, PermissionOption{OptionID: string(optAllowPersist), Name: "Always allow " + subject + " (charged per request; saved to your settings)", Kind: OptAllowAlways})
+		}
+		return append(options, PermissionOption{OptionID: string(OptRejectOnce), Name: "Reject", Kind: OptRejectOnce})
+	}
 	if fresh || control.RequiresFreshHumanApprovalTool(tool) {
-		if tool == control.SandboxEscapeApprovalTool || tool == control.NetworkEgressApprovalTool {
+		if tool == control.SandboxEscapeApprovalTool || tool == control.NetworkEgressApprovalTool || tool == control.SettingApprovalTool {
 			return []PermissionOption{
 				{OptionID: string(OptAllowOnce), Name: "Allow", Kind: OptAllowOnce},
 				{OptionID: string(OptAllowAlways), Name: approvalSessionOptionName(tool, subject), Kind: OptAllowAlways},

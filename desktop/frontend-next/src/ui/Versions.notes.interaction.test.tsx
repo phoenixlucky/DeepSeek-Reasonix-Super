@@ -178,3 +178,28 @@ describe("version notes on the version panel", () => {
     expect(screen.getByRole("button", { name: "固定在这里" })).toBeTruthy();
   });
 });
+
+describe("notes that carry two languages", () => {
+  const both = "## 新增\n\n- 中文条目\n\n---\n\n<!-- lang:en -->\n\n## New\n\n- English item\n";
+
+  it("show the window's language first and switch to the other on request", async () => {
+    render(<Versions port={portWith(doc("2.21.0", both))} />);
+    await screen.findByText("2.19.0");
+    await userEvent.click(screen.getAllByRole("button", { name: "更新内容" })[0]);
+    expect(await screen.findByText("中文条目")).toBeTruthy();
+    expect(screen.queryByText("English item")).toBeNull();
+    expect(screen.queryByText(/lang:en/)).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "English" }));
+    expect(await screen.findByText("English item")).toBeTruthy();
+    expect(screen.queryByText("中文条目")).toBeNull();
+    expect(screen.getByRole("button", { name: "English" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("show no switch for notes in one language", async () => {
+    render(<Versions port={portWith(doc("2.21.0", "## 新增\n\n- 只有中文\n"))} />);
+    await screen.findByText("2.19.0");
+    await userEvent.click(screen.getAllByRole("button", { name: "更新内容" })[0]);
+    expect(await screen.findByText("只有中文")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "English" })).toBeNull();
+  });
+});

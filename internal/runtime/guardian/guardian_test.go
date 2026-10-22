@@ -3,6 +3,7 @@ package guardian
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -126,7 +127,7 @@ func TestGuardianReasoningOnlyStopRetriesInsteadOfReusingPriorVerdict(t *testing
 		{text: `{"risk_level":"high","user_authorization":"low","outcome":"deny","rationale":"current action is unsafe"}`},
 	}}
 	prov := &reasoningScriptedProvider{scriptedProvider: base}
-	gs := NewSession(prov, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, &captureSink{})
+	gs := NewSession(prov, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, &captureSink{}, nil)
 	parent := sessionstore.NewSession("sys")
 	parent.Add(provider.Message{Role: provider.RoleUser, Content: "review two different actions"})
 
@@ -153,7 +154,7 @@ func TestGuardianRepeatedReasoningOnlyStopsFailClosedWithoutReusingPriorAllow(t 
 		{reasoning: "dangerous review 3", usage: &provider.Usage{FinishReason: "stop"}},
 	}}
 	prov := &reasoningScriptedProvider{scriptedProvider: base}
-	gs := NewSession(prov, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, &captureSink{})
+	gs := NewSession(prov, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, &captureSink{}, nil)
 	parent := sessionstore.NewSession("sys")
 	parent.Add(provider.Message{Role: provider.RoleUser, Content: "review two different actions"})
 
@@ -191,7 +192,7 @@ func TestGuardianRepeatedReasoningOnlyStopsFailClosedWithoutReusingPriorAllow(t 
 }
 
 func TestGuardianRollbackAfterRewriteDropsReasoningOnlyRetryTail(t *testing.T) {
-	gs := NewSession(&scriptedProvider{}, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, &captureSink{})
+	gs := NewSession(&scriptedProvider{}, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, &captureSink{}, nil)
 	before := gs.sess.Snapshot()
 	rewriteBefore := gs.sess.RewriteVersion()
 
@@ -243,7 +244,7 @@ func TestGuardianSaveLoadRestoresCursorForDeltaTranscript(t *testing.T) {
 		{text: `{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"second ok"}`},
 	}}
 	sink := &captureSink{}
-	gs := NewSession(prov, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, sink)
+	gs := NewSession(prov, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, sink, nil)
 	parent := sessionstore.NewSession("sys")
 	parent.Add(provider.Message{Role: provider.RoleUser, Content: "first user request"})
 
@@ -258,7 +259,7 @@ func TestGuardianSaveLoadRestoresCursorForDeltaTranscript(t *testing.T) {
 		t.Fatalf("cursor sidecar = %q err %v, want EntryCount 1", data, err)
 	}
 
-	loaded := NewSession(prov, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, sink)
+	loaded := NewSession(prov, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, sink, nil)
 	if err := loaded.Load(path); err != nil {
 		t.Fatalf("Load error: %v", err)
 	}
@@ -306,7 +307,7 @@ func TestGuardianUsageDoesNotLeakAcrossReviews(t *testing.T) {
 		{text: `{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"second ok"}`},
 	}}
 	sink := &captureSink{}
-	gs := NewSession(prov, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, sink)
+	gs := NewSession(prov, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, sink, nil)
 	parent := sessionstore.NewSession("sys")
 	parent.Add(provider.Message{Role: provider.RoleUser, Content: "do it"})
 
@@ -335,7 +336,7 @@ func TestGuardianUsageAggregatesEveryModelCall(t *testing.T) {
 		{text: `{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`, usage: &provider.Usage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7, RequestCount: 2}},
 	}}
 	sink := &captureSink{}
-	gs := NewSession(prov, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, sink)
+	gs := NewSession(prov, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, sink, nil)
 	parent := sessionstore.NewSession("sys")
 	parent.Add(provider.Message{Role: provider.RoleUser, Content: "do it"})
 
@@ -361,7 +362,7 @@ func TestGuardianReviewTurnsAlternateRoles(t *testing.T) {
 		{text: `{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"first ok"}`},
 		{text: `{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"second ok"}`},
 	}}
-	gs := NewSession(prov, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, &captureSink{})
+	gs := NewSession(prov, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, &captureSink{}, nil)
 	parent := sessionstore.NewSession("sys")
 	parent.Add(provider.Message{Role: provider.RoleUser, Content: "do the thing"})
 
@@ -409,7 +410,7 @@ func TestGuardianFailedReviewRollsBackSession(t *testing.T) {
 		{err: fmt.Errorf("provider unavailable")},
 		{text: `{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`},
 	}}
-	gs := NewSession(prov, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, &captureSink{})
+	gs := NewSession(prov, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, &captureSink{}, nil)
 	parent := sessionstore.NewSession("sys")
 	parent.Add(provider.Message{Role: provider.RoleUser, Content: "do the thing"})
 
@@ -447,7 +448,7 @@ func TestGuardianLoadResetsLegacyConsecutiveUserSessions(t *testing.T) {
 		t.Fatalf("Save legacy session: %v", err)
 	}
 
-	gs := NewSession(&scriptedProvider{}, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, &captureSink{})
+	gs := NewSession(&scriptedProvider{}, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, &captureSink{}, nil)
 	if err := gs.Load(path); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -467,7 +468,7 @@ func TestGuardianLoadResetsLegacyConsecutiveUserSessions(t *testing.T) {
 func TestGuardianSessionAlternatesAfterCompaction(t *testing.T) {
 	prov := &scriptedProvider{defaultUsage: &provider.Usage{TotalTokens: 1}} // default allow verdict, also serves the summarizer
 	sink := &captureSink{}
-	gs := NewSession(prov, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, sink)
+	gs := NewSession(prov, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, sink, nil)
 	parent := sessionstore.NewSession("sys")
 
 	filler := strings.Repeat("parent transcript filler. ", 160)
@@ -544,6 +545,48 @@ func TestTranscriptKeepsUserTurnsAndToolCallsOnly(t *testing.T) {
 	for _, e := range ExtractTranscript(msgs) {
 		if e.Kind != "user" && e.Kind != "tool" {
 			t.Fatalf("entry kind %q; the guardian sees user turns and tool calls only", e.Kind)
+		}
+	}
+}
+
+// A review that never reached the model leaves nothing behind in the guardian's
+// own transcript, and the turns it would have carried are rolled back with it.
+// The cursor has to come back too: left advanced, the next review treats those
+// entries as already sent and the guardian never reads them at all.
+func TestFailedReviewDoesNotCountItsTranscriptAsSent(t *testing.T) {
+	// One provider for both reviews: the agent binds the one it was built with,
+	// so the recovery has to come from the same script. Its first answer is the
+	// failure; with no more scripted responses it falls back to a plain allow.
+	prov := &scriptedProvider{responses: []scriptedResponse{
+		{err: errors.New("provider refused the review")},
+	}}
+	gs := NewSession(prov, tool.NewRegistry(), nil, PolicyPrompt(), "guardian-test", 0, nil, &captureSink{}, nil)
+
+	parent := sessionstore.NewSession("sys")
+	for _, text := range []string{"first ask", "second ask", "third ask"} {
+		parent.Add(provider.Message{Role: provider.RoleUser, Content: text})
+	}
+
+	if _, _, err := gs.ReviewVerdict(context.Background(), "bash", json.RawMessage(`{"command":"ls"}`), parent); err == nil {
+		t.Fatal("a provider error was reported as an authentic verdict")
+	}
+	if gs.cursor.EntryCount != 0 {
+		t.Fatalf("cursor advanced to %d over a review the model never received, want 0", gs.cursor.EntryCount)
+	}
+
+	parent.Add(provider.Message{Role: provider.RoleUser, Content: "fourth ask"})
+	if _, _, err := gs.ReviewVerdict(context.Background(), "bash", json.RawMessage(`{"command":"ls"}`), parent); err != nil {
+		t.Fatalf("review after the failure: %v", err)
+	}
+
+	reqs := prov.requestsSnapshot()
+	if len(reqs) < 2 {
+		t.Fatalf("the review after the failure reached no provider (%d requests)", len(reqs))
+	}
+	last := reqs[len(reqs)-1].Messages
+	for _, want := range []string{"first ask", "second ask", "third ask", "fourth ask"} {
+		if !slices.ContainsFunc(last, func(m provider.Message) bool { return strings.Contains(m.Content, want) }) {
+			t.Fatalf("review after the failure never re-sent %q:\n%+v", want, last)
 		}
 	}
 }

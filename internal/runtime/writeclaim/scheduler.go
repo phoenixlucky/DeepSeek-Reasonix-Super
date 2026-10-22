@@ -37,12 +37,28 @@ type AcquireRequest struct {
 	// orders the queue, never the ceiling, and a caller holding no graph
 	// leaves it zero.
 	Priority int
-	// OnQueued fires once with what held this request back. Nothing else can
-	// answer it: by the time the caller runs, the constraint is gone. It may
-	// refuse, and a wait that could not be recorded is not shown as one.
-	OnQueued func(agentgraph.WaitCause) error
+	// OnQueued fires once with what held this request back, and whose write claim
+	// it is. Nothing else can answer it: by the time the caller runs, the
+	// constraint is gone. It may refuse; a wait not recorded is not shown.
+	OnQueued func(Held) error
 	// Label is optional diagnostics text.
 	Label string
+}
+
+// Held says what kept a request out of a slot. By names the run whose claim it
+// is when the cause is a write claim and that run said what to call itself; Whole
+// marks the conflict of two claims that both cover the whole workspace, which is
+// what a writer that declared no write_paths holds.
+type Held struct {
+	Cause agentgraph.WaitCause
+	By    string
+	Whole bool
+}
+
+// claim is a write claim and whose it is.
+type claim struct {
+	paths WritePathSet
+	label string
 }
 
 // SubagentScheduler is a session-scoped concurrency controller shared by task,
@@ -55,11 +71,11 @@ type SubagentScheduler struct {
 
 	activeTotal   int
 	activeWriters int
-	activeClaims  []WritePathSet
+	activeClaims  []claim
 	// parentClaims are write paths held by the parent agent during a write-tool
 	// Execute. They block overlapping subagent claims without consuming a
 	// subagent concurrency slot (parent is not a subagent).
-	parentClaims []WritePathSet
+	parentClaims []claim
 
 	// waiters hold non-nested acquires, drained heaviest first (arrival order
 	// within equal priority).
@@ -78,7 +94,7 @@ func NewSubagentScheduler(maxTotal, maxWriters int) *SubagentScheduler {
 	return &SubagentScheduler{maxTotal: maxTotal, maxWriters: maxWriters}
 }
 
-// Limits returns the effective total/writer caps.
+// Limits returns the effective total/writer caps; zero is no limit.
 // Queued is how many acquires are waiting for a slot.
 func (s *SubagentScheduler) Queued() int {
 	s.mu.Lock()
@@ -88,7 +104,7 @@ func (s *SubagentScheduler) Queued() int {
 
 func (s *SubagentScheduler) Limits() (total, writers int) {
 	if s == nil {
-		return DefaultMaxSubagentConcurrency, DefaultMaxParallelWriters
+		return 0, 0
 	}
 	return s.maxTotal, s.maxWriters
 }
@@ -109,14 +125,14 @@ func (s *SubagentScheduler) Acquire(ctx context.Context, req AcquireRequest) (re
 	}
 
 	s.mu.Lock()
-	ok, cause := s.canStartLocked(req)
+	ok, held := s.canStartLocked(req)
 	if ok {
 		s.activateLocked(req)
 		s.mu.Unlock()
 		return s.makeRelease(req), nil
 	}
 	if req.Nested {
-		detail := s.waitDetailLocked(cause)
+		detail := s.waitDetailLocked(held.Cause)
 		s.mu.Unlock()
 		return noop, fmt.Errorf("subagent concurrency limit reached (%s); nested subagents fail fast to avoid parent/child slot deadlock", detail)
 	}
@@ -127,7 +143,7 @@ func (s *SubagentScheduler) Acquire(ctx context.Context, req AcquireRequest) (re
 	// Reported after the unlock: the cause was read under it, and the callback
 	// reaches a sink this must not be holding the scheduler's mutex for.
 	if req.OnQueued != nil {
-		if err := req.OnQueued(cause); err != nil {
+		if err := req.OnQueued(held); err != nil {
 			return noop, s.abandonWaiter(w, req, err)
 		}
 	}
@@ -198,7 +214,7 @@ func (s *SubagentScheduler) ReserveWrite(paths WritePathSet) (release func(), er
 		s.mu.Unlock()
 		return noop, err
 	}
-	s.parentClaims = append(s.parentClaims, paths)
+	s.parentClaims = append(s.parentClaims, claim{paths: paths, label: parentWriteLabel})
 	s.mu.Unlock()
 
 	var once sync.Once
@@ -220,8 +236,9 @@ func (s *SubagentScheduler) ActiveWriterClaims() []WritePathSet {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]WritePathSet, 0, len(s.activeClaims)+len(s.parentClaims))
-	out = append(out, s.activeClaims...)
-	out = append(out, s.parentClaims...)
+	for _, c := range append(slices.Clone(s.activeClaims), s.parentClaims...) {
+		out = append(out, c.paths)
+	}
 	return out
 }
 
@@ -230,13 +247,13 @@ func (s *SubagentScheduler) conflictLocked(paths WritePathSet) error {
 		return nil
 	}
 	for _, active := range s.activeClaims {
-		if active.Overlaps(paths) {
-			return fmt.Errorf("write path is claimed by a running background subagent; wait for it to finish before writing the same path")
+		if active.paths.Overlaps(paths) {
+			return fmt.Errorf("%w: it is claimed by a running background sub-agent; write a different path, or wait for that sub-agent to finish", ErrWritePathBusy)
 		}
 	}
 	for _, active := range s.parentClaims {
-		if active.Overlaps(paths) {
-			return fmt.Errorf("write path is claimed by another parent write in progress")
+		if active.paths.Overlaps(paths) {
+			return fmt.Errorf("%w: another write to it is in progress; retry in a moment", ErrWritePathBusy)
 		}
 	}
 	return nil
@@ -254,31 +271,32 @@ func (s *SubagentScheduler) makeRelease(req AcquireRequest) func() {
 	}
 }
 
+// parentWriteLabel names the claim a parent's own write tool holds.
+const parentWriteLabel = "the main agent's write in progress"
+
 // canStartLocked answers whether the request may run, and when it may not, which
 // constraint said so. The cause is a value rather than a sentence because two of
 // them are answered by a setting and the third only by a path or an edge, and a
 // reader cannot tell those apart from "queued".
-func (s *SubagentScheduler) canStartLocked(req AcquireRequest) (bool, agentgraph.WaitCause) {
-	if s.activeTotal >= s.maxTotal {
-		return false, agentgraph.WaitSlots
+func (s *SubagentScheduler) canStartLocked(req AcquireRequest) (bool, Held) {
+	if s.maxTotal > 0 && s.activeTotal >= s.maxTotal {
+		return false, Held{Cause: agentgraph.WaitSlots}
 	}
 	if !req.Writer {
-		return true, ""
+		return true, Held{}
 	}
-	if s.activeWriters >= s.maxWriters {
-		return false, agentgraph.WaitWriters
+	if s.maxWriters > 0 && s.activeWriters >= s.maxWriters {
+		return false, Held{Cause: agentgraph.WaitWriters}
 	}
-	for _, active := range s.activeClaims {
-		if active.Overlaps(req.WritePaths) {
-			return false, agentgraph.WaitClaim
+	for _, active := range slices.Concat(s.activeClaims, s.parentClaims) {
+		if active.paths.Overlaps(req.WritePaths) {
+			return false, Held{
+				Cause: agentgraph.WaitClaim, By: active.label,
+				Whole: active.paths.WholeWorkspace && req.WritePaths.WholeWorkspace,
+			}
 		}
 	}
-	for _, active := range s.parentClaims {
-		if active.Overlaps(req.WritePaths) {
-			return false, agentgraph.WaitClaim
-		}
-	}
-	return true, ""
+	return true, Held{}
 }
 
 // waitDetailLocked renders a cause with the counts that produced it, for the one
@@ -299,7 +317,7 @@ func (s *SubagentScheduler) activateLocked(req AcquireRequest) {
 	if req.Writer {
 		s.activeWriters++
 		if !req.WritePaths.Empty() {
-			s.activeClaims = append(s.activeClaims, req.WritePaths)
+			s.activeClaims = append(s.activeClaims, claim{paths: req.WritePaths, label: req.Label})
 		}
 	}
 }
@@ -356,9 +374,9 @@ func (s *SubagentScheduler) removeWaiterLocked(target *schedulerWaiter) {
 	s.waiters = out
 }
 
-func removeClaim(claims []WritePathSet, target WritePathSet) []WritePathSet {
+func removeClaim(claims []claim, target WritePathSet) []claim {
 	for i, c := range claims {
-		if writeClaimEqual(c, target) {
+		if writeClaimEqual(c.paths, target) {
 			return append(claims[:i], claims[i+1:]...)
 		}
 	}
@@ -366,7 +384,7 @@ func removeClaim(claims []WritePathSet, target WritePathSet) []WritePathSet {
 }
 
 func writeClaimEqual(a, b WritePathSet) bool {
-	if a.WholeWorkspace != b.WholeWorkspace || a.WorkspaceRoot != b.WorkspaceRoot {
+	if a.WholeWorkspace != b.WholeWorkspace || a.Optimistic != b.Optimistic || a.WorkspaceRoot != b.WorkspaceRoot {
 		return false
 	}
 	if len(a.Paths) != len(b.Paths) {

@@ -1,0 +1,13 @@
+.flow .notice-bar { display: flex; align-items: flex-start; gap: 8px; margin: 8px 0; padding: 4px 2px; border-radius: var(--r-sm); background: transparent; color: var(--muted); font: var(--w-reg) var(--fs-ui)/1.55 var(--ui); }
+.notice-bar .nb-ic { flex: none; width: 12px; height: 12px; margin-top: 4px; }
+.notice-bar .nb-dot { flex: none; width: 6px; height: 6px; margin: 8px 3px 0; border-radius: 50%; background: var(--faint); }
+.notice-bar[data-lvl="warn"] .nb-ic { color: var(--warn-ink); }
+.notice-bar[data-lvl="err"] .nb-ic { color: var(--err-ink); }
+.notice-bar .nb-body { min-width: 0; flex: 1; }
+.notice-bar .t { display: block; color: var(--text); overflow-wrap: anywhere; }
+.notice-bar .ntimes { margin-left: 6px; color: var(--faint); font-weight: var(--w-reg); }
+.notice-bar .nwhy { display: block; margin-top: 2px; font-size: var(--fs-meta); line-height: 1.6; color: var(--faint); white-space: pre-wrap; overflow-wrap: anywhere; }
+.notice-bar .nrule { display: block; margin-top: 2px; font: var(--w-reg) var(--fs-meta)/1.6 var(--mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.notice-bar .nmd { margin-top: 2px; color: var(--text); overflow-wrap: anywhere; }
+.notice-bar .nbtn { margin-top: 4px; padding: 0; border: 0; background: transparent; cursor: pointer; color: var(--text); font: var(--w-med) var(--fs-meta) var(--ui); text-decoration: underline; text-underline-offset: 3px; }
+.notice-bar .nbtn:hover { color: var(--accent); }

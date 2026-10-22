@@ -55,7 +55,7 @@ func TestMedian(t *testing.T) {
 func TestRewrittenCheckReachesTheLedger(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Add(previewingEdit{change: diff.Build("mathutil/mathutil_test.go", criteriaTestBefore, criteriaTestAfter, diff.Modify)})
-	a := New(nil, reg, sessionstore.NewSession(""), Options{}, event.Discard)
+	a := New(nil, reg, sessionstore.NewSession(""), Options{CheckTargetAccess: allowTestFileAccess}, event.Discard)
 
 	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{
 		Name: "edit_file", Arguments: `{"path":"mathutil/mathutil_test.go"}`,
@@ -99,7 +99,9 @@ func TestRewrittenPytestCaseIsReportedNotHeld(t *testing.T) {
 	after := "def test_median():\n    assert median([3, 1, 2]) == 1\n"
 	reg := tool.NewRegistry()
 	reg.Add(previewingEdit{change: diff.Build("tests/test_calc.py", before, after, diff.Modify)})
-	a := New(nil, reg, sessionstore.NewSession(""), Options{ArchiveDir: t.TempDir()}, event.Discard)
+	a := New(nil, reg, sessionstore.NewSession(""), Options{ArchiveDir: t.TempDir(),
+		CheckTargetAccess: allowTestFileAccess,
+	}, event.Discard)
 
 	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{
 		Name: "edit_file", Arguments: `{"path":"tests/test_calc.py"}`,

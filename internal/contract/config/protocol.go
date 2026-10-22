@@ -46,6 +46,9 @@ var protocols = []Protocol{
 	{Kind: "openai", Answers: AnswersChat, Discovery: "openai", ReasoningParams: true, EffortField: "reasoning_effort", EffortUnder: []string{ReasoningProtocolOpenAI}, EffortUnresolved: true},
 	{Kind: "responses", Answers: AnswersChat, Discovery: "openai", ServerWebSearch: true, ReasoningParams: true, StatefulContinuation: true, EffortField: "reasoning.effort"},
 	{Kind: "anthropic", Answers: AnswersChat, Discovery: "anthropic", ServerWebSearch: true, EffortField: "output_config.effort", EffortUnder: []string{ReasoningProtocolAnthropic}},
+	// No Discovery: Google's model listing shape is not read for this wire yet,
+	// so a Gemini model id is declared rather than probed for.
+	{Kind: "gemini", Answers: AnswersChat, EffortField: "generation_config.thinking_level"},
 	// No Discovery: the decision API has no model listing, so the model id is
 	// declared rather than probed for.
 	{Kind: "typesafe", Answers: AnswersDecision},

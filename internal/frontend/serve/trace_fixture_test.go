@@ -50,6 +50,7 @@ func stabilize(in []eventwire.Event) []eventwire.Event {
 		if e.StreamAttempt != nil {
 			sa := *e.StreamAttempt
 			sa.ID = name(rounds, "r", sa.ID)
+			sa.FirstTokenMs = 0 // host-measured, 0 or 1 ms depending on load
 			e.StreamAttempt = &sa
 		}
 		if e.Approval != nil {
@@ -68,6 +69,8 @@ func stabilize(in []eventwire.Event) []eventwire.Event {
 			r.ID = name(barriers, "b", r.ID)
 			e.DecisionReceipt = &r
 		}
+		e.ThoughtMs = 0                           // a measured wall clock that is 0 or 1 ms depending on load; whether thinking happened is the reasoning event itself
+		e.WorkStartedAt = min(e.WorkStartedAt, 1) // a wall-clock reading; only whether the turn reported one is structure
 		if e.Tool != nil {
 			t := *e.Tool
 			t.AttemptID = name(rounds, "r", t.AttemptID)

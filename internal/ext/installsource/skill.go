@@ -160,14 +160,7 @@ func (t *Tool) skillCanonicalPath(name, scope string) (string, error) {
 // verifySkill confirms the installed skill is reachable through a freshly
 // built Store. It is the post-install guard against partial failures.
 func (t *Tool) verifySkill(scope, name string, act *action) error {
-	custom := []string(nil)
-	if scope == "project" {
-		cfg := config.LoadForEdit(filepath.Join(t.root, "reasonix.toml"))
-		custom = cfg.SkillCustomPaths()
-	} else {
-		cfg := config.LoadForEdit(t.configPath(scope))
-		custom = cfg.SkillCustomPaths()
-	}
+	custom := config.LoadForEdit(t.configPath(scope)).SkillCustomPaths()
 	var stderr bytes.Buffer
 	store := skill.New(skill.Options{HomeDir: t.home, ReasonixHomeDir: t.reasonixHome, ProjectRoot: t.root, CustomPaths: custom, DisableBuiltins: true, Stderr: &stderr})
 	sk, ok := store.Read(name)

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"reasonix/internal/contract/config"
+	"reasonix/internal/runtime/agent"
 )
 
 // contextView is the gauge and what fills it. Named rather than anonymous
@@ -27,6 +28,9 @@ type contextView struct {
 	// panel shows a fold point nothing on the screen explains.
 	Boundary   string `json:"boundary"`
 	CapacityAt int    `json:"capacity_at"`
+	// The largest single messages of each class, so a heavy class can be opened
+	// to the one that made it heavy. Sizes and names only; no message text.
+	Largest []agent.ContextHolder `json:"largest,omitempty"`
 }
 
 func (s *Server) contextView() contextView {
@@ -35,7 +39,7 @@ func (s *Server) contextView() contextView {
 	return contextView{
 		Used: used, Window: window,
 		System: b.System, Tools: b.Tools, User: b.User, Reply: b.Reply, Output: b.Output,
-		CompactAt: b.CompactAt, Boundary: b.Boundary, CapacityAt: b.CapacityAt,
+		CompactAt: b.CompactAt, Boundary: b.Boundary, CapacityAt: b.CapacityAt, Largest: b.Largest,
 	}
 }
 

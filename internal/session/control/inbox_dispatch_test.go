@@ -49,7 +49,7 @@ func waitForInboxDispatch(t *testing.T, runner *inboxDispatchRunner) string {
 	select {
 	case input := <-runner.inputs:
 		return input
-	case <-time.After(time.Second):
+	case <-time.After(testenv.Budget(t)):
 		t.Fatal("timed out waiting for inbox dispatch")
 		return ""
 	}
@@ -59,7 +59,7 @@ func waitForInboxTurnDone(t *testing.T, done <-chan struct{}) {
 	t.Helper()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(testenv.Budget(t)):
 		t.Fatal("timed out waiting for inbox turn completion")
 	}
 }
@@ -130,7 +130,7 @@ func TestInboxDispatchKickDuringEmptyScanIsNotLost(t *testing.T) {
 	}()
 	select {
 	case <-scanReached:
-	case <-time.After(time.Second):
+	case <-time.After(testenv.Budget(t)):
 		t.Fatal("dispatcher did not reach empty scan")
 	}
 	if _, err := c.EnqueueInbox(InboxRequest{Submit: "arrived during empty scan"}); err != nil {
@@ -143,7 +143,7 @@ func TestInboxDispatchKickDuringEmptyScanIsNotLost(t *testing.T) {
 
 	select {
 	case <-dispatchReturned:
-	case <-time.After(time.Second):
+	case <-time.After(testenv.Budget(t)):
 		t.Fatal("dispatcher did not return")
 	}
 	if got := waitForInboxDispatch(t, runner); got != "arrived during empty scan" {
@@ -176,7 +176,7 @@ func TestInboxDispatchRetriesTransientOwnerFailure(t *testing.T) {
 	var retry func()
 	select {
 	case retry = <-retryReady:
-	case <-time.After(time.Second):
+	case <-time.After(testenv.Budget(t)):
 		t.Fatal("transient failure did not schedule a retry")
 	}
 	select {
@@ -242,7 +242,7 @@ func TestNaturalCompletionAutoDispatchesDurableFIFO(t *testing.T) {
 	c.Submit("active turn")
 	select {
 	case <-runner.firstStarted:
-	case <-time.After(time.Second):
+	case <-time.After(testenv.Budget(t)):
 		t.Fatal("active turn did not start")
 	}
 	if got := <-runner.inputs; got != "active turn" {

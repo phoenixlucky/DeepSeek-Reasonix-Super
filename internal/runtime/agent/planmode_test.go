@@ -120,7 +120,9 @@ func TestPermissionDenialStopsWriterBeforeExecution(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Add(fakeTool{name: "write_file", calls: &executions, writesPaths: true})
 	gate := &recordingPermissionGate{reason: "denied by permission rule"}
-	a := New(nil, reg, sessionstore.NewSession(""), Options{Gate: gate}, event.Discard)
+	a := New(nil, reg, sessionstore.NewSession(""), Options{Gate: gate,
+		CheckTargetAccess: allowTestFileAccess,
+	}, event.Discard)
 
 	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: "write_file"})
 	if !out.blocked || !strings.Contains(out.output, gate.reason) || out.errMsg == "" {
@@ -195,7 +197,7 @@ func TestPlanModeSafeWriterStillUsesWriterPermission(t *testing.T) {
 // asked the user to accept a command prefix as read-only; that path is gone,
 // and this pins what replaced it rather than that it is not called.
 func TestBashWaitsForApprovalThenReachesOrdinaryPermission(t *testing.T) {
-	const command = `{"command":"gh issue view 6482"}`
+	const command = `{"command":"gh issue create --title x"}`
 	reg := tool.NewRegistry()
 	reg.Add(fakeTool{name: "bash"})
 	gate := &recordingPermissionGate{allow: true}
@@ -237,7 +239,9 @@ func TestPlanningPhaseStopsWritersBeforePermission(t *testing.T) {
 			reg := tool.NewRegistry()
 			reg.Add(tc.tool)
 			gate := &recordingPermissionGate{allow: true}
-			a := New(nil, reg, sessionstore.NewSession(""), Options{Gate: gate}, event.Discard)
+			a := New(nil, reg, sessionstore.NewSession(""), Options{Gate: gate,
+				CheckTargetAccess: allowTestFileAccess,
+			}, event.Discard)
 
 			a.SetPlanMode(true)
 			out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: tc.tool.Name(), Arguments: tc.args})
@@ -438,7 +442,9 @@ func TestPlanModeOffStillUsesSamePermissionGate(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Add(fakeTool{name: "write_file", writesPaths: true})
 	gate := &recordingPermissionGate{allow: true}
-	a := New(nil, reg, sessionstore.NewSession(""), Options{Gate: gate}, event.Discard)
+	a := New(nil, reg, sessionstore.NewSession(""), Options{Gate: gate,
+		CheckTargetAccess: allowTestFileAccess,
+	}, event.Discard)
 
 	out := a.executeOne(context.Background(), &a.turn, provider.ToolCall{Name: "write_file"})
 	if out.blocked || len(gate.calls) != 1 {
@@ -608,7 +614,7 @@ func TestStaleAuthorityCallsAreRefusedAcrossATransition(t *testing.T) {
 	var executions int32
 	reg := tool.NewRegistry()
 	reg.Add(fakeTool{name: "write_file", writesPaths: true, calls: &executions})
-	a := New(nil, reg, sessionstore.NewSession(""), Options{}, event.Discard)
+	a := New(nil, reg, sessionstore.NewSession(""), Options{CheckTargetAccess: allowTestFileAccess}, event.Discard)
 	a.SetPlanMode(true)
 	born := a.PlanState()
 	if born.Phase != planmode.Planning {

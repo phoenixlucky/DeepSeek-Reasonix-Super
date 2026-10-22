@@ -22,6 +22,10 @@ type Change struct {
 	Path    string `json:"path"`
 	OldPath string `json:"oldPath,omitempty"`
 	Status  string `json:"status"`
+	// Staged: the index differs from HEAD for this path. Unstaged: the work tree
+	// differs from the index, or the path is untracked. One path can be both.
+	Staged   bool `json:"staged,omitempty"`
+	Unstaged bool `json:"unstaged,omitempty"`
 	// How much the file differs by. Nil is "git did not say" — a binary file,
 	// or one nothing counted — and it stays nil rather than becoming a zero,
 	// which reads as "changed by nothing" and is a different fact.
@@ -96,16 +100,34 @@ func countLines(ctx context.Context, repo gitcmd.Repo, changes []Change) {
 // numstat is one path's counts, either of which git may decline to give.
 type numstat struct{ added, removed *int }
 
-// ParseNumstatZ decodes `git diff --numstat -z`. Added and removed come first,
-// then the path; a rename spends two more fields on old and new.
+// ParseNumstatZ decodes `git diff --numstat -z`. A plain record is the counts
+// and the path. A rename or copy is the counts, a tab, NUL, the old path, NUL
+// and the new path; the counts are filed under the new path, which is the
+// name porcelain status reports. Trimming the record first would eat that tab
+// and make the rename look like a short line.
 func ParseNumstatZ(raw []byte) map[string]numstat {
 	out := map[string]numstat{}
-	for line := range bytes.SplitSeq(raw, []byte{0}) {
-		fields := strings.SplitN(strings.TrimSpace(string(line)), "\t", 3)
-		if len(fields) != 3 || fields[2] == "" {
+	parts := bytes.Split(raw, []byte{0})
+	for i := 0; i < len(parts); i++ {
+		if len(parts[i]) == 0 {
 			continue
 		}
-		out[fields[2]] = numstat{added: countOrNil(fields[0]), removed: countOrNil(fields[1])}
+		fields := strings.SplitN(string(parts[i]), "\t", 3)
+		if len(fields) != 3 {
+			continue
+		}
+		path := fields[2]
+		if path == "" {
+			if i+2 >= len(parts) {
+				break
+			}
+			i += 2
+			path = string(parts[i])
+			if path == "" {
+				continue
+			}
+		}
+		out[path] = numstat{added: countOrNil(fields[0]), removed: countOrNil(fields[1])}
 	}
 	return out
 }
@@ -151,6 +173,8 @@ func ParsePorcelainZ(raw []byte) []Change {
 		}
 		status := string(part[:2])
 		entry := Change{Path: string(part[3:]), Status: strings.TrimSpace(status)}
+		entry.Staged = status[0] != ' ' && status[0] != '?'
+		entry.Unstaged = status[1] != ' '
 		if strings.ContainsAny(status, "RC") && i+1 < len(parts) {
 			i++
 			entry.OldPath = string(parts[i])

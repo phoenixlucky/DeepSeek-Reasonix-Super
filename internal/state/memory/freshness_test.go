@@ -77,7 +77,7 @@ func TestSaveRoundTripsVolatilityExpiryAndClearExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	loaded, _ := store.Read(saved.Memory.ID)
+	loaded, _ := mustStore(t, store).Read(saved.Memory.ID)
 	if NormalizeVolatility(string(loaded.Volatility)) != VolatilityVolatile || loaded.ExpiresAt.IsZero() {
 		t.Fatalf("volatility/expiry lost in round trip: %+v", loaded)
 	}
@@ -86,7 +86,7 @@ func TestSaveRoundTripsVolatilityExpiryAndClearExpiry(t *testing.T) {
 	if _, err := store.SaveWithOptions(Memory{ID: saved.Memory.ID, Description: "current weekly focus v2", Body: "Still on the port."}, SaveOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	kept, _ := store.Read(saved.Memory.ID)
+	kept, _ := mustStore(t, store).Read(saved.Memory.ID)
 	if NormalizeVolatility(string(kept.Volatility)) != VolatilityVolatile || kept.ExpiresAt.IsZero() {
 		t.Fatalf("update must inherit volatility/expiry: %+v", kept)
 	}
@@ -95,7 +95,7 @@ func TestSaveRoundTripsVolatilityExpiryAndClearExpiry(t *testing.T) {
 	if _, err := store.SaveWithOptions(Memory{ID: saved.Memory.ID, Description: "current weekly focus v3", Body: "Port done."}, SaveOptions{ClearExpiry: true}); err != nil {
 		t.Fatal(err)
 	}
-	cleared, _ := store.Read(saved.Memory.ID)
+	cleared, _ := mustStore(t, store).Read(saved.Memory.ID)
 	if !cleared.ExpiresAt.IsZero() || NormalizeVolatility(string(cleared.Volatility)) != VolatilityVolatile {
 		t.Fatalf("ClearExpiry must drop only the expiry: %+v", cleared)
 	}

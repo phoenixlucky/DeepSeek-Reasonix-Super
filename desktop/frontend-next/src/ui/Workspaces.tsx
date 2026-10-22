@@ -1,18 +1,22 @@
 import { inScope } from "./sessionScope";
-import { Fragment, type ReactNode, memo, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, type ReactNode, memo, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { hidesLegacySessions, onHidesLegacySessionsChange } from "../state/prefs";
+import { onSessionQuickActionsChange, showsSessionQuickActions } from "../state/sessionQuick";
 import { createPortal } from "react-dom";
 import { t } from "../i18n";
-import { seconds } from "../i18n/format";
 import type { HubPort, RuntimeView, TreeSession, TreeWorkspace } from "../port/hub";
+import { workspaceContains } from "../port/hub";
 import type { Adder } from "./addws";
 import { pinToViewport } from "./place";
 import { useRailQuery } from "./railsearch";
 import { StudioIcon } from "./StudioIcon";
+import { TreeEmpty, TreeReading } from "./TreeReading";
+import { RowCount } from "./RowCount";
+import { ListingProgress } from "./ListingProgress";
 import { Cross } from "./glyphs";
 import { copyText } from "./CopyButton";
 import { sessionInfoText } from "./sessionInfo";
-import { download } from "../port/download";
-import { host } from "../port/host";
+import { saveSessionFile } from "./sessionExport";
 import { useTreeKeys } from "./tree";
 import { useDismiss } from "./dismiss";
 import { asksDelete } from "./keys";
@@ -20,11 +24,19 @@ import { clearDraftForSession } from "./drafts";
 import { WorkspaceOrder, workspaceMenuKeys } from "./WorkspaceOrder";
 import { WorkspaceReveal } from "./WorkspaceReveal";
 import { SessionMenu } from "./SessionMenu";
+import { useSessionMove } from "./useSessionMove";
+import { useSessionMoveTo } from "./useSessionMoveTo";
 import { pinnedFirst } from "./pinorder";
-import { Confirm, removeHint } from "./WorkspaceConfirm";
+import { Confirm, removeHint, sessionDeleteHint } from "./WorkspaceConfirm";
 import { UnreadCount, UnreadDot } from "./UnreadMark";
-import { NO_PAGING, atCap, sessionCount, unloaded, type TreePaging } from "./treewindow";
+import { PeerThreadMark } from "./peerthreads";
+import { NO_PAGING, atCap, sessionCount, answers, unloaded, type TreePaging, type TreeView } from "./treewindow";
 import { SessionBatch, useSelectedRows } from "./SessionBatch";
+import { ProjectsHeader } from "./ProjectsHeader";
+import { useWorkspaceDrag } from "./useWorkspaceDrag";
+import { SessionAge } from "./SessionAge";
+import { SessionArchiveAction, SessionPinAction } from "./SessionRowActions";
+import { useSessionMutation, type SessionMutation } from "./useSessionMutation";
 
 const parentOf = (root: string) => root.replace(/[/\\]+$/, "").split(/[/\\]/).slice(-2, -1)[0] ?? "";
 
@@ -33,6 +45,7 @@ interface Props {
   tree: TreeWorkspace[];
   // False until the kernel first answers; an empty tree before then is unread.
   treeRead: boolean;
+  answered?: TreeView | null;
   runtimes: RuntimeView[];
   active: string;
   // Collapsed workspaces are the window's own state, not the kernel's, so the
@@ -40,7 +53,12 @@ interface Props {
   folded: Set<string>;
   onFold: (root: string, folded: boolean) => void;
   reload: () => Promise<void>;
+  retry?: () => void;
   paging?: TreePaging;
+  previewLimit?: number;
+  onToggleAll?: () => void;
+  allFolded?: boolean;
+  canFold?: boolean;
   // The session path being opened, or empty. The row shows it selected and busy
   // before the kernel answers; the owner clears it on failure.
   opening?: string;
@@ -50,37 +68,34 @@ interface Props {
   // Which of these panes are mid-turn. A callback rather than a prop: run state
   // changes constantly and this is only ever asked at confirmation time.
   liveIds: (ids: string[]) => string[];
+  // Which of these belong in the running list: the live ones, and the ones that finished within the chosen grace.
+  listedIds?: (ids: string[]) => string[];
   runs: Record<string, { run: string; live: boolean }>;
   scope?: "all" | "live" | "pinned" | "archived";
   pinned?: Set<string>;
   onPin?: (path: string) => void;
   onPause?: (runtimeId: string) => void;
+  onBranch?: (runtimeId: string, name: string) => Promise<void>;
   onArchive?: (path: string, archived: boolean, runtimeId?: string) => Promise<void>;
-  onRename: (path: string, title: string) => void;
+  onRename: (path: string, title: string, mode?: "inline" | "dialog") => void;
   onError: (e: unknown) => void;
   // 打开项目这个动作归 App —— 首启那条横幅按的是同一个它。
   adder: Adder;
-  // Remote hosts render into this same tree. The rail is a list of machines and
-  // this one is among them: opening a session in a folder on a machine is one
-  // intent, and it used to be drawn as two.
+  // Remote projects share the same tree and keyboard navigation as local ones.
   children?: ReactNode;
+  hasOtherRows?: (needle: string, hideLegacy: boolean) => boolean;
 }
 
 // A conversation a pane holds before its first turn is written has only a file
 // name; calling it that would show a timestamp where every other row shows words.
-const countLabel = (c: { shown: number; of?: number }) =>
-  c.of === undefined ? t("{n} 会话", { n: c.shown }) : t("{n} / {total} 会话", { n: c.shown, total: c.of });
-
 const rowLabel = (session: TreeSession) =>
   session.title || (session.runtimeId && !session.turns ? t("新会话") : session.name);
 
-function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload, paging = NO_PAGING, onFold, opening = "", onOpen, onFocus, onClose, liveIds, runs, scope = "all", pinned = new Set(), onPin = () => {}, onPause = () => {}, onArchive = async () => {}, onRename, onError, adder, children }: Props) {
+function WorkspacesView({ hub, tree, treeRead, answered = null, runtimes, active, folded, reload, retry, paging = NO_PAGING, previewLimit = Infinity, onFold, onToggleAll, allFolded, canFold, opening = "", onOpen, onFocus, onClose, liveIds, listedIds = liveIds, runs, scope = "all", pinned = new Set(), onPin = () => {}, onPause = () => {}, onBranch, onArchive = async () => {}, onRename, onError, adder, children, hasOtherRows }: Props) {
   const [busy, setBusy] = useState("");
-  // Folding a machine is the reader's own preference, held the way a host row
-  // holds it.
-  const [hereShut, setHereShut] = useState(false);
   const [confirm, setConfirm] = useState("");
   const [selection, setSelection] = useState<Set<string> | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   // The row a Delete key asked about. The question replaces that row, so focus
   // goes back to it once the question is gone, or a keyboard is left nowhere.
   const askedByKey = useRef("");
@@ -93,10 +108,13 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
     return next;
   });
   const treeKeys = useTreeKeys();
-  // Renaming is a pencil, not a double-click: a single click already opens the
-  // session, so a double one would open it twice on the way to the edit.
+  const mutations = useSessionMutation(onError);
   const [editing, setEditing] = useState("");
+  const hideLegacy = useSyncExternalStore(onHidesLegacySessionsChange, hidesLegacySessions, hidesLegacySessions);
+  const quickActions = useSyncExternalStore(onSessionQuickActionsChange, showsSessionQuickActions, showsSessionQuickActions);
   const [sessionMenu, setSessionMenu] = useState("");
+  const order = useSessionMove(hub, reload, onError, !!needle);
+  const moveTo = useSessionMoveTo(hub, tree, reload, rowLabel);
   const [sessionMenuAt, setSessionMenuAt] = useState({ x: 0, y: 0 });
   const sessionMenuBox = useRef<HTMLDivElement>(null);
   const sessionMenuPortal = useRef<HTMLDivElement>(null);
@@ -105,7 +123,7 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
     if (menuTrigger.current?.dataset.target === sessionMenu) menuTrigger.current.focus();
     setSessionMenu("");
   };
-  const openWorkspaceMenu = (root: string, trigger: HTMLElement, at?: { x: number; y: number }) => {
+  const openRowMenu = (root: string, trigger: HTMLElement, at?: { x: number; y: number }) => {
     menuTrigger.current = trigger;
     const anchor = trigger.getBoundingClientRect();
     setSessionMenuAt(at ?? { x: anchor.right + 8, y: anchor.top - 7 });
@@ -120,9 +138,6 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
   useLayoutEffect(() => {
     if (sessionMenuPortal.current) pinToViewport(sessionMenuPortal.current, sessionMenuAt.x, sessionMenuAt.y, 12);
   }, [sessionMenu, sessionMenuAt]);
-  // What was already sent for this session, so Enter's commit and the blur it
-  // causes do not both reach the host with the same name.
-  const renamed = useRef<Record<string, string>>({});
   // Finishing is a transition this run witnessed, not a state a row can hold: a
   // persisted done replays nothing when the window opens or the scope changes.
   const priorRun = useRef<Record<string, string>>({});
@@ -144,13 +159,6 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
       });
     }, 1200);
   }, [runs]);
-  const rename = (session: { path: string; title?: string; name: string }, raw: string) => {
-    const next = raw.trim();
-    const was = session.title || session.name;
-    if (!next || next === was || renamed.current[session.path] === next) return;
-    renamed.current[session.path] = next;
-    onRename(session.path, next);
-  };
   // Folders whose next page is being read, or could not be.
   const [paged, setPaged] = useState<Record<string, "loading" | "failed">>({});
   const more = async (root: string) => {
@@ -162,7 +170,6 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
       setPaged((prev) => ({ ...prev, [root]: "failed" }));
     }
   };
-  // Conversations whose conflict copies the reader asked to see.
   const [spread, setSpread] = useState<Set<string>>(new Set());
   // Two folders can share a name — a worktree copy carries the project's own.
   // Only then is the extra word worth the room it takes.
@@ -180,7 +187,7 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
       return;
     }
     try {
-      await onOpen({ root: ws.root, sessionPath: session.path });
+      await onOpen({ root: session.workspaceRoot || ws.root, sessionPath: session.path });
     } catch (e) {
       onError(e);
     }
@@ -197,7 +204,20 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
     }
   };
 
-  const panesOf = (root: string) => runtimes.filter((rt) => rt.root === root).map((rt) => rt.id);
+  // Dragging reorders the whole remembered list, so a search that hides rows turns it off.
+  const drag = useWorkspaceDrag(needle ? [] : tree.filter((w) => w.remembered).map((w) => w.root), async (root, before) => {
+    try {
+      await hub.placeWorkspace(root, before);
+      await reload();
+    } catch (e) {
+      onError(e);
+    }
+  });
+
+  const panesOf = (root: string) => {
+    const workspace = tree.find((ws) => ws.root === root);
+    return runtimes.filter((rt) => !rt.host && (workspace ? workspaceContains(workspace, rt.root) : rt.root === root)).map((rt) => rt.id);
+  };
 
   const dropWorkspace = async (ws: TreeWorkspace) => {
     if (confirm !== ws.root) {
@@ -233,12 +253,14 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
     setConfirm(path);
   };
 
-  const archive = (session: TreeSession) => {
-    setSessionMenu("");
-    void onArchive(session.path, !session.archived, session.runtimeId).catch(onError);
+  const mutate = (session: TreeSession, kind: SessionMutation) => {
+    if (sessionMenu) dismissMenu();
+    const row = [...(treeKeys.ref.current?.querySelectorAll<HTMLElement>('[role="treeitem"]') ?? [])].find((el) => el.dataset.target === session.path) ?? null;
+    void mutations.run(session.path, kind, row, () => kind === "read" ? hub.markSessionRead(session.path).then(reload) : kind === "pin" ? onPin(session.path) : onArchive(session.path, !session.archived, session.runtimeId));
   };
+  const archive = (session: TreeSession) => mutate(session, "archive");
 
-  const dropSession = async (session: TreeSession) => {
+  const dropSession = async (session: TreeSession, withCopies = false) => {
     if (confirm !== session.path) {
       setConfirm(session.path);
       return;
@@ -255,6 +277,9 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
       // transcript's lease until it is down. A running one is left for the
       // kernel to refuse: a delete never stops work in progress.
       if (session.runtimeId && liveIds([session.runtimeId]).length === 0) await onClose([session.runtimeId]);
+      // A plain delete keeps copies that hold content the conversation lacks; taking
+      // them along removes each first, so a refused copy leaves the conversation in place.
+      if (withCopies) for (const copy of session.copies ?? []) await hub.removeSession(copy.path);
       await hub.removeSession(session.path);
       clearDraftForSession("", session.path);
       await reload();
@@ -265,23 +290,12 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
     }
   };
 
-  const saveSession = async (session: TreeSession) => {
-    setBusy("export:" + session.path);
+  const autoName = async (session: TreeSession) => {
+    setBusy("name:" + session.path);
     try {
-      const exported = await hub.exportSession(session.path);
-      const records = exported.content
-        .split(/\r?\n/)
-        .filter((line) => line.trim())
-        .map((line) => JSON.parse(line) as unknown);
-      const content = JSON.stringify(
-        { version: 1, title: session.title || session.name, exportedAt: new Date().toISOString(), records },
-        null,
-        2,
-      );
-      const clean = (session.title || exported.name || session.name).replace(/[<>:"/\\|?*\x00-\x1f]/g, "-").trim() || "reasonix-session";
-      const filename = `${clean}.json`;
-      const saved = await host().saveText(filename, content);
-      if (saved === null) download(filename, content);
+      const { title } = await hub.autoNameSession(session.path);
+      await hub.renameSession(session.path, title);
+      await reload();
     } catch (e) {
       onError(e);
     } finally {
@@ -290,27 +304,35 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
     }
   };
 
-  // Filtering is client-side because the tree is already here: the kernel has no
-  // search route, and a round trip to re-derive what the window is holding would
-  // be slower than the typing. A hit on the folder keeps all of its sessions.
+  const saveSession = async (session: TreeSession) => {
+    setBusy("export:" + session.path);
+    try {
+      await saveSessionFile(hub, session);
+    } catch (e) {
+      onError(e);
+    } finally {
+      setBusy("");
+      setSessionMenu("");
+    }
+  };
+
   const hit = (ws: TreeWorkspace) => {
     if (!needle) return ws;
     const named = (x: TreeSession) => (x.title || x.name || "").toLowerCase().includes(needle);
     if (ws.name.toLowerCase().includes(needle)) return ws;
     const sessions = ws.sessions.filter(named);
-    return sessions.length ? { ...ws, sessions } : null;
+    return sessions.length || ws.countsComplete === false ? { ...ws, sessions } : null;
   };
   const searchedTree = needle ? (tree.map(hit).filter(Boolean) as TreeWorkspace[]) : tree;
   const shownTree = searchedTree
     .map((ws) => ({
       ...ws,
       sessions: pinnedFirst(ws.sessions.filter((session) =>
-        inScope(session, scope, !!needle, !!session.runtimeId && liveIds([session.runtimeId]).length > 0, pinned.has(session.path))), pinned),
+        inScope(session, scope, !!needle, !!session.runtimeId && listedIds([session.runtimeId]).length > 0, pinned.has(session.path), hideLegacy)), pinned),
     }))
-    .filter((ws) => scope === "all" || ws.sessions.length > 0);
+    .filter((ws) => scope === "all" || ws.sessions.length > 0 || ws.countsComplete === false);
   // A fold is a resting-state preference: while a word is being typed it would
   // hide the very rows that word just found.
-  const shutHere = needle ? false : hereShut;
   const searching = !!needle;
   const loadedRows = (root: string) => tree.find((x) => x.root === root)?.sessions.length ?? 0;
   // What the kernel is asked to count: the archived rows when that is the view,
@@ -327,56 +349,33 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
     paging.view({ scope: kernelScope, q: asked });
   }, [paging, kernelScope, asked]);
   const pagedScope = scope === "all" || scope === "archived";
-  const displayed = shutHere ? [] : shownTree.filter((ws) => needle || !folded.has(ws.root))
-    .flatMap((ws) => ws.sessions);
+  const visibleSessions = (ws: TreeWorkspace) => needle || scope !== "all" || selection || expanded.has(ws.root)
+    ? ws.sessions : ws.sessions.filter((session, index) => index < previewLimit || session.runtimeId === active || session.path === opening);
+  const displayed = shownTree.filter((ws) => needle || !folded.has(ws.root))
+    .flatMap(visibleSessions);
   const selected = useSelectedRows(displayed, selection, setSelection);
+  const otherRows = hasOtherRows ? hasOtherRows(needle, hideLegacy) : !!children;
 
   return (
     <>
+      {moveTo.dialog}
       <SessionBatch hub={hub} selection={selection} selected={selected} displayed={displayed} onSelect={setSelection}
-        onExit={() => treeKeys.ref.current?.querySelector<HTMLElement>('[role="treeitem"]')?.focus()}
+        onExit={() => treeKeys.ref.current?.previousElementSibling?.querySelector<HTMLElement>('[data-action="machine.menu"]')?.focus()}
         onBusy={(pending) => { setBusy(pending ? "batch" : ""); if (pending) { setSessionMenu(""); setEditing(""); setConfirm(""); } }}
         onClose={onClose} onArchive={onArchive} liveIds={liveIds} reload={reload} onError={onError} />
       <div className="scroll">
-        <div role="tree" aria-label={t("机器、工作区与会话")} aria-multiselectable={selection !== null} inert={busy === "batch"} data-action-keydown="tree.navigate" ref={treeKeys.ref} onKeyDown={treeKeys.onKeyDown}>
-          {/* This machine is the first row of the list rather than another kind of
-              thing, and its add button sits where a host's does: open a folder
-              on this machine. */}
-          <div
-            className="machrow"
-            data-here=""
-            role="treeitem"
-            aria-expanded={!shutHere}
-            onClick={() => setHereShut((v) => !v)}
-          >
-            <button className="twist" tabIndex={-1} aria-hidden="true">
-              <svg viewBox="0 0 10 10">
-                <path d="M3.4 1.6 6.8 5 3.4 8.4" />
-              </svg>
-            </button>
-            <i className="rmtpip" aria-hidden="true" />
-            <span className="rmtname">{t("这台机器")}</span>
-            {treeRead && <span className="rmtsub">{t("{n} 个项目", { n: tree.length })}</span>}
-            <button
-              className="machpick"
-              data-busy={adder.busy ? "" : undefined}
-              title={t("打开或新建项目…")}
-              aria-label={t("打开或新建项目…")}
-              data-action="workspace.add"
-              onClick={(ev) => {
-                ev.stopPropagation();
-                adder.add();
-              }}
-            >
-              <svg viewBox="0 0 16 16" aria-hidden="true">
-                <path d="M8 3.7v8.6M3.7 8h8.6" />
-              </svg>
-            </button>
-          </div>
-          {shutHere ? null : shownTree.map((ws) => {
+          <ProjectsHeader adder={adder}
+            onToggleAll={onToggleAll} allFolded={needle ? false : allFolded} canFold={canFold} searching={!!needle}
+            canSelect={displayed.length > 0} selecting={selection !== null}
+            onSelect={() => setSelection(new Set())} />
+        <div role="tree" aria-label={t("项目与会话")} aria-multiselectable={selection !== null} inert={busy === "batch"} data-action-keydown="tree.navigate" ref={treeKeys.ref} onKeyDown={treeKeys.onKeyDown}>
+          {shownTree.map((ws) => {
             // A fold is a resting-state preference; while a query is on it would hide
             // the very rows the query just found.
-            const shut = needle ? false : folded.has(ws.root);
+            const hasChildren = ws.sessions.length > 0 || ws.countsComplete === false || ws.listingState === "degraded" || (pagedScope && unloaded(ws, loadedRows(ws.root)) > 0);
+            const visible = visibleSessions(ws);
+            const hidden = ws.sessions.length - visible.length;
+            const shut = hasChildren && !needle && folded.has(ws.root);
             // Only while the question is on screen: panesOf walks every runtime.
             const doomed = confirm === ws.root ? panesOf(ws.root) : [];
             const busyPanes = liveIds(doomed).length;
@@ -396,45 +395,56 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
                     ref={sessionMenu === ws.root ? sessionMenuBox : undefined}
                     data-action-contextmenu="workspace.menu"
                     data-action-keydown="workspace.menu"
+                    data-action-dragstart="workspace.reorder"
+                    data-action-dragover="workspace.reorder"
+                    data-action-dragleave="workspace.reorder"
+                    data-action-drop="workspace.reorder"
+                    data-action-dragend="workspace.reorder"
                     data-target={ws.root}
+                    data-drop={drag.over?.root === ws.root ? drag.over.edge : undefined}
+                    data-dragging={drag.dragging === ws.root ? "" : undefined}
+                    draggable={ws.remembered && !needle}
+                    onDragStart={(ev) => drag.start(ev, ws.root)}
+                    onDragOver={(ev) => drag.hover(ev, ws.root)}
+                    onDragLeave={() => drag.leave(ws.root)}
+                    onDrop={(ev) => drag.drop(ev, ws.root)}
+                    onDragEnd={drag.end}
                     className="wsrow"
                     role="treeitem"
+                    aria-level={1}
                     aria-haspopup="menu"
-                    aria-expanded={!shut}
-                    onClick={() => onFold(ws.root, !shut)}
+                    aria-expanded={hasChildren ? !shut : undefined}
+                    onClick={() => { if (hasChildren) onFold(ws.root, !shut); }}
                     onContextMenu={(ev) => {
                       if ((ev.target as HTMLElement).closest("input, textarea, [role='menu']")) return;
                       ev.preventDefault();
                       ev.stopPropagation();
-                      openWorkspaceMenu(ws.root, ev.currentTarget, ev.clientX || ev.clientY ? { x: ev.clientX, y: ev.clientY } : undefined);
+                      openRowMenu(ws.root, ev.currentTarget, ev.clientX || ev.clientY ? { x: ev.clientX, y: ev.clientY } : undefined);
                     }}
                     onKeyDown={(ev) => {
                       if (ev.target !== ev.currentTarget) return;
                       if (ev.key !== "ContextMenu" && !(ev.shiftKey && ev.key === "F10")) return;
                       ev.preventDefault();
                       ev.stopPropagation();
-                      openWorkspaceMenu(ws.root, ev.currentTarget);
+                      openRowMenu(ws.root, ev.currentTarget);
                     }}
                   >
-                    <button className="twist" tabIndex={-1} aria-hidden="true">
-                      <svg viewBox="0 0 10 10">
-                        <path d="M3.4 1.6 6.8 5 3.4 8.4" />
-                      </svg>
-                    </button>
-                    <i className="wsdot" aria-hidden="true" />
+                    <StudioIcon name="folder" className="wsfolder" />
                     <span className="wsname" title={ws.root}>
                       {ws.name}
                     </span>
-                    {/* 第二行是这个项目的身份，不是它的动作。名字于是拿到整行宽——
-                        在 214px 的栏里，名字、标签、计数、删除挤在一行，被截的总是名字。 */}
-                    <span className="wsmeta">
-                      {(ws.isolated || twice.has(ws.name)) && (
+                    {/* A tag is this project's identity, so it takes a second line and
+                        the name keeps the row; the count and the actions share one slot. */}
+                    {(ws.isolated || twice.has(ws.name)) && (
+                      <span className="wsmeta">
                         <em className="wstag">{ws.isolated ? t("隔离") : parentOf(ws.root)}</em>
-                      )}
-                      {countLabel(pagedScope ? sessionCount(ws, ws.sessions.length) : { shown: ws.sessions.length })}
-                    </span>
+                      </span>
+                    )}
                     <span className="wsacts">
                       {shut && <UnreadCount n={ws.sessions.filter((x) => x.unread).length} />}
+                      <span className="rowswap">
+                      {ws.countsComplete !== false && <RowCount c={pagedScope ? sessionCount(ws, ws.sessions.length) : { shown: ws.sessions.length }} />}
+                      <span className="rowbtns">
                       <button
                         data-action="session.new"
                         className="wsadd"
@@ -447,9 +457,7 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
                           void startSession(ws);
                         }}
                       >
-                        <svg viewBox="0 0 16 16" aria-hidden="true">
-                          <path d="M8 3.7v8.6M3.7 8h8.6" />
-                        </svg>
+                        <StudioIcon name="chat" />
                       </button>
                       <button
                         className="wsmore"
@@ -462,11 +470,13 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
                         onClick={(ev) => {
                           ev.stopPropagation();
                           if (sessionMenu === ws.root) setSessionMenu("");
-                          else openWorkspaceMenu(ws.root, ev.currentTarget);
+                          else openRowMenu(ws.root, ev.currentTarget);
                         }}
                       >
                         <StudioIcon name="more" />
                       </button>
+                      </span>
+                      </span>
                     </span>
                     {sessionMenu === ws.root && createPortal(
                       <div ref={sessionMenuPortal} className="session-pop" role="menu" aria-label={t("项目操作")} data-action-keydown="workspace.menu" data-target={ws.root} onKeyDown={workspaceMenuKeys} onClick={(ev) => ev.stopPropagation()}>
@@ -490,9 +500,9 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
 
                 {/* 子项自己成一块，才能拿到那条层级引导线。缩进单独说不清楚层级：
                     两级差 18px，扫一眼只读得出“有点错位”。 */}
-                {!shut && (
+                {!shut && hasChildren && (
                   <div className="kids">
-                {ws.sessions.map((session) => {
+                {visible.map((session) => {
                     const on = opening ? session.path === opening : session.runtimeId === active;
                     const run = session.runtimeId ? runs[session.runtimeId]?.run : undefined;
                     if (confirm === session.path) {
@@ -500,9 +510,10 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
                         <Confirm
                           key={session.path}
                           what={t("删除「{name}」？", { name: rowLabel(session) })}
-                          hint={t(!session.runtimeId ? "连同其记录一并删除" : liveIds([session.runtimeId]).length ? "正在运行，停止后才能删除" : "它的面板会先关掉")}
+                          hint={sessionDeleteHint(session.copies?.length ?? 0, !!session.runtimeId, !!session.runtimeId && liveIds([session.runtimeId]).length > 0)}
                           go={t("删除")}
                           danger
+                          alt={(session.copies?.length ?? 0) > 0 ? { label: t("连同 {n} 份副本删除", { n: session.copies!.length }), onGo: () => void dropSession(session, true) } : undefined}
                           onGo={() => void dropSession(session)}
                           onCancel={() => setConfirm("")}
                         />
@@ -519,37 +530,50 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
                         data-action-click={selection ? "session.selection" : "session.open"}
                         data-action-contextmenu="session.menu"
                         aria-haspopup="menu"
-                        data-action-keydown={selection ? ["session.selection"] : ["session.open", "session.delete"]}
+                        data-action-keydown={selection ? ["session.selection"] : ["session.open", "session.delete", "session.menu", "session.move"]}
                         data-target={session.path}
                         className="sessrow sessrow-context"
                         role="treeitem"
+                        aria-level={2}
+                        aria-label={rowLabel(session)}
                         aria-selected={selection ? selection.has(session.path) : on}
                         data-on={on ? "" : undefined}
                         data-live={session.runtimeId ? "" : undefined}
                         data-run={run === "idle" ? undefined : run}
                         data-unread={session.unread ? "" : undefined}
                         data-just-done={session.runtimeId && justDone.has(session.runtimeId) ? "" : undefined}
-                        data-busy={opening === session.path ? "" : undefined}
-                        onClick={() => selection ? toggleSelection(session.path) : void pick(ws, session)}
+                        data-busy={opening === session.path || mutations.pending.has(session.path) ? "" : undefined}
+                        onClick={(ev) => { if (selection) toggleSelection(session.path); else if (ev.detail < 2 && mutations.pending.get(session.path) !== "archive") void pick(ws, session); }}
+                        data-action-dblclick={selection ? undefined : "session.rename"}
+                        onDoubleClick={(ev) => {
+                          if (selection || mutations.pending.has(session.path) || (ev.target as HTMLElement).closest("input, button, [role='menu']")) return;
+                          setEditing(session.path);
+                        }}
                         onContextMenu={(ev) => {
                           if ((ev.target as HTMLElement).closest("input, textarea, [role='menu']")) return;
-                          if (selection) { ev.preventDefault(); return; }
+                          if (selection || mutations.pending.has(session.path)) { ev.preventDefault(); return; }
                           ev.preventDefault();
                           ev.stopPropagation();
-                          menuTrigger.current = ev.currentTarget;
-                          setSessionMenuAt({ x: ev.clientX, y: ev.clientY });
-                          setSessionMenu(session.path);
+                          openRowMenu(session.path, ev.currentTarget, { x: ev.clientX, y: ev.clientY });
                         }}
                         tabIndex={0}
                         onKeyDown={(ev) => {
                           if (ev.target !== ev.currentTarget) return;
+                          if (mutations.pending.has(session.path)) return;
                           if (editing === session.path) return;
                           if (selection) {
                             if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); ev.stopPropagation(); toggleSelection(session.path); }
                             return;
                           }
-                          if (ev.key === "Enter" || ev.key === " ") {
+                          if (ev.key === "ContextMenu" || ev.shiftKey && ev.key === "F10") {
+                            ev.preventDefault(); ev.stopPropagation(); openRowMenu(session.path, ev.currentTarget);
+                          } else if (ev.altKey && (ev.key === "ArrowUp" || ev.key === "ArrowDown")) {
+                            ev.preventDefault(); ev.stopPropagation();
+                            const direction = ev.key === "ArrowUp" ? -1 : 1;
+                            if (direction === -1 ? order.canMove(ws, session).up : order.canMove(ws, session).down) void order.move(session, direction);
+                          } else if (ev.key === "Enter" || ev.key === " ") {
                             ev.preventDefault();
+                            ev.stopPropagation();
                             void pick(ws, session);
                           } else if (asksDelete(ev)) {
                             ev.preventDefault();
@@ -561,38 +585,39 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
                           data-action-click="session.selection" data-action-change="session.selection" data-target={session.path} checked={selection.has(session.path)}
                           onClick={(ev) => ev.stopPropagation()} onChange={() => toggleSelection(session.path)} />}
                         <i className="pip" />
+                        {!selection && <SessionPinAction target={session.path} title={rowLabel(session)}
+                          pinned={pinned.has(session.path)} enabled={quickActions} disabled={mutations.pending.has(session.path)} onPin={() => mutate(session, "pin")} />}
                         {editing === session.path ? (
-                          <input
-                            className="sessedit"
-                            aria-label={t("重命名该会话")}
-                            autoFocus
+                          <input className="sessedit" aria-label={t("重命名该会话")} placeholder={t("聊天标题")} autoFocus
                             defaultValue={session.title || session.name}
                             onClick={(ev) => ev.stopPropagation()}
+                            data-action-blur="session.rename" data-action-keydown="session.rename" data-target={session.path}
                             onBlur={(ev) => {
+                              const next = ev.currentTarget.value.trim();
                               setEditing("");
-                              rename(session, ev.currentTarget.value);
+                              if (next !== "" && next !== (session.title || session.name).trim()) onRename(session.path, next, "inline");
                             }}
-                            data-action-keydown="session.rename"
-                            data-target={session.path}
                             onKeyDown={(ev) => {
                               if (ev.key === "Enter") {
-                                // The aimed-at commit. Blur saves too, and its
-                                // own guard keeps that from sending twice.
-                                rename(session, ev.currentTarget.value);
+                                ev.preventDefault();
                                 ev.currentTarget.blur();
-                              }
-                              if (ev.key === "Escape") {
-                                // Abandoning a rename is not stopping the run behind it.
+                              } else if (ev.key === "Escape") {
+                                ev.preventDefault();
                                 ev.stopPropagation();
                                 ev.currentTarget.value = session.title || session.name;
                                 ev.currentTarget.blur();
                               }
-                            }}
-                          />
+                            }} />
                         ) : (
-                          <span className="sesstitle" title={rowLabel(session)}>{pinned.has(session.path) && <StudioIcon name="pin" className="sesspin" aria-label={t("已置顶")} />}<span>{rowLabel(session)}</span>{session.archived && <em className="sessarch">{t("已归档")}</em>}</span>
+                          <span className="sesstitle" title={rowLabel(session)}>
+                            <span>{rowLabel(session)}</span>{session.isolated && <em className="sessarch" title={session.workspaceRoot}>{t("隔离")}</em>}{session.archived && <em className="sessarch">{t("已归档")}</em>}
+                            {session.metadataState === "pending" && <em className="sessarch">{t("正在读取摘要")}</em>}
+                            {session.metadataState === "error" && <em className="sessarch">{t("摘要暂不可用")}</em>}
+                          </span>
                         )}
-                        {session.unread && <UnreadDot kind="row" />}
+                        <PeerThreadMark path={session.path} />
+                        {session.unread && <UnreadDot />}
+                        <SessionAge at={session.lastActiveAt} />
                         {kept.length > 0 && (
                           <button
                             className="sesscopies"
@@ -617,22 +642,11 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
                             {`+${kept.length}`}
                           </button>
                         )}
-                        <span className="sessquick">
-                          <button
-                            data-action="session.archive" data-target={session.path}
-                            data-value={session.archived ? "restore" : "archive"}
-                            title={t(session.archived ? "取消归档" : "归档会话")}
-                            aria-label={t(session.archived ? "取消归档：{title}" : "归档会话：{title}", { title: rowLabel(session) })}
-                            disabled={!!session.runtimeId && liveIds([session.runtimeId]).length > 0}
-                            onClick={(ev) => { ev.stopPropagation(); archive(session); }}
-                          ><StudioIcon name="archive" /></button>
-                          <button
-                            className="danger" data-action="session.delete" data-target={session.path}
-                            title={t("删除会话")}
-                            aria-label={t("删除会话：{title}", { title: rowLabel(session) })}
-                            onClick={(ev) => { ev.stopPropagation(); askDelete(session.path); }}
-                          ><StudioIcon name="trash" /></button>
-                        </span>
+                        {session.legacy && (
+                          <span className="sesslegacy" title={t("由 Reasonix 1.x 创建：Studio 只读打开，继续对话会另存为新会话")} aria-label={t("由 Reasonix 1.x 创建：Studio 只读打开，继续对话会另存为新会话")}>{t("旧")}</span>
+                        )}
+                        {quickActions && !selection && <SessionArchiveAction target={session.path} title={rowLabel(session)} archived={!!session.archived}
+                          disabled={mutations.pending.has(session.path) || !!session.runtimeId && liveIds([session.runtimeId]).length > 0} onArchive={() => archive(session)} />}
                         {sessionMenu === session.path && (
                           <SessionMenu
                             ref={sessionMenuPortal}
@@ -641,8 +655,11 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
                             live={!!session.runtimeId && liveIds([session.runtimeId]).length > 0}
                             pinned={pinned.has(session.path)}
                             exporting={busy === "export:" + session.path}
-                            onPin={() => { onPin(session.path); setSessionMenu(""); }}
-                            onRename={() => { setEditing(session.path); setSessionMenu(""); }}
+                            autoNaming={busy === "name:" + session.path}
+                            onPin={() => mutate(session, "pin")}
+                            onMarkRead={session.unread ? () => mutate(session, "read") : undefined}
+                            onRename={() => { setSessionMenu(""); onRename(session.path, session.title || session.name); }}
+                            onAutoName={() => void autoName(session)}
                             onPause={() => { onPause(session.runtimeId!); setSessionMenu(""); }}
                             onClose={() => {
                               const id = session.runtimeId!;
@@ -650,9 +667,13 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
                               void onClose([id]).catch(onError);
                             }}
                             onArchive={() => archive(session)}
-                            onCopyInfo={() => { void copyText(sessionInfoText(session, ws.root)).catch(onError); setSessionMenu(""); }}
+                            onBranch={onBranch && session.runtimeId ? () => { setSessionMenu(""); void onBranch(session.runtimeId!, `${rowLabel(session)} · ${t("分支")}`).catch(onError); } : undefined}
+                            onCopyInfo={() => { void copyText(sessionInfoText(session, session.workspaceRoot || ws.root)).catch(onError); setSessionMenu(""); }}
                             onExport={() => void saveSession(session)}
-                            onDelete={() => { setConfirm(session.path); setSessionMenu(""); }}
+                            onDelete={() => { askDelete(session.path); setSessionMenu(""); }}
+                            onMove={(direction) => { setSessionMenu(""); void order.move(session, direction); }}
+                            canMove={order.canMove(ws, session)}
+                            onMoveTo={() => { setSessionMenu(""); moveTo.request(session, ws.root); }}
                           />
                         )}
                       </div>
@@ -676,6 +697,7 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
                               key={copy.path}
                               className="sessrow sesscopy"
                               role="treeitem"
+                              aria-level={3}
                               aria-selected={opening === copy.path}
                               data-on={opening === copy.path ? "" : undefined}
                               data-busy={opening === copy.path ? "" : undefined}
@@ -693,7 +715,7 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
                               }}
                             >
                               <i className="pip" />
-                              <span className="sesstitle">
+                              <span className="sesstitle" title={rowLabel(copy)}>
                                 <span>{version ? t("早先版本 · {n} 轮", { n: copy.turns ?? 0 }) : t("恢复副本")}</span>
                               </span>
                               <button
@@ -716,21 +738,25 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
                     );
                   })}
 
-                {pagedScope && unloaded(ws, loadedRows(ws.root)) > 0 && (
-                  atCap(loadedRows(ws.root)) ? (
-                    <small className="sessnote">{t("还有 {n} 个较早的会话 · 用搜索查找", { n: unloaded(ws, loadedRows(ws.root)) })}</small>
+                <ListingProgress workspace={ws} searching={searching} onRetry={retry} />
+                {pagedScope && (hidden > 0 || unloaded(ws, loadedRows(ws.root)) > 0) && (
+                  hidden === 0 && atCap(loadedRows(ws.root)) ? (
+                    <small className="sessnote">{ws.countsComplete === false ? t("用搜索查找更多会话") : t("还有 {n} 个较早的会话 · 用搜索查找", { n: unloaded(ws, loadedRows(ws.root)) })}</small>
                   ) : (
                     <button
                       className="sessmore"
                       disabled={paged[ws.root] === "loading"}
                       data-action="session.more"
-                      onClick={() => void more(ws.root)}
+                      onClick={() => {
+                        setExpanded((current) => new Set(current).add(ws.root));
+                        if (unloaded(ws, loadedRows(ws.root)) > 0 && !atCap(loadedRows(ws.root))) void more(ws.root);
+                      }}
                     >
                       {paged[ws.root] === "loading"
                         ? t("正在加载…")
                         : paged[ws.root] === "failed"
                           ? t("加载失败 · 重试")
-                          : t("显示更多（还有 {n} 个）", { n: unloaded(ws, loadedRows(ws.root)) })}
+                          : ws.countsComplete === false ? t("显示更多") : t("显示更多（还有 {n} 个）", { n: hidden + unloaded(ws, loadedRows(ws.root)) })}
                     </button>
                   )
                 )}
@@ -739,38 +765,18 @@ function WorkspacesView({ hub, tree, treeRead, runtimes, active, folded, reload,
               </div>
             );
           })}
-          {!shutHere && tree.length > 0 && shownTree.length === 0 && (
-            <div className="ws-empty">{t("没有匹配的会话")}</div>
-          )}
-          {!shutHere && tree.length === 0 && (treeRead ? (
-            <div className="ws-empty">{t("尚无文件夹")}</div>
+          {!otherRows && shownTree.length === 0 && (tree.length > 0 || treeRead && (!!needle || scope !== "all")) && <TreeEmpty settled={tree.every((ws) => ws.countsComplete !== false) && answers(answered, { scope: kernelScope, q: asked })} onRetry={retry} />}
+          {tree.length === 0 && (!treeRead || !otherRows && !needle && scope === "all") && (treeRead ? (
+            <div className="ws-empty">{t("尚无文件夹")}<button className="projects-open" data-action="workspace.add"
+              disabled={adder.busy} onClick={() => adder.add()}><StudioIcon name="folder" />{t("打开第一个项目")}</button></div>
           ) : (
-            <TreeReading />
+            <TreeReading onRetry={retry} />
           ))}
           {children}
         </div>
       </div>
 
     </>
-  );
-}
-
-// Display only, timed from this row's mount; whether the tree is read is `treeRead`.
-export function TreeReading() {
-  const [since] = useState(() => Date.now());
-  const [now, setNow] = useState(since);
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, []);
-  const ms = now - since;
-  return (
-    <div className="ws-empty ws-reading" role="status" aria-busy="true">
-      <StudioIcon name="clock" />
-      <span>{t("正在读取文件夹…")}</span>
-      {/* Outside the live region's speech: a status that re-announces itself every second is noise. */}
-      {ms >= 1000 && <span className="ws-reading-t" aria-hidden="true">{seconds(ms, 0)}</span>}
-    </div>
   );
 }
 

@@ -29,7 +29,26 @@ const CONSENT_LABEL: Record<string, string> = {
 // The preview is the kernel's: which rows need consent, and why, is decided
 // there and rechecked on apply. This panel only collects two separate answers
 // per row — take it, and (where asked) allow what it does.
-export function BackupRestore({ port, backup, onClose }: { port: AgentPort; backup: BackupEntry; onClose: () => void }) {
+// Where a restore reads from: an account's backup or a file the person opened.
+// The passphrase is asked for here either way, and apply goes to the route that
+// holds the plan the preview made.
+export interface RestoreSource {
+  name: string;
+  preview: (passphrase: string) => Promise<BackupPlan>;
+  apply: (planId: string, items: string[], consented: string[]) => Promise<BackupApplyResult>;
+  // Which rows start ticked; the kernel's recommendation when absent.
+  preselect?: (item: BackupPlanItem) => boolean;
+}
+
+export function accountBackupSource(port: AgentPort, backup: BackupEntry): RestoreSource {
+  return {
+    name: backup.label || t("未命名备份"),
+    preview: (passphrase) => port.previewBackup(backup.id, passphrase),
+    apply: (planId, items, consented) => port.applyBackup(planId, items, consented),
+  };
+}
+
+export function BackupRestore({ port, source, onClose }: { port: AgentPort; source: RestoreSource; onClose: () => void }) {
   const [pass, setPass] = useState("");
   const [plan, setPlan] = useState<BackupPlan | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
@@ -43,9 +62,9 @@ export function BackupRestore({ port, backup, onClose }: { port: AgentPort; back
     setBusy(true);
     setError("");
     try {
-      const p = await port.previewBackup(backup.id, pass);
+      const p = await source.preview(pass);
       setPlan(p);
-      setPicked(new Set(p.items.filter((i) => i.recommended).map((i) => i.id)));
+      setPicked(new Set(p.items.filter(source.preselect ?? ((i) => i.recommended)).map((i) => i.id)));
       setAllowed(new Set());
       setPass("");
     } catch (e) {
@@ -71,7 +90,7 @@ export function BackupRestore({ port, backup, onClose }: { port: AgentPort; back
     try {
       const ids = plan.items.filter((i) => picked.has(i.id)).map((i) => i.id);
       const consented = ids.filter((id) => allowed.has(id));
-      setResult(await port.applyBackup(plan.planId, ids, consented));
+      setResult(await source.apply(plan.planId, ids, consented));
     } catch (e) {
       setError(reason(e));
     } finally {
@@ -120,7 +139,7 @@ export function BackupRestore({ port, backup, onClose }: { port: AgentPort; back
   if (!plan) {
     return (
       <div className="bk-restore">
-        <p className="acct-note">{t("输入备份「{name}」的加密口令，先预览它和本机的差异，不会立即写入。", { name: backup.label || t("未命名备份") })}</p>
+        <p className="acct-note">{t("输入备份「{name}」的加密口令，先预览它和本机的差异，不会立即写入。", { name: source.name })}</p>
         <div className="bk-fields">
           <label className="grow">
             <span>{t("加密口令")}</span>

@@ -22,7 +22,7 @@ func (p *truncatingSummarizer) Stream(_ context.Context, req provider.Request) (
 	p.reqs = append(p.reqs, req)
 	p.mu.Unlock()
 	ch := make(chan provider.Chunk, 3)
-	if strings.Contains(req.Messages[0].Content, "compacting the earlier part") {
+	if req.Summary {
 		ch <- provider.Chunk{Type: provider.ChunkText, Text: "## partial"}
 		ch <- provider.Chunk{Type: provider.ChunkUsage, Usage: &provider.Usage{FinishReason: "length"}}
 	} else {
@@ -37,7 +37,7 @@ func (p *truncatingSummarizer) summarizerRequests() (out []provider.Request) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, r := range p.reqs {
-		if strings.Contains(r.Messages[0].Content, "compacting the earlier part") {
+		if r.Summary {
 			out = append(out, r)
 		}
 	}
@@ -48,7 +48,7 @@ func (p *truncatingSummarizer) turnRequests() (out []provider.Request) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, r := range p.reqs {
-		if !strings.Contains(r.Messages[0].Content, "compacting the earlier part") {
+		if !r.Summary {
 			out = append(out, r)
 		}
 	}
@@ -62,26 +62,41 @@ type collectSink struct {
 
 func (s *collectSink) Emit(e event.Event) { s.mu.Lock(); s.ev = append(s.ev, e); s.mu.Unlock() }
 
+// truncatingFixtureChars is the first-request size this fixture is padded to:
+// from 30000 to 40000 characters it makes the same 6 attempts, and its first
+// request is about 27200 unpadded, so either side has room to move.
+const truncatingFixtureChars = 35000
+
 func buildTruncatingSession(t *testing.T) (*truncatingSummarizer, *collectSink, func(string)) {
 	t.Helper()
 	isolateConfigHome(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
+	probe, _, run, stop := startTruncatingSession(t, dir, "probe", "")
+	run("keep going")
+	first := probe.firstRequest()
+	stop()
+	rec, sink, run, _ := startTruncatingSession(t, dir, "fixture", promptPadding(t, first, truncatingFixtureChars))
+	return rec, sink, run
+}
+
+func startTruncatingSession(t *testing.T, dir, role, padding string) (*truncatingSummarizer, *collectSink, func(string), func()) {
+	t.Helper()
 	rec := &truncatingSummarizer{}
-	kind := "boot-truncating-" + t.Name()
+	kind := "boot-truncating-" + role + "-" + t.Name()
 	provider.Register(kind, func(provider.Config) (provider.Provider, error) { return rec, nil })
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "test-model"
 
 [agent]
-system_prompt = "BASE"
+system_prompt = "BASE`+padding+`"
 compact_ratio = 0.5
 
 [[providers]]
 name = "test-model"
 kind = "`+kind+`"
 model = "x"
-context_window = 32000
+context_window = 32500
 effort = "high"
 `)
 	approveWorkspace(t, dir)
@@ -90,8 +105,19 @@ effort = "high"
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	t.Cleanup(func() { ctrl.Close() })
-	return rec, sink, func(p string) { _ = ctrl.Run(context.Background(), p) }
+	var once sync.Once
+	stop := func() { once.Do(func() { ctrl.Close() }) }
+	t.Cleanup(stop)
+	return rec, sink, func(p string) { _ = ctrl.Run(context.Background(), p) }, stop
+}
+
+func (p *truncatingSummarizer) firstRequest() provider.Request {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.reqs) == 0 {
+		return provider.Request{}
+	}
+	return p.reqs[0]
 }
 
 // The digest is a reasoning request under the session's own effort: its
@@ -125,6 +151,9 @@ func TestEffectTruncatedSummaryOnPressureKeepsCodeAndRetries(t *testing.T) {
 	rec, sink, run := buildTruncatingSession(t)
 	for range 10 {
 		run("keep going")
+	}
+	if got := requestChars(rec.firstRequest()); got != truncatingFixtureChars {
+		t.Fatalf("the fixture's first request is %d characters, want %d: the padding did not reach it", got, truncatingFixtureChars)
 	}
 	var code string
 	for _, e := range sink.ev {

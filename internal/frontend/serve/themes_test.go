@@ -115,6 +115,28 @@ func TestActivateEmptyIDRestoresTheDefaultAppearance(t *testing.T) {
 	}
 }
 
+func TestFoundationPaletteSelectionSurvivesServerRestart(t *testing.T) {
+	t.Setenv("REASONIX_HOME", testenv.TempDir(t))
+	srv := themeServer(t)
+	for _, id := range []string{"official-clear-blue", "official-tea-green", ""} {
+		if resp := postJSON(t, srv.URL+"/themes", map[string]string{"id": id}); resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("activate %q = %d", id, resp.StatusCode)
+		}
+		if cfg, err := config.Load(); err != nil || cfg.Desktop.ThemePack != id {
+			t.Fatalf("saved theme = %q, want %q (err %v)", cfg.Desktop.ThemePack, id, err)
+		}
+		srv = themeServer(t)
+		for _, row := range listThemes(t, srv.URL) {
+			if row.Active != (row.ID == id) {
+				t.Fatalf("wrong active state after restart: %+v", row)
+			}
+			if row.ID == id && (row.Removable || row.Background != nil || row.HasPreview) {
+				t.Fatalf("foundation should be built in with a token preview: %+v", row)
+			}
+		}
+	}
+}
+
 func TestActivateUnknownThemeIsRejectedAndChangesNothing(t *testing.T) {
 	t.Setenv("REASONIX_HOME", testenv.TempDir(t))
 	srv := themeServer(t)

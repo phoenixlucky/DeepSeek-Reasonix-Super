@@ -61,7 +61,7 @@ func TestSaveRoundTripsKeywordsAndPreservesThemOnUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	loaded, ok := store.Read(saved.Memory.ID)
+	loaded, ok := mustStore(t, store).Read(saved.Memory.ID)
 	if !ok || loaded.Keywords != "依赖 包管理" {
 		t.Fatalf("keywords lost in round trip: ok=%v %+v", ok, loaded)
 	}
@@ -72,7 +72,7 @@ func TestSaveRoundTripsKeywordsAndPreservesThemOnUpdate(t *testing.T) {
 	}, SaveOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	updated, ok := store.Read(saved.Memory.ID)
+	updated, ok := mustStore(t, store).Read(saved.Memory.ID)
 	if !ok || updated.Keywords != "依赖 包管理" {
 		t.Fatalf("an update omitting keywords must preserve them, got %+v", updated)
 	}

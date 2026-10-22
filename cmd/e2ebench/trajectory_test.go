@@ -625,3 +625,62 @@ func TestSummarizeTrajectoryCountsRefusedRoundsAsWaste(t *testing.T) {
 		t.Error("a refused round must carry its gap time into the waste breakdown")
 	}
 }
+
+// A run_script call's own calls run under ids derived from the script's, inside
+// its dispatch→result window. They are one model request, not one per call, so
+// they must neither cut model rounds nor reach round outcomes as top-level work.
+func TestSummarizeTrajectoryFoldsScriptCallsIntoTheirRound(t *testing.T) {
+	path := filepath.Join(testenv.TempDir(t), "script.trajectory.jsonl")
+	lines := []string{
+		`{"ts":1000,"event":{"kind":"turn_started"}}`,
+		`{"ts":1900,"event":{"kind":"usage","usage":{"promptTokens":10}}}`,
+		`{"ts":2000,"event":{"kind":"tool_dispatch","tool":{"id":"call_s","name":"run_script"}}}`,
+		`{"ts":2100,"event":{"kind":"tool_dispatch","tool":{"id":"call_s.1","name":"read_file","readOnly":true}}}`,
+		`{"ts":2200,"event":{"kind":"tool_result","tool":{"id":"call_s.1","name":"read_file","readOnly":true,"durationMs":100,"startedAt":2100,"endedAt":2200}}}`,
+		`{"ts":2300,"event":{"kind":"tool_dispatch","tool":{"id":"call_s.2","name":"read_file","readOnly":true}}}`,
+		`{"ts":2400,"event":{"kind":"tool_result","tool":{"id":"call_s.2","name":"read_file","readOnly":true,"durationMs":100,"startedAt":2300,"endedAt":2400}}}`,
+		`{"ts":2500,"event":{"kind":"tool_dispatch","tool":{"id":"call_s.3","name":"edit_file"}}}`,
+		`{"ts":2600,"event":{"kind":"tool_result","tool":{"id":"call_s.3","name":"edit_file","durationMs":100,"startedAt":2500,"endedAt":2600}}}`,
+		`{"ts":2700,"event":{"kind":"tool_result","tool":{"id":"call_s","name":"run_script","durationMs":700,"startedAt":2000,"endedAt":2700}}}`,
+		`{"ts":3900,"event":{"kind":"usage","usage":{"promptTokens":20}}}`,
+		`{"ts":4000,"event":{"kind":"turn_done"}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	s, err := summarizeTrajectory(path)
+	if err != nil {
+		t.Fatalf("summarizeTrajectory: %v", err)
+	}
+	if s.ExecutorRequests != 2 {
+		t.Fatalf("executor requests = %d, want 2", s.ExecutorRequests)
+	}
+	if s.ModelRounds != 2 {
+		t.Errorf("model rounds = %d, want 2 (script round + answer), one per model request", s.ModelRounds)
+	}
+	if s.ModelGapTotalMs != 2300 {
+		t.Errorf("model gap total = %d, want 2300 (1000 before the script, 1300 after it)", s.ModelGapTotalMs)
+	}
+	if s.TopLevelCalls != 1 || s.ToolBatches != 1 {
+		t.Errorf("top-level calls/batches = %d/%d, want 1/1", s.TopLevelCalls, s.ToolBatches)
+	}
+	if s.NestedCalls != 3 {
+		t.Errorf("nested calls = %d, want 3", s.NestedCalls)
+	}
+	if s.ToolMs != 700 {
+		t.Errorf("tool ms = %d, want 700 (nested time is inside the script's)", s.ToolMs)
+	}
+	total := 0
+	for _, n := range s.RoundOutcomes {
+		total += n
+	}
+	if total != 2 || s.RoundOutcomes["finalization"] != 1 {
+		t.Errorf("round outcomes = %v, want two rounds, one of them finalization", s.RoundOutcomes)
+	}
+	if ends := roundEnds(path); len(ends) != 1 || ends[0] != 2700 {
+		t.Errorf("round ends = %v, want [2700]", ends)
+	}
+	if split := splitAtCorrect(path, 0); split.RoundsAfter != 1 || split.CallsAfter != 1 {
+		t.Errorf("split = %+v, want one round and one call after the cutoff", split)
+	}
+}

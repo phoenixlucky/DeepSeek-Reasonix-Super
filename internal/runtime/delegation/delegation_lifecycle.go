@@ -70,7 +70,8 @@ func (t *TaskTool) openDelegation(ctx context.Context, spec *ProfileExecSpec, re
 	// The scheduler's two moments belong to this delegation now. The request
 	// carries the refusal hook because that is where the scheduler reads it.
 	spec.Sched.OnQueued, spec.Sched.OnStart = life.hooks(ctx)
-	req.OnQueued = spec.Sched.OnQueued
+	spec.Sched.OnHeld = waitingNotice(sink, delegationTaskLabel(*spec))
+	req.OnQueued = queuedHook(spec.Sched)
 	return life, nil
 }
 

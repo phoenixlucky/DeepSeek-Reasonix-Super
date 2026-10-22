@@ -357,7 +357,7 @@ func TestManifestV2RuntimeValidation(t *testing.T) {
 		{"unknown replace slot", `{"command": "./run", "replaces": ["systemprompt"]}`, `runtime.replaces: unknown slot "systemprompt"`},
 		{"bad tool slot", `{"command": "./run", "replaces": ["tool:"]}`, `runtime.replaces: invalid tool slot "tool:"`},
 		{"bad provider slot", `{"command": "./run", "replaces": ["provider:openai"]}`, `runtime.replaces: invalid provider slot "provider:openai"`},
-		{"unknown capability", `{"command": "./run", "capabilities": ["filesystem"]}`, `runtime.capabilities: unknown capability "filesystem" (want one of: interceptors, strategies, providers, ui, tools)`},
+		{"unknown capability", `{"command": "./run", "capabilities": ["filesystem"]}`, `runtime.capabilities: unknown capability "filesystem" (want one of: interceptors, strategies, providers, ui, tools, session.read, session.submit)`},
 		{"tools without capability", `{"command": "./run", "tools": [{"name": "t", "description": "d", "inputSchema": {"type": "object"}}]}`, `runtime.tools needs "tools" in runtime.capabilities`},
 		{"bad tool name", `{"command": "./run", "capabilities": ["tools"], "tools": [{"name": "a b", "description": "d", "inputSchema": {"type": "object"}}]}`, `runtime.tools[0].name "a b"`},
 		{"duplicate tool", `{"command": "./run", "capabilities": ["tools"], "tools": [{"name": "t", "description": "d", "inputSchema": {"type": "object"}}, {"name": "t", "description": "d", "inputSchema": {"type": "object"}}]}`, `runtime.tools: "t" is declared twice`},

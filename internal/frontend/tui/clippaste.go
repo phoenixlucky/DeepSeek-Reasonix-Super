@@ -100,7 +100,7 @@ func (m *model) onClipText(msg clipTextMsg) tea.Cmd {
 		return m.commit()
 	}
 	if msg.text != "" {
-		m.insertPaste(msg.text)
+		return m.insertPaste(msg.text)
 	}
 	return nil
 }

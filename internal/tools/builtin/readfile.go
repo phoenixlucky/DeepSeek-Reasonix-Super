@@ -145,16 +145,15 @@ func (r readFile) read(ctx context.Context, args json.RawMessage) (string, error
 	if p.Offset < 0 {
 		p.Offset = 0
 	}
-	if p.Limit <= 0 {
-		p.Limit = readFileDefaultLimit
-	}
+	emit, limit := r.render(ctx, p.Limit)
+	p.Limit = limit
 
 	// The host overlay (unsaved editor buffers) wins over the disk when it can
 	// serve the path. Content arrives already decoded as text, so the encoding
 	// and binary-detection pipeline below applies to the disk fallback only.
 	if r.overlay != nil && !rp.External && filepath.IsAbs(p.Path) {
 		if content, ok := r.overlay.ReadTextFile(ctx, p.Path); ok {
-			return r.scan(strings.NewReader(content), p.Offset, p.Limit)
+			return emit(strings.NewReader(content), p.Offset, p.Limit)
 		}
 	}
 
@@ -200,14 +199,14 @@ func (r readFile) read(ctx context.Context, args json.RawMessage) (string, error
 		}
 		all := append(peek, rest...)
 		bom := fileenc.DetectQuick(all)
-		return r.scan(bytes.NewReader(fileenc.Decode(all, bom)), p.Offset, p.Limit)
+		return emit(bytes.NewReader(fileenc.Decode(all, bom)), p.Offset, p.Limit)
 	case fileenc.UTF8BOM:
 		// Strip the 3-byte BOM; the content is valid UTF-8 and streams directly.
 		body := peek
 		if len(body) >= 3 {
 			body = body[3:]
 		}
-		return r.scan(io.MultiReader(bytes.NewReader(body), f), p.Offset, p.Limit)
+		return emit(io.MultiReader(bytes.NewReader(body), f), p.Offset, p.Limit)
 	}
 
 	// BOM-less UTF-16 (Windows source files) has a NUL for every ASCII char but
@@ -222,7 +221,7 @@ func (r readFile) read(ctx context.Context, args json.RawMessage) (string, error
 			return "", fmt.Errorf("read %s: %w", displayPath, rerr)
 		}
 		all := append(peek, rest...)
-		return r.scan(bytes.NewReader(fileenc.Decode(all, k)), p.Offset, p.Limit)
+		return emit(bytes.NewReader(fileenc.Decode(all, k)), p.Offset, p.Limit)
 	}
 
 	if bytes.IndexByte(peek, 0) >= 0 {
@@ -248,9 +247,9 @@ func (r readFile) read(ctx context.Context, args json.RawMessage) (string, error
 
 	src := io.MultiReader(bytes.NewReader(head), f)
 	if dec := fileenc.Decoder(enc); dec != nil {
-		return r.scan(transform.NewReader(src, dec), p.Offset, p.Limit)
+		return emit(transform.NewReader(src, dec), p.Offset, p.Limit)
 	}
-	return r.scan(src, p.Offset, p.Limit)
+	return emit(src, p.Offset, p.Limit)
 }
 
 // scan reads lines from src and returns the formatted output with line numbers.
@@ -299,14 +298,52 @@ func (r readFile) scan(src io.Reader, offset, limit int) (string, error) {
 	return b.String(), nil
 }
 
+// render picks what read_file returns: numbered lines paged at the default
+// limit for the model, or the text itself for a call another tool made.
+func (r readFile) render(ctx context.Context, limit int) (func(io.Reader, int, int) (string, error), int) {
+	if tool.IsNested(ctx) {
+		return verbatim, limit
+	}
+	if limit <= 0 {
+		limit = readFileDefaultLimit
+	}
+	return r.scan, limit
+}
+
+// verbatim is read_file for a call another tool made: the text itself, line
+// endings and final newline included, so a script can edit it and write it
+// back. offset and limit select whole lines; no limit means the rest of the file.
+func verbatim(src io.Reader, offset, limit int) (string, error) {
+	data, err := io.ReadAll(src)
+	if err != nil {
+		return "", fmt.Errorf("read: %w", err)
+	}
+	if offset == 0 && limit <= 0 {
+		return string(data), nil
+	}
+	lines := strings.SplitAfter(string(data), "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if offset >= len(lines) {
+		return "", nil
+	}
+	end := len(lines)
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	return strings.Join(lines[offset:end], ""), nil
+}
+
 // binaryRefusal says why the bytes are not shown. An image is sent to the path
 // images actually travel: told to hexdump instead, a model spends a megabyte of
 // context on hex that answers nothing.
 func binaryRefusal(displayPath string, head []byte, external bool) error {
 	if kind := imageKind(head); kind != "" {
-		// Only a reference in the user's own message attaches a picture; the
-		// model writing @path attaches nothing, so it is told to ask.
-		return fmt.Errorf("%s is a %s image; read_file reads text. A picture reaches a model only when the user's message references it as @%s: an image attached this turn is already seen by a model that reads images, and one that cannot hands it to read_only_task. This one is not viewable unless the user sends it as @%s — ask them to", displayPath, kind, displayPath, displayPath)
+		// view_image is offered only to a model that reads images; a reference in
+		// the user's own message also shows one, but the model writing @path
+		// attaches nothing.
+		return fmt.Errorf("%s is a %s image; read_file reads text. If view_image is among your tools, use it to see the picture; otherwise it is viewable only when the user's message references it as @%s — writing that yourself attaches nothing, so ask them to", displayPath, kind, displayPath)
 	}
 	if external {
 		return fmt.Errorf("binary file %s (NUL byte detected); not shown by read_file", displayPath)

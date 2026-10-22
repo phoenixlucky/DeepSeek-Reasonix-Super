@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { useStartsOpen } from "../../state/foldpref";
+import { useFoldModes, useStartsOpen } from "../../state/foldpref";
+import { firstSentence } from "../thoughtPeek";
 import { StudioIcon } from "../StudioIcon";
 import { t } from "../../i18n";
 import { count, decimals } from "../../i18n/format";
@@ -10,11 +11,13 @@ import { thoughtStartedAt } from "../../state/say";
 import { LazyMarkdown } from "../LazyMarkdown";
 import { Boundary } from "../Boundary";
 import { CopyButton } from "../CopyButton";
+import { TooltipButton } from "../TooltipButton";
 import { useRevealed } from "../reveal";
 import { useShown } from "../shown";
 import { ReplyMenu } from "./ReplyMenu";
 import { useDismiss } from "../dismiss";
 import { pinToViewport } from "../place";
+import type { LocalRefs } from "../Markdown";
 
 // Folded, the only thing left of a thought is how much of the turn it was. The
 // spec puts both halves there — how long, and how much — because either alone
@@ -28,6 +31,7 @@ function ThoughtLabel({ item }: { item: Extract<Item, { t: "say" }> }) {
 }
 
 const LIVE_TICK_MS = 100;
+const PEEK_CHARS = 80;
 
 // While the model is still thinking the reader sees the clock run, not a bare
 // ellipsis; a card this window did not watch begin has no start to count from.
@@ -55,18 +59,26 @@ const modelName = (ref: string) => ref.slice(ref.lastIndexOf("/") + 1);
 export interface Quote {
   text: string;
   turn?: number;
+  // The workspace file the text was selected in, when it did not come from a reply.
+  source?: string;
   n: number;
 }
 
 /** What a finished reply can be acted on with. Regeneration belongs to the
  *  individual reply and requires a paired checkpoint. */
 export interface ReplyActions {
+  files?: LocalRefs;
+  activeFile?: string;
+  onAddFile?: (reference: string) => void;
+  openDeliveredFile?: (path: string) => Promise<void>;
+  revealDeliveredFile?: (path: string) => Promise<void>;
   onQuote: (text: string, id: string) => void;
+  onQuoteFile?: (text: string, source: string) => void;
   canRegenerate: (id: string) => boolean;
   hasLaterTurns: (id: string) => boolean;
   onRegenerate: (id: string) => void;
   canBranch: (id: string) => boolean;
-  onBranch: (id: string) => void;
+  onBranch: (id: string) => void | Promise<void>;
   model?: string;
   onConfigureModel?: () => void;
   onRunDetail?: () => void;
@@ -90,10 +102,13 @@ function download(text: string) {
   URL.revokeObjectURL(url);
 }
 
-export function SayCard({ item, afterAnswer, reply, quiet }: { item: Extract<Item, { t: "say" }>; afterAnswer?: ReactNode; reply?: ReplyActions; quiet?: boolean }) {
+export function SayCard({ item, afterAnswer, settled = true, reply, quiet }: { item: Extract<Item, { t: "say" }>; afterAnswer?: ReactNode; settled?: boolean; reply?: ReplyActions; quiet?: boolean }) {
+  const [branching, setBranching] = useState(false);
   const start = useStartsOpen("thinking", !item.done && !item.text);
   const [touched, setOpen] = useState<boolean | null>(null);
   const open = touched ?? start;
+  const peeks = useFoldModes().thinking === "peek" && !open && item.done;
+  const peek = useMemo(() => (peeks ? firstSentence(item.reasoning ?? "", PEEK_CHARS) : ""), [peeks, item.reasoning]);
   const [menu, setMenu] = useState<"" | "retry" | "more">("");
   const shut = useCallback(() => setMenu(""), []);
   const retry = useRef<HTMLButtonElement>(null);
@@ -127,7 +142,6 @@ export function SayCard({ item, afterAnswer, reply, quiet }: { item: Extract<Ite
     <div className="call" data-k="say" data-quiet={quiet ? "" : undefined}>
       <div className="g">
         <Sym glyph="◦" />
-        <span className="line" />
       </div>
       <div className="c">
         <div className="hl">
@@ -141,6 +155,7 @@ export function SayCard({ item, afterAnswer, reply, quiet }: { item: Extract<Ite
             <details className="think" open={open} onToggle={(e) => e.currentTarget.open !== open && setOpen(e.currentTarget.open)}>
               <summary>
                 <span className="fold">{item.done || item.thoughtMs !== undefined ? <ThoughtLabel item={item} /> : <LiveThought id={item.id} />}</span>
+                {peek && <span className="peek">{peek}</span>}
               </summary>
               <div className="tk">
                 {thought}
@@ -163,31 +178,32 @@ export function SayCard({ item, afterAnswer, reply, quiet }: { item: Extract<Ite
                 e.stopPropagation();
               }}>
               <Boundary retryKey={item.text} fallback={<div className="md" style={{ whiteSpace: "pre-wrap" }}>{item.text}</div>}>
-                <LazyMarkdown text={item.text} streaming={!item.done} />
+                <LazyMarkdown text={item.text} streaming={!item.done} local={reply?.files} />
               </Boundary>
             </div>
           )}
           {afterAnswer}
           {/* Only once the answer is whole: copying half a stream hands over
-              something that was never said. */}
-          {item.done && item.text.trim() && (
+              something that was never said, and a row of actions under work
+              that is still running reads as the turn being over. */}
+          {item.done && settled && item.text.trim() && (
             <div className="acts">
               <CopyButton text={item.text} iconOnly />
               {reply && (
-                <button type="button" data-action="reply.quote" data-target={item.id} title={t("引用到输入框")} aria-label={t("引用到输入框")} onClick={() => reply.onQuote(selectedIn(answer.current) || item.text, item.id)}>
+                <TooltipButton type="button" data-action="reply.quote" data-target={item.id} title={t("引用到输入框")} aria-label={t("引用到输入框")} onClick={() => reply.onQuote(selectedIn(answer.current) || item.text, item.id)}>
                   <StudioIcon name="quote" />
-                </button>
+                </TooltipButton>
               )}
               {reply?.canBranch(item.id) && (
-                <button type="button" data-action="reply.branch" title={t("分支为新会话")} aria-label={t("分支为新会话")} onClick={() => reply.onBranch(item.id)}>
-                  <StudioIcon name="branch" />
-                </button>
+                <TooltipButton type="button" data-action="reply.branch" title={t("创建对话分支")} aria-label={t("创建对话分支")} disabled={branching} onClick={() => { setBranching(true); void Promise.resolve(reply.onBranch(item.id)).finally(() => setBranching(false)); }}>
+                  <StudioIcon name={branching ? "clock" : "fork"} />
+                </TooltipButton>
               )}
               {reply?.canRegenerate(item.id) && (
                 <span className="acts-menu">
-                  <button ref={retry} type="button" data-action="reply.retry" title={t("重新生成")} aria-label={t("重新生成")} aria-expanded={menu === "retry"} onClick={() => setMenu((m) => (m === "retry" ? "" : "retry"))}>
+                  <TooltipButton ref={retry} type="button" data-action="reply.retry" title={t("重新生成")} aria-label={t("重新生成")} aria-expanded={menu === "retry"} onClick={() => setMenu((m) => (m === "retry" ? "" : "retry"))}>
                     <StudioIcon name="refresh" />
-                  </button>
+                  </TooltipButton>
                   <ReplyMenu anchor={retry} open={menu === "retry"} onClose={shut}>
                     <div className="acts-pop-head">
                       {t("重新生成")}
@@ -207,9 +223,9 @@ export function SayCard({ item, afterAnswer, reply, quiet }: { item: Extract<Ite
               )}
               {reply && (
                 <span className="acts-menu">
-                  <button ref={more} type="button" data-action="reply.more" title={t("更多")} aria-label={t("更多")} aria-expanded={menu === "more"} onClick={() => setMenu((m) => (m === "more" ? "" : "more"))}>
+                  <TooltipButton ref={more} type="button" data-action="reply.more" title={t("更多")} aria-label={t("更多")} aria-expanded={menu === "more"} onClick={() => setMenu((m) => (m === "more" ? "" : "more"))}>
                     <StudioIcon name="more" />
-                  </button>
+                  </TooltipButton>
                   <ReplyMenu anchor={more} open={menu === "more"} onClose={shut}>
                     <div className="acts-pop-head">{t("这条回复")}</div>
                     <button type="button" role="menuitem" data-action="reply.download" onClick={() => { setMenu(""); download(item.text); }}>

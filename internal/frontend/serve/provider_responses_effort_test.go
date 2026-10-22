@@ -74,10 +74,10 @@ func TestResponsesProviderIsDescribedByTheSameDeclarationAsChat(t *testing.T) {
 
 func TestResponsesProviderAcceptsTheThinkingSwitch(t *testing.T) {
 	base := newResponsesRelayServer(t)
-	resp := postProvider(t, base, "/providers/thinking", `{"name":"relay","on":false}`)
+	resp := postProvider(t, base, "/providers/edit", `{"name":"relay","models":["gpt-5.5"],"default":"gpt-5.5","reasoningProtocol":"none"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("POST /providers/thinking on a responses entry = %d, want 204", resp.StatusCode)
+		t.Fatalf("POST /providers/edit on a responses entry = %d, want 204", resp.StatusCode)
 	}
 	entry, _ := loadEntry(t, "relay/gpt-5.5")
 	if entry.ReasoningProtocol != "none" {

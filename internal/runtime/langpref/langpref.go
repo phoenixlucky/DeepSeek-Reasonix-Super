@@ -67,6 +67,20 @@ func ResolveResponseLanguage(lang, source string) string {
 	return InferReasoningLanguageFromText(source)
 }
 
+// TurnNarrationBlock asks for a few lines between tool calls, and only when the
+// reader chose the detailed level; brief adds nothing, so the default turn is
+// byte-identical to one without the setting. The sentence follows the language
+// the turn resolved to.
+func TurnNarrationBlock(detailed bool, lang string) string {
+	if !detailed {
+		return ""
+	}
+	if lang == "zh" {
+		return "<turn-narration>\n每批工具结果返回后、继续下一步之前，用三四行文字说明这一批拿到了什么、下一步打算做什么。这只针对工具调用之间的可见文字，不影响最终回答的写法。\n</turn-narration>"
+	}
+	return "<turn-narration>\nAfter each batch of tool results and before the next step, write three or four lines on what the batch returned and what you will do next. This is for the visible text between tool calls; it does not change how the final answer is written.\n</turn-narration>"
+}
+
 // ReasoningLanguageBlock is transient user-turn context. It deliberately does
 // not belong in the stable system prompt or tool schemas.
 func ReasoningLanguageBlock(lang string) string {

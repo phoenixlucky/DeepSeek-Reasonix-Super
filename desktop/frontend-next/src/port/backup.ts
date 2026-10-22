@@ -95,3 +95,17 @@ export interface BackupApplyResult {
   failed?: { id: string; error: string }[];
   reloadError?: string;
 }
+
+// A backup file is the same sealed envelope, saved by the person instead of the
+// account. Only the window may ask: the file can hold keys.
+export interface BackupFileCatalog {
+  categories: BackupCategoryInfo[];
+  minPassphrase: number;
+}
+
+export interface BackupFileExport {
+  name: string;
+  // The sealed envelope as base64 text, ready to be saved as it is.
+  file: string;
+  omitted?: BackupOmission[];
+}

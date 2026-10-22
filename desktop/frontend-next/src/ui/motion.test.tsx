@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { cleanup, render } from "@testing-library/react";
 import "./testkit";
 import { Transcript } from "./Transcript";
 import type { Item } from "../state/session";
@@ -12,15 +12,15 @@ afterEach(cleanup);
 
 const user = (id: string, text: string): Item => ({ t: "user", id, text });
 
-function draw(items: Item[], entering: string[], hidden = false, onPinned = () => {}) {
+function draw(items: Item[], entering: string[], hidden = false) {
   const onEntered = vi.fn();
   const noop = async () => undefined as never;
   const scroll = { current: null as HTMLDivElement | null };
   const view = render(
     <Transcript
       items={items} entering={entering} onEntered={onEntered} revision={1}
-      waiting={{}} scroll={scroll} hidden={hidden} onPinned={onPinned}
-      jump={0} focus={null}
+      waiting={{}} scroll={scroll} hidden={hidden}
+      focus={null}
       onApprove={noop} onFullAccess={noop} onPlan={noop} onAnswer={noop} onForget={noop}
       onExtInvoke={() => {}} onExtSubmit={noop}
       checkpoints={new Map()} onPrepareRewind={noop} onCommitRewind={noop}
@@ -31,30 +31,6 @@ function draw(items: Item[], entering: string[], hidden = false, onPinned = () =
   const entered = () => [...document.querySelectorAll(".enterbox[data-enter]")].length;
   return { view, onEntered, entered, scroll };
 }
-
-describe("leaving the live edge", () => {
-  it("does not offer back to latest for one small upward wheel gesture", () => {
-    const onPinned = vi.fn();
-    const { scroll } = draw([user("i1", "hi")], [], false, onPinned);
-    const root = scroll.current!;
-    let top = 400;
-    Object.defineProperties(root, {
-      scrollTop: { configurable: true, get: () => top, set: (value: number) => { top = value; } },
-      scrollHeight: { configurable: true, value: 1000 },
-      clientHeight: { configurable: true, value: 600 },
-    });
-    onPinned.mockClear();
-
-    fireEvent.wheel(root, { deltaY: -80 });
-    top = 330;
-    fireEvent.scroll(root);
-    expect(onPinned).not.toHaveBeenCalledWith(false);
-
-    top = 180;
-    fireEvent.scroll(root);
-    expect(onPinned).toHaveBeenCalledWith(false);
-  });
-});
 
 describe("a card's one entrance", () => {
   it("is marked on the card that has just arrived", () => {
@@ -87,8 +63,7 @@ describe("a card's one entrance", () => {
     view.rerender(view.container.firstChild ? (
       <Transcript
         items={[user("i1", "hi")]} entering={[]} onEntered={() => {}} revision={2}
-        waiting={{}} scroll={{ current: null }} hidden={false} onPinned={() => {}}
-        jump={0} focus={null}
+        waiting={{}} scroll={{ current: null }} hidden={false} focus={null}
         onApprove={(async () => undefined) as never} onFullAccess={(async () => undefined) as never} onPlan={(async () => undefined) as never}
         onAnswer={(async () => undefined) as never} onForget={(async () => undefined) as never}
         onExtInvoke={() => {}} onExtSubmit={(async () => undefined) as never}
@@ -114,6 +89,15 @@ describe("a card's one entrance", () => {
 // mount for a cause. Written here rather than left to review, because the
 // tempting line is one character short of the correct one.
 describe("mount is not a cause", () => {
+  it("keeps the empty-session brand still when its hero remounts", () => {
+    const rules = [...css.matchAll(/\.hero \.sym-mark\s*\{([^}]*)\}/g)];
+    expect(rules.length).toBeGreaterThan(0);
+    for (const [, body] of rules) {
+      const animation = body.match(/animation:\s*([^;}]+)/)?.[1];
+      expect(animation == null || animation.startsWith("none")).toBe(true);
+    }
+  });
+
   /** Rules that give this selector an entrance animation, by exact term. */
   const entrances = (term: string) =>
     css

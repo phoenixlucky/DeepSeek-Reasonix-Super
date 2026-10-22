@@ -131,6 +131,13 @@ func acquireLocal(ctx context.Context, key string) (*localLock, func(), error) {
 	local.refs++
 	localRegistry.Unlock()
 
+	// A free lock is taken before ctx is consulted, as the file lock below is:
+	// select picks at random between ready cases, and ctx bounds a wait.
+	select {
+	case <-local.token:
+		return local, releaseLocalFunc(key, local), nil
+	default:
+	}
 	select {
 	case <-local.token:
 		return local, releaseLocalFunc(key, local), nil

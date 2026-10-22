@@ -15,7 +15,7 @@ func TestSetAutoRecallMatchesStoreScan(t *testing.T) {
 		Description: "The canonical fast check", Type: TypeProject, Scope: FactScopeProject,
 		Body: "Run make check-fast before pushing.",
 	})
-	set := &Set{Store: store, recall: BuildRecallIndex(store)}
+	set := &Set{Store: store, recall: mustStore(t, store).recallIndex()}
 	for _, query := range []string{"what is the fast check command", "continue", "总结一下"} {
 		direct := AutoRecall(store, query, RecallOptions{})
 		indexed := set.AutoRecall(query, RecallOptions{})

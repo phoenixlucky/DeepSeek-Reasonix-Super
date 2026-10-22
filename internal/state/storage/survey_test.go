@@ -135,6 +135,11 @@ func TestCancelledSurveyStops(t *testing.T) {
 	}
 }
 
+// stalledWalkBudget is the budget a test gives a walk that never returns: it
+// must outlast reaching the first entry on a loaded runner, and it is also how
+// long that test waits.
+const stalledWalkBudget = 500 * time.Millisecond
+
 // stallAfterWalk stands in for a filesystem whose walk reports what it found
 // and then never comes back, the way a huge or network-mounted tree does.
 func stallAfterWalk(t *testing.T) {
@@ -159,7 +164,7 @@ func TestSurveyReturnsPartialCountWhenAWalkStalls(t *testing.T) {
 	write(t, filepath.Join(home, "sessions", "a.jsonl"), 1200)
 	stallAfterWalk(t)
 	old := Budget
-	Budget = 50 * time.Millisecond
+	Budget = stalledWalkBudget
 	t.Cleanup(func() { Budget = old })
 
 	done := make(chan []Root, 1)
@@ -223,8 +228,32 @@ func TestTruncatedRootKeepsTheErrorFoundBeforeTheBudgetRanOut(t *testing.T) {
 		return nil
 	}
 	t.Cleanup(func() { walkDir = old })
-	_, _, _, truncated, errText := measureRoot(t.Context(), config.RootID("x"), dir, 50*time.Millisecond)
+	_, _, _, truncated, errText := measureRoot(t.Context(), config.RootID("x"), dir, stalledWalkBudget)
 	if !truncated || errText == "" {
 		t.Fatalf("truncated=%v err=%q: both must be reported", truncated, errText)
+	}
+}
+
+// State falls back to home, so on a default Windows install they are one folder.
+// Home declares no entries of its own, and it must not be credited with the
+// sessions and archive that state declares in that same folder.
+func TestRootSharingItsDirectoryIsNotCreditedWithTheNeighboursEntries(t *testing.T) {
+	home := testenv.TempDir(t)
+	t.Setenv("REASONIX_HOME", home)
+	t.Setenv("REASONIX_STATE_HOME", "")
+
+	write(t, filepath.Join(home, "sessions", "a.jsonl"), 4000)
+	write(t, filepath.Join(home, "archive", "old.jsonl"), 2000)
+	write(t, filepath.Join(home, ".env"), 100)
+	write(t, filepath.Join(home, "browser", "profile.bin"), 500)
+
+	roots := Survey(t.Context())
+	state := find(t, roots, config.RootState)
+	if state.Bytes != 6000 || state.Files != 2 {
+		t.Fatalf("state = %d bytes / %d files, want 6000 / 2", state.Bytes, state.Files)
+	}
+	homeRoot := find(t, roots, config.RootHome)
+	if homeRoot.Bytes != 600 || homeRoot.Files != 2 {
+		t.Fatalf("home = %d bytes / %d files, want 600 / 2: it counted what state owns", homeRoot.Bytes, homeRoot.Files)
 	}
 }

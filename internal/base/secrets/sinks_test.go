@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"reasonix/internal/base/testenv"
 )
 
 func TestCredentialSinkRegistry(t *testing.T) {
@@ -29,6 +31,9 @@ func TestCredentialSinkRegistry(t *testing.T) {
 	operationalFormatters := map[string]bool{"internal/frontend/serve/provider_edit.go:assemblyShape": true}
 	for _, dir := range []string{"internal/ext/mcpsetup", "internal/ext/installsource", "internal/ext/pluginpkg", "internal/frontend/cli", "internal/frontend/serve", "internal/ext/plugin"} {
 		err := filepath.WalkDir(filepath.Join(root, filepath.FromSlash(dir)), func(path string, entry fs.DirEntry, err error) error {
+			if err != nil && testenv.VanishedMidWalk(path, err) {
+				return nil
+			}
 			if err != nil {
 				return err
 			}

@@ -222,3 +222,26 @@ func TestDownloadManifestDropsAPartialThatFailsVerification(t *testing.T) {
 		t.Fatalf("the next download should start clean: %v", err)
 	}
 }
+
+// The caller is told each time a quiet connection is dropped, so a person
+// waiting on a bar that has stopped can be told why it stopped.
+func TestTheCallerHearsEachDroppedConnection(t *testing.T) {
+	fastRetry(t)
+	body := bytes.Repeat([]byte("studio"), 1000)
+	srv, _ := rangeServer(t, body, func(call int, from int64) (int, bool) {
+		if call == 1 {
+			return 1000, true
+		}
+		return len(body) - int(from), false
+	})
+	tr := tp(srv.Client(), nil)
+	tr.StallTimeout = 100 * time.Millisecond
+	stalls := 0
+	tr.OnStall = func() { stalls++ }
+	if _, err := tr.Download(context.Background(), srv.URL, int64(len(body)), nil); err != nil {
+		t.Fatal(err)
+	}
+	if stalls != 1 {
+		t.Fatalf("OnStall fired %d times, want once for the one dropped connection", stalls)
+	}
+}

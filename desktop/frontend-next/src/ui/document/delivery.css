@@ -1,0 +1,182 @@
+.delivery-files {
+  container-type: inline-size;
+  min-width: 0;
+  margin: 12px 0;
+}
+.delivery-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+@container (min-width: 720px) {
+  .delivery-grid:not([data-single]) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.delivery-file {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-width: 0;
+  min-height: 72px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md, 8px);
+  background: var(--raised);
+  color: var(--text);
+}
+.delivery-file:hover {
+  background: var(--float-hi);
+}
+.delivery-file[data-current] {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 5%, var(--raised));
+}
+.delivery-open {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  text-align: start;
+  font: inherit;
+  cursor: pointer;
+}
+.delivery-open:focus-visible, .delivery-more:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -3px;
+}
+.delivery-icon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 36px;
+  color: var(--muted);
+}
+.delivery-icon-badge {
+  font: 600 8px/1.2 var(--mono);
+  letter-spacing: .2px;
+}
+.delivery-icon svg {
+  width: 22px;
+  height: 22px;
+}
+.delivery-details {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+.delivery-heading, .delivery-name {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+}
+.delivery-heading {
+  gap: 8px;
+}
+.delivery-name {
+  font-size: var(--fs-ui);
+  font-weight: var(--w-med);
+  line-height: 1.45;
+}
+.delivery-name > span:first-child, .delivery-description, .delivery-location {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.delivery-extension {
+  flex: none;
+  color: var(--muted);
+}
+.delivery-description, .delivery-location {
+  display: block;
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--muted);
+}
+.delivery-current {
+  flex: none;
+  color: var(--accent-ink);
+  font-size: var(--fs-micro);
+  white-space: nowrap;
+}
+.delivery-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 60px;
+  height: 32px;
+  margin: 0 8px 0 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: var(--w-med) var(--fs-meta) var(--ui);
+  cursor: pointer;
+}
+.delivery-more:hover, .delivery-more[aria-expanded="true"] {
+  background: var(--float-hi);
+  color: var(--text);
+}
+.delivery-more svg {
+  width: 14px;
+  height: 14px;
+}
+.delivery-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 200px;
+  max-width: calc(100vw / var(--zoom, 1) - 12px);
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md, 8px);
+  background: var(--float);
+  color: var(--text);
+  box-shadow: var(--shadow-float);
+}
+.delivery-menu button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font: var(--fs-ui) var(--ui);
+  text-align: start;
+  cursor: pointer;
+}
+.delivery-menu button:hover:not(:disabled), .delivery-menu button:focus-visible {
+  background: var(--float-hi);
+  outline: none;
+}
+.delivery-menu button:disabled { color: var(--muted); cursor: default; }
+.delivery-menu svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--muted);
+}
+.delivery-feedback {
+  grid-column: 1 / -1;
+  padding: 0 12px 10px 54px;
+  font-size: var(--fs-meta);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.delivery-feedback[data-kind="error"] {
+  color: var(--err-ink);
+}

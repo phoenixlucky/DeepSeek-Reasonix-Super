@@ -1,7 +1,7 @@
 import { memo, useState } from "react";
 import { t } from "../../i18n";
 import type { RememberedFact } from "../../state/session";
-import { Sym } from "../Sym";
+import { LineRow } from "./LineRow";
 
 // Saving a fact is the only tool call that changes what the agent will do in
 // later sessions, and it happens without being asked. Left as an ordinary step
@@ -29,29 +29,19 @@ export const RememberCard = memo(function RememberCard({
     onForget(m.name);
   };
   return (
-    <div className="call" data-k="mem" data-gone={forgotten ? "" : undefined}>
-      <div className="g">
-        <Sym glyph="◇" />
-        <span className="line" />
-      </div>
-      <div className="c">
-        <div className="hl">
-          <span className="nm">{t(forgotten ? "已经忘掉" : "记住了")}</span>
-          <span className="tag">{t("记忆")}</span>
-          <span className="aside">
-            {SCOPE[m.scope] ?? m.scope} · {ACTIVATION[m.activation] ?? m.activation}
-          </span>
-          {!forgotten && (
-            <button className="act" data-action="memory.forget" disabled={busy} onClick={forget}>
-              {t(busy ? "忘掉中…" : "忘记")}
-            </button>
-          )}
-        </div>
-        <div className="out remember">
-          <span className="ti">{m.title}</span>
-          {m.description && <span className="ds">{m.description}</span>}
-        </div>
-      </div>
-    </div>
+    <LineRow
+      glyph="◇"
+      gone={forgotten}
+      title={t(forgotten ? "已经忘掉" : "记住了")}
+      subject={m.title}
+      subjectTitle={m.title}
+      meta={`${t(SCOPE[m.scope] ?? m.scope)} · ${t(ACTIVATION[m.activation] ?? m.activation)}`}
+      action={!forgotten && (
+        <button className="act" data-action="memory.forget" data-target={m.name} disabled={busy} onClick={forget}>
+          {t(busy ? "忘掉中…" : "忘记")}
+        </button>
+      )}
+      detail={m.description || undefined}
+    />
   );
 });

@@ -49,7 +49,15 @@ func (c *Controller) interceptInputReceive(ctx context.Context, input string) (t
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Turn blocked by an extension.", Detail: result.BlockReason})
 		return input, true, nil
 	}
-	return payload.Text, false, nil
+	text = payload.Text
+	if len(payload.Context) > 0 {
+		framed, note := frameExtensionContext(d, payload)
+		text += "\n\n" + framed
+		if note != "" {
+			c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: note})
+		}
+	}
+	return text, false, nil
 }
 
 // extensionSessionPayloadEvent broadcasts one session.* point with an

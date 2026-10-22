@@ -86,6 +86,10 @@ func (s *Server) installProviderPreset(w http.ResponseWriter, r *http.Request) {
 	if !storeProviderEntries(w, known, preset.Entries, body.APIKey, false) {
 		return
 	}
+	if err := s.leaveNoProvider(r.Context(), preset.Entries...); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, map[string]any{"names": created})
 }
 

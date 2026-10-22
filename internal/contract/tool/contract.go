@@ -14,6 +14,7 @@ type ContractEntry struct {
 	Description string
 	ReadOnly    bool
 	Schema      json.RawMessage
+	MCP         *MCPBinding `json:"-"` // Host identity; excluded from serialized contracts.
 	// CapabilityAliases are the extra capability ids this tool answers to.
 	// Omitted when empty so a tool without aliases keeps its contract bytes.
 	CapabilityAliases []string `json:",omitempty"`
@@ -37,11 +38,16 @@ func contractEntriesFromTools(tools []Tool, canonical map[string]json.RawMessage
 		if a, ok := t.(CapabilityAliased); ok {
 			aliases = a.CapabilityAliases()
 		}
+		var mcp *MCPBinding
+		if binding, ok := MCPBindingFor(t); ok {
+			mcp = &binding
+		}
 		entries = append(entries, ContractEntry{
 			Name:              t.Name(),
 			Description:       strings.TrimSpace(t.Description()),
 			ReadOnly:          t.ReadOnly(),
 			Schema:            schema,
+			MCP:               mcp,
 			CapabilityAliases: aliases,
 		})
 	}

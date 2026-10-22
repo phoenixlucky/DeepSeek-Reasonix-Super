@@ -1,6 +1,20 @@
 // English for the cloud backup section under Settings > Account.
 export const EN_BACKUP: Record<string, string> = {
   "云备份": "Cloud backup",
+  "导出与导入配置": "Export and import config",
+  "不用账号：把本机的模型、扩展、记忆等配置加密导出成一个文件，换机器时再导入。":
+    "No account needed: export this machine's models, extensions, memory and other setup as one encrypted file, and import it on another machine.",
+  "配置文件的导出与导入只在本机窗口可用。": "Exporting and importing a config file is only available in this machine's own window.",
+  "已导出。": "Exported.",
+  "已导出。{n} 个文件过大或无法读取，未包含在内。": "Exported. {n} files were too large or unreadable and are not included.",
+  "导出的文件用你设置的口令在本机加密，不含明文。忘记口令就无法打开；密钥只有在勾选后才会写进文件。":
+    "The file is encrypted on this machine with your passphrase and holds no plain text. Without the passphrase it cannot be opened; keys go into it only if you tick them.",
+  "导出内容": "What to export",
+  "默认不导出。勾选后密钥会随文件一起加密，拿到文件和口令的人就能使用它们":
+    "Off by default. If ticked, keys are encrypted into the file, and anyone with the file and the passphrase can use them",
+  "正在加密…": "Encrypting…",
+  "导出到文件…": "Export to file…",
+  "从文件导入…": "Import from file…",
   "把本机的模型、扩展、记忆等配置加密保存到账号，换机器或重装后按项恢复。":
     "Encrypt this machine's models, extensions, memory and other setup into your account, and restore it item by item on a new machine or after a reinstall.",
   "模型与界面设置": "Models and interface",

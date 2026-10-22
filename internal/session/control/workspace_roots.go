@@ -26,6 +26,7 @@ const (
 	RootCoveredAlready = config.RootCoveredAlready
 	RootTooBroad       = config.RootTooBroad
 	RootProtected      = config.RootProtected
+	RootSkillStore     = config.RootSkillStore
 )
 
 // WorkspaceRootError carries the refusal as an identity a frontend can map.
@@ -44,6 +45,28 @@ func (c *Controller) WorkspaceRoots() (WorkspaceRoots, error) {
 	for _, dir := range grant.AllowWrite {
 		if filepath.IsAbs(dir) {
 			out.Extra = append(out.Extra, dir)
+		}
+	}
+	return out, nil
+}
+
+// ReadableExtraRoots is the granted extra roots that still pass the vetting a
+// grant had to pass when it was stored. A hand-edited grant naming a protected
+// or forbidden folder is still listed by WorkspaceRoots, so the person can remove
+// it, but nothing may be read through it.
+func (c *Controller) ReadableExtraRoots() ([]string, error) {
+	roots, err := c.WorkspaceRoots()
+	if err != nil || len(roots.Extra) == 0 {
+		return nil, err
+	}
+	cfg, err := config.LoadForRootReadOnly(roots.Primary)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, dir := range roots.Extra {
+		if _, err := cfg.VetReadableRoot(roots.Primary, dir); err == nil {
+			out = append(out, dir)
 		}
 	}
 	return out, nil

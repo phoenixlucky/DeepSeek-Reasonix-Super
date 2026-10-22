@@ -44,13 +44,23 @@ func describeModel(e *config.ProviderEntry, into *modelEntry) {
 // vendorOf names the endpoint two config entries share. One host reached under
 // two protocols is one service with two routes, and a picker listing them as
 // separate providers shows the same model twice with nothing to choose between.
+// A port that is not the scheme's default names a different server, so it stays.
 func vendorOf(baseURL string) string {
 	u, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil {
 		return ""
 	}
-	return strings.ToLower(u.Hostname())
+	host := strings.ToLower(u.Hostname())
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	if port := u.Port(); port != "" && port != defaultPort[strings.ToLower(u.Scheme)] {
+		host += ":" + port
+	}
+	return host
 }
+
+var defaultPort = map[string]string{"http": "80", "https": "443"}
 
 // capabilitiesFor resolves one configured model back through the config so the
 // per-model price and override layers apply. It answers nothing when resolution

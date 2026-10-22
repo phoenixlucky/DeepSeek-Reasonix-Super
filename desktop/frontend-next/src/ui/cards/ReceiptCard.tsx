@@ -29,6 +29,8 @@ function gapPhrase(kind: string): string {
     case "unverified_change": return t("有改动；没有主机能读作证据的检查");
     case "unreviewed_change": return t("改动后未再检查");
     case "declared_unverified": return t("自己申报未验证");
+    case "mod_effects_unobserved": return t("有 Claude Code mod 在运行；它写了什么不在主机观测范围内");
+    case "workspace_claim_yielded": return t("你在等待期间，另一个会话改动了本会话占用的路径；之前读到的内容可能已过时");
     default: return kind;
   }
 }
@@ -72,7 +74,6 @@ export function ReceiptCard({ r }: { r: Receipt }) {
     <div className="call" data-k="host" data-lvl={gaps.length > 0 ? "warn" : undefined}>
       <div className="g">
         <Sym glyph="✓" />
-        <span className="line" />
       </div>
       <div className="c">
         <div className="hl">

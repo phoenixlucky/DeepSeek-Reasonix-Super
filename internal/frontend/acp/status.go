@@ -55,15 +55,6 @@ type SessionRuntimeState struct {
 	Sandbox     SessionSandboxState `json:"sandbox"`
 }
 
-// SessionRuntimeStateParams identifies the exact controller configuration whose
-// effective policy is being reported. Model/profile switches rebuild the
-// controller, so status must be recomputed from the same resolved inputs.
-type SessionRuntimeStateParams struct {
-	Cwd            string
-	Model          string
-	RuntimeProfile string
-}
-
 // SessionRuntimeStateProvider exposes effective process/session policy without
 // coupling the ACP adapter to Reasonix configuration internals.
 type SessionRuntimeStateProvider interface {
@@ -697,7 +688,7 @@ func (s *service) sessionStatus(_ context.Context, raw json.RawMessage) (any, er
 }
 
 func (s *service) publishStatus(sess *acpSession, eventName string) {
-	if sess == nil {
+	if sess == nil || !s.statusUpdatesSupported() {
 		return
 	}
 	status := sess.statusSnapshot()

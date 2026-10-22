@@ -555,7 +555,7 @@ func (t *Tool) configPath(scope string) string {
 			return p
 		}
 	}
-	return filepath.Join(t.root, "reasonix.toml")
+	return config.ProjectConfigPath(t.root)
 }
 
 func (t *Tool) normalizeScope(scope string) (string, bool) {

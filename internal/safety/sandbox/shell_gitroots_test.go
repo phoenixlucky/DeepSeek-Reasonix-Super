@@ -196,7 +196,61 @@ func TestBashThatRunsIsNotAFallback(t *testing.T) {
 }
 
 func TestProbeTimeoutAllowsAColdStart(t *testing.T) {
-	if bashProbeTimeout < 10*time.Second {
-		t.Fatalf("a bash probe that gives up before 10s drops the session's bash on a slow first launch: %v", bashProbeTimeout)
+	if bashProbeTimeout*bashProbeAttempts < 10*time.Second {
+		t.Fatalf("a bash probe that gives up before 10s drops the session's bash on a slow first launch: %v x %d", bashProbeTimeout, bashProbeAttempts)
+	}
+}
+
+func TestFallbackWarningPrintsThePathAsWritten(t *testing.T) {
+	var warn strings.Builder
+	warnBashFallback(&warn, Shell{Kind: ShellPowerShell, Path: `C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe`, Fallback: FallbackProbeTimeout})
+	if !strings.Contains(warn.String(), `at "C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe".`) || strings.Contains(warn.String(), `\\`) {
+		t.Fatalf("path is escaped in the warning: %q", warn.String())
+	}
+	warn.Reset()
+	warnBashFallback(&warn, Shell{Kind: ShellPowerShell, Path: "C:\\x\x1b[31m\npwsh.exe", Fallback: FallbackProbeTimeout})
+	if strings.ContainsAny(warn.String()[:len(warn.String())-1], "\x1b\n") {
+		t.Fatalf("a control character in the path reaches the notice: %q", warn.String())
+	}
+}
+
+func TestProbeRetriesOnlyAnAttemptThatTimedOut(t *testing.T) {
+	const p = `C:\fake\retry\bash.exe`
+	t.Cleanup(func() { bashProbeFailures.Delete(p) })
+	script := func(outcomes ...FallbackReason) (func(string) FallbackReason, *int) {
+		n := new(int)
+		return func(string) FallbackReason {
+			o := outcomes[min(*n, len(outcomes)-1)]
+			*n++
+			return o
+		}, n
+	}
+	cases := []struct {
+		name     string
+		outcomes []FallbackReason
+		wantOK   bool
+		wantRuns int
+		wantWhy  FallbackReason
+	}{
+		{"hang then answer", []FallbackReason{FallbackProbeTimeout, FallbackNone}, true, 2, FallbackNone},
+		{"hangs every time", []FallbackReason{FallbackProbeTimeout}, false, bashProbeAttempts, FallbackProbeTimeout},
+		{"exits non-zero", []FallbackReason{FallbackProbeFailed}, false, 1, FallbackProbeFailed},
+		{"answers at once", []FallbackReason{FallbackNone}, true, 1, FallbackNone},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bashProbeFailures.Delete(p)
+			attempt, runs := script(tc.outcomes...)
+			if got := probeWithRetry(p, attempt); got != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", got, tc.wantOK)
+			}
+			if *runs != tc.wantRuns {
+				t.Fatalf("launched %d times, want %d", *runs, tc.wantRuns)
+			}
+			v, _ := bashProbeFailures.Load(p)
+			if tc.wantWhy == FallbackNone && v != nil || tc.wantWhy != FallbackNone && v != tc.wantWhy {
+				t.Fatalf("recorded failure = %v, want %q", v, tc.wantWhy)
+			}
+		})
 	}
 }

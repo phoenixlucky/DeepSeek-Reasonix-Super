@@ -19,6 +19,10 @@ func yieldPair(t *testing.T) (a, b *Owner, root string) {
 	if b, err = New(root, locks, nil); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		a.EndRun()
+		b.EndRun()
+	})
 	return a, b, root
 }
 
@@ -40,7 +44,7 @@ func TestYieldLetsAnotherSessionWriteAndResumeQueuesBehindIt(t *testing.T) {
 	if err := within(t, b, []string{file}, 200*time.Millisecond); err == nil {
 		t.Fatal("b wrote a path a still holds")
 	}
-	resume := a.Yield()
+	resume := a.Yield(context.Background())
 	if a.State().Acquired {
 		t.Fatal("a still holds the claim while yielded")
 	}
@@ -48,7 +52,7 @@ func TestYieldLetsAnotherSessionWriteAndResumeQueuesBehindIt(t *testing.T) {
 		t.Fatalf("b blocked behind a yielded claim: %v", err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- resume(context.Background()) }()
+	go func() { _, err := resume(context.Background()); done <- err }()
 	select {
 	case err := <-done:
 		t.Fatalf("resume returned %v while b holds the path", err)
@@ -80,13 +84,13 @@ func TestYieldResumeFailsWithContextWhenCancelled(t *testing.T) {
 	if err := a.AcquirePaths(context.Background(), []string{file}); err != nil {
 		t.Fatal(err)
 	}
-	resume := a.Yield()
+	resume := a.Yield(context.Background())
 	if err := b.AcquirePaths(context.Background(), []string{file}); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := resume(ctx); !errors.Is(err, context.Canceled) {
+	if _, err := resume(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("resume = %v, want context.Canceled", err)
 	}
 	a.EndRun()
@@ -101,27 +105,27 @@ func TestYieldKeepsClaimWhileACallIsWriting(t *testing.T) {
 	file := filepath.Join(root, "x.go")
 	a.BeginRun()
 	b.BeginRun()
-	end, err := a.HoldPaths(context.Background(), []string{file})
+	_, end, err := a.HoldPaths(context.Background(), []string{file})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resume := a.Yield()
+	resume := a.Yield(context.Background())
 	if !a.State().Acquired {
 		t.Fatal("claim was given back under a call that is mid-write")
 	}
 	if err := within(t, b, []string{file}, 200*time.Millisecond); err == nil {
 		t.Fatal("b wrote a path a sibling call is writing")
 	}
-	if err := resume(context.Background()); err != nil {
+	if _, err := resume(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	end()
 	end()
-	resume = a.Yield()
+	resume = a.Yield(context.Background())
 	if a.State().Acquired {
 		t.Fatal("claim kept after the last writing call ended")
 	}
-	if err := resume(context.Background()); err != nil || !a.State().Acquired {
+	if _, err := resume(context.Background()); err != nil || !a.State().Acquired {
 		t.Fatalf("resume = %v, acquired = %v", err, a.State().Acquired)
 	}
 	a.EndRun()
@@ -131,15 +135,15 @@ func TestYieldKeepsClaimWhileACallIsWriting(t *testing.T) {
 func TestYieldWithoutAClaimIsANoOp(t *testing.T) {
 	a, _, _ := yieldPair(t)
 	a.BeginRun()
-	resume := a.Yield()
-	if err := resume(context.Background()); err != nil {
+	resume := a.Yield(context.Background())
+	if _, err := resume(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if a.State().Acquired {
 		t.Fatal("resume took a claim nobody asked for")
 	}
 	var nilOwner *Owner
-	if err := nilOwner.Yield()(context.Background()); err != nil {
+	if _, err := nilOwner.Yield(context.Background())(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -151,12 +155,12 @@ func TestYieldResumeRestoresTheWholeWorkspaceClaim(t *testing.T) {
 	if err := a.AcquireWrite(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	resume := a.Yield()
+	resume := a.Yield(context.Background())
 	if err := b.AcquirePaths(context.Background(), []string{filepath.Join(root, "y.go")}); err != nil {
 		t.Fatal(err)
 	}
 	b.EndRun()
-	if err := resume(context.Background()); err != nil {
+	if _, err := resume(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	b.BeginRun()
@@ -175,9 +179,9 @@ func TestNestedYieldsRetakeTheClaimOnlyWhenTheLastWaiterResumes(t *testing.T) {
 	if err := a.AcquirePaths(context.Background(), []string{file}); err != nil {
 		t.Fatal(err)
 	}
-	first := a.Yield()
-	second := a.Yield()
-	if err := first(context.Background()); err != nil {
+	first := a.Yield(context.Background())
+	second := a.Yield(context.Background())
+	if _, err := first(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if a.State().Acquired {
@@ -187,10 +191,10 @@ func TestNestedYieldsRetakeTheClaimOnlyWhenTheLastWaiterResumes(t *testing.T) {
 		t.Fatalf("b blocked while every waiter is yielded: %v", err)
 	}
 	b.EndRun()
-	if err := second(context.Background()); err != nil {
+	if _, err := second(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := second(context.Background()); err != nil {
+	if _, err := second(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if !a.State().Acquired {
@@ -208,7 +212,7 @@ func TestYieldDoesNotSplitTheAccountOfOneHold(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 3 {
-		if err := a.Yield()(context.Background()); err != nil {
+		if _, err := a.Yield(context.Background())(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 	}

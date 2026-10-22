@@ -36,3 +36,18 @@ export function useLaunchHealth(port: AgentPort | null, setup: ProviderSetup | n
     return () => clearTimeout(timer);
   }, [port, setup, welcomed]);
 }
+
+/** Reads what the active machine says about setup and the welcome. A machine
+ *  that cannot answer has met the app before as far as we care: the sequence
+ *  must never be what stands between someone and their session. */
+export function useFirstRunRead(port: AgentPort | null, setSetup: (v: ProviderSetup | null) => void, setWelcomed: (v: boolean) => void) {
+  useEffect(() => {
+    if (!port) return;
+    let alive = true;
+    port.providerSetup().then((v) => alive && setSetup(v)).catch(() => alive && setSetup(null));
+    port.welcomeSeen().then((v) => alive && setWelcomed(v)).catch(() => alive && setWelcomed(true));
+    return () => {
+      alive = false;
+    };
+  }, [port, setSetup, setWelcomed]);
+}

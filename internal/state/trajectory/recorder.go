@@ -84,6 +84,7 @@ type MemoryRecall struct {
 	OmittedByLimit  int               `json:"omitted_by_limit"`
 	OmittedByBudget int               `json:"omitted_by_budget"`
 	Suppressed      string            `json:"suppressed,omitempty"`
+	SuppressionCode string            `json:"suppression_code,omitempty"`
 	ShadowHits      []MemoryRecallHit `json:"shadow_hits,omitempty"`
 }
 
@@ -189,6 +190,8 @@ type CompletionReport struct {
 	GapKinds                  []string `json:"gap_kinds,omitempty"`
 	ClaimsVerified            int      `json:"claims_verified,omitempty"`
 	ClaimsUnbacked            int      `json:"claims_unbacked,omitempty"`
+	OriginRecorded            int      `json:"origin_recorded,omitempty"`
+	OriginMatched             int      `json:"origin_matched,omitempty"`
 }
 
 // EvidenceBundle mirrors event.EvidenceBundleAudit with stable keys.
@@ -486,6 +489,8 @@ func (r *Recorder) RecordCompletionReport(a event.CompletionReportAudit) {
 		GapKinds:                  a.GapKinds,
 		ClaimsVerified:            a.ClaimsVerified,
 		ClaimsUnbacked:            a.ClaimsUnbacked,
+		OriginRecorded:            a.OriginRecorded,
+		OriginMatched:             a.OriginMatched,
 	}})
 	event.RecordCompletionReport(r.inner, a)
 }
@@ -513,7 +518,8 @@ func (r *Recorder) RecordMemoryRecall(a event.MemoryRecallAudit) {
 	rec := &MemoryRecall{
 		CharBudget: a.CharBudget, UsedChars: a.UsedChars, Omitted: a.Omitted,
 		OmittedByLimit: a.OmittedByLimit, OmittedByBudget: a.OmittedByBudget,
-		Suppressed: a.Suppressed,
+		Suppressed:      a.Suppressed,
+		SuppressionCode: a.SuppressionCode,
 	}
 	for _, hit := range a.Hits {
 		rec.Hits = append(rec.Hits, MemoryRecallHit{

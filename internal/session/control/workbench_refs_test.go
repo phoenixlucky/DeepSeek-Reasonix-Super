@@ -61,7 +61,7 @@ func TestWorkbenchReferenceRoutingPreservesQuotesAndShowsNamespaceCollisions(t *
 		t.Fatal(err)
 	}
 	root := testenv.TempDir(t)
-	c := &Controller{controllerDeps: controllerDeps{workspaceRoot: root, mcp: newMcpManager(host, nil, t.Context(), 0)}}
+	c := &Controller{controllerDeps: controllerDeps{workspaceRoot: root, mcp: newMcpManager(host, nil, t.Context(), 0, nil)}}
 	for _, tc := range []struct {
 		path, token string
 		folder      bool

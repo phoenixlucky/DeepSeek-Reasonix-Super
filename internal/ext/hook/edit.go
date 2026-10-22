@@ -13,24 +13,27 @@ import (
 	fileencoding "reasonix/internal/base/fileutil/encoding"
 )
 
-// SettingsPath returns the file a scope's hooks are written to. A project scope
-// with no root has no path — the caller must refuse rather than fall back to the
-// global file, which would silently widen a project rule to every project.
-func SettingsPath(scope Scope, projectRoot string) string {
+// SettingsPathFor resolves the editor against the same home as hook loading.
+func SettingsPathFor(scope Scope, opts LoadOptions) string {
 	if scope == ScopeProject {
-		if strings.TrimSpace(projectRoot) == "" {
+		if strings.TrimSpace(opts.ProjectRoot) == "" {
 			return ""
 		}
-		return ProjectSettingsPath(projectRoot)
+		return ProjectSettingsPath(opts.ProjectRoot)
 	}
-	return GlobalSettingsPath("")
+	return filepath.Join(reasonixHomeForOptions(opts), SettingsFilename)
 }
 
 // Save replaces the hooks block of one scope's settings.json. Every other key in
 // that file is preserved: settings.json is shared with unrelated configuration,
 // and a hooks editor has no business dropping it.
 func Save(scope Scope, projectRoot string, settings Settings) error {
-	path := SettingsPath(scope, projectRoot)
+	return SaveFor(scope, LoadOptions{ProjectRoot: projectRoot}, settings)
+}
+
+// SaveFor writes the scope the runtime loaded, preserving unrelated settings.
+func SaveFor(scope Scope, opts LoadOptions, settings Settings) error {
+	path := SettingsPathFor(scope, opts)
 	if path == "" {
 		return fmt.Errorf("no project workspace to save project hooks into")
 	}
@@ -79,16 +82,26 @@ func normalizedHooks(settings Settings) (map[Event][]HookConfig, error) {
 					return nil, fmt.Errorf("hooks.%s[%d] match %q: %w", event, i, strings.TrimSpace(cfg.Match), err)
 				}
 			}
+			cfg = NormalizeConfig(cfg)
 			hooks[event] = append(hooks[event], HookConfig{
-				Match:       strings.TrimSpace(cfg.Match),
-				Command:     NormalizeCommand(cmd),
-				Description: strings.TrimSpace(cfg.Description),
+				Match:       cfg.Match,
+				Command:     cfg.Command,
+				Description: cfg.Description,
 				Timeout:     cfg.Timeout,
-				Cwd:         strings.TrimSpace(cfg.Cwd),
+				Cwd:         cfg.Cwd,
 			})
 		}
 	}
 	return hooks, nil
+}
+
+// NormalizeConfig applies settings-file normalization without dropping metadata.
+func NormalizeConfig(cfg HookConfig) HookConfig {
+	cfg.Match = strings.TrimSpace(cfg.Match)
+	cfg.Command = NormalizeCommand(strings.TrimSpace(cfg.Command))
+	cfg.Description = strings.TrimSpace(cfg.Description)
+	cfg.Cwd = strings.TrimSpace(cfg.Cwd)
+	return cfg
 }
 
 // DryRunResult is one trial invocation, in the terms the user asked the question

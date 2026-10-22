@@ -223,7 +223,7 @@ func TestListSkipsNonMdFiles(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("not a memory"), 0o644)
 	os.WriteFile(filepath.Join(dir, "MEMORY.md"), []byte("# Memory\n"), 0o644)
 	s := Store{Dir: dir}
-	list := s.List()
+	list := mustStore(t, s).List()
 	if len(list) != 1 {
 		t.Fatalf("want 1 memory, got %d", len(list))
 	}
@@ -234,7 +234,7 @@ func TestListSkipsNonMdFiles(t *testing.T) {
 
 func TestListEmptyDir(t *testing.T) {
 	s := Store{Dir: testenv.TempDir(t)}
-	if list := s.List(); len(list) != 0 {
+	if list := mustStore(t, s).List(); len(list) != 0 {
 		t.Errorf("empty dir should return empty list, got %d", len(list))
 	}
 }
@@ -245,7 +245,7 @@ func TestListSortedByName(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, name+".md"), []byte("---\nname: "+name+"\n---\nbody"), 0o644)
 	}
 	s := Store{Dir: dir}
-	list := s.List()
+	list := mustStore(t, s).List()
 	if len(list) != 3 {
 		t.Fatalf("want 3, got %d", len(list))
 	}
@@ -281,7 +281,7 @@ func TestSaveCreatesDir(t *testing.T) {
 func TestStorePath(t *testing.T) {
 	dir := filepath.Join(testenv.TempDir(t), "memory")
 	s := Store{Dir: dir}
-	got := s.Path("My Fact")
+	got := mustStore(t, s).Path("My Fact")
 	if want := filepath.Join(dir, "my-fact.md"); got != want {
 		t.Errorf("Path = %q, want %q", got, want)
 	}

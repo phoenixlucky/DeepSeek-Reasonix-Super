@@ -34,9 +34,17 @@ async function open(port = new MockPort()) {
     emit = onEvent;
     return subscribe(onEvent, onGap, bootstrap);
   });
+  let running = false;
+  const readStatus = port.status.bind(port);
+  vi.spyOn(port, "status").mockImplementation(async () => ({ ...(await readStatus()), running }));
   render(<Pane {...props} port={port as AgentPort} />);
   await act(async () => {});
-  const send = (ev: object) => act(() => emit(ev as WireEvent));
+  const send = (ev: object) => act(() => {
+    const kind = (ev as { kind?: string }).kind;
+    if (kind === "turn_started") running = true;
+    if (kind === "turn_done") running = false;
+    emit(ev as WireEvent);
+  });
   return { port, send };
 }
 

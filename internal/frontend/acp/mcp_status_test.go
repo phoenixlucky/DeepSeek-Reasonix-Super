@@ -50,7 +50,7 @@ func TestMCPStatusExtensionReportsSessionFailure(t *testing.T) {
 	factory := &mcpStatusFactory{}
 	client, stop := startServer(t, factory)
 	defer stop()
-	resp := client.call(t, "initialize", InitializeParams{ProtocolVersion: 1})
+	resp := client.call(t, "initialize", InitializeParams{ProtocolVersion: 1, ClientCapabilities: statusUpdatesCaps})
 	var initialized InitializeResult
 	if err := json.Unmarshal(resp.Result, &initialized); err != nil {
 		t.Fatal(err)
@@ -89,7 +89,7 @@ func TestMCPStatusExtensionReportsLaunchApprovalAsPending(t *testing.T) {
 	factory := &mcpStatusFactory{}
 	client, stop := startServer(t, factory)
 	defer stop()
-	client.call(t, "initialize", InitializeParams{ProtocolVersion: 1})
+	client.call(t, "initialize", InitializeParams{ProtocolVersion: 1, ClientCapabilities: statusUpdatesCaps})
 	id := openStatusSession(t, client, testenv.TempDir(t))
 	waitMCPStatusUpdate(t, client)
 	factory.host.RecordLaunchApprovalRequired(plugin.Spec{Name: "project-tools", Type: "stdio"})

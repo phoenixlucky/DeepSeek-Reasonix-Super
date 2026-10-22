@@ -38,9 +38,7 @@ func TestPipeStatusProbeAppliesOnlyToMaskedVerification(t *testing.T) {
 // The wrapper must keep the command's own exit status and report the stage
 // statuses bash saw, or it would trade one wrong answer for another.
 func TestPipeStatusProbePreservesExitStatusAndReports(t *testing.T) {
-	if _, err := exec.LookPath("bash"); err != nil {
-		t.Skip("bash unavailable")
-	}
+	bashPath := testBashPath(t)
 	probe := testProbe(t, "go test ./... | tail -5")
 	if !probe.active() {
 		t.Fatal("probe inactive")
@@ -60,7 +58,7 @@ func TestPipeStatusProbePreservesExitStatusAndReports(t *testing.T) {
 		{"failing tail", "true | sh -c 'exit 4'", 4, []int{0, 4}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := exec.Command("bash", "-c", probe.wrap(tc.command)).CombinedOutput()
+			out, err := exec.Command(bashPath, "-c", probe.wrap(tc.command)).CombinedOutput()
 			code := 0
 			var exitErr *exec.ExitError
 			switch {
@@ -113,4 +111,16 @@ func TestPipeStatusProbeCoversCheckThenPipedSuite(t *testing.T) {
 	if testProbe(t, "cat log | tail && go test ./... | tail").active() {
 		t.Error("equal-width candidates must not be probed")
 	}
+}
+
+// testBashPath is the bash the product itself would run: PATH order puts a WSL
+// launcher (System32\bash.exe) ahead of Git's bash on some Windows machines,
+// and that one runs the command in a Linux distro instead.
+func testBashPath(t *testing.T) string {
+	t.Helper()
+	sh := sandbox.ResolveShell("bash", "", nil)
+	if sh.Kind != sandbox.ShellBash {
+		t.Skip("no usable bash")
+	}
+	return sh.Path
 }

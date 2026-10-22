@@ -1,4 +1,5 @@
 "use strict";
+const { handOver } = require("./launcher");
 
 // The acts the kernel asks of the application, because only this process can do
 // them. relaunch and quit are a handover and arrive in that order, so arming
@@ -7,9 +8,11 @@
 //
 // Nothing is answered. Each is performed by ending or by showing, so an
 // acknowledgement would have to come from a process on its way out.
-function actHandler({ app, showWindow }) {
+function actHandler({ app, showWindow, log = () => {} }) {
   return (act) => {
+    if (act === "show" || act === "relaunch" || act === "quit") log(`kernel act: ${act}`);
     if (act === "relaunch") {
+      handOver();
       app.relaunch();
       return;
     }

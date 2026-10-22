@@ -52,13 +52,18 @@ export interface RemoteConnection {
 interface Pending {
   id: string;
   method: string;
-  command: Record<string, unknown>;
+  // How many commands make up this request and how to build one: a request too
+  // large for a message crosses as numbered parts, built as they are sent.
+  count: number;
+  command: (index: number) => Record<string, unknown>;
   sentTo: RemoteConnection | null;
   chunks: Map<number, string>;
   status?: number;
   contentType?: string;
   etag?: string;
   timer?: ReturnType<typeof setTimeout>;
+  // When this request last made progress: sent whole, or one more chunk of its answer.
+  progressAt?: number;
   resolve: (value: Response) => void;
   reject: (reason: unknown) => void;
 }
@@ -69,6 +74,65 @@ export interface RemoteLinkOptions {
 }
 
 const MAX_RETRY_AFTER_MS = 2 * 60 * 1000;
+
+// The desktop answers one request at a time, so a request can wait behind others
+// it knows nothing about. While the link is delivering their answers it is waited
+// for, up to this long without a word of its own.
+const MAX_QUEUED_MS = 5 * 60 * 1000;
+
+// The desktop reads at most 64 KiB from the relay in one message and closes the
+// link on a larger one, taking every other request on it down too. A request
+// that would seal past this is refused here instead of being sent. The budget
+// leaves the relay's own wrapping room under that limit.
+const WIRE_BUDGET = 62 * 1024;
+// What sealing adds around the command: the session name and sequence it is
+// stamped with, the AES-GCM tag, and the envelope's own keys.
+const SEAL_OVERHEAD = 16 + 96 + 120;
+
+/** The most body bytes a request to this path can carry over the link. */
+export function maxRequestBody(path: string): number {
+  const plain = Math.floor(((WIRE_BUDGET - SEAL_OVERHEAD) * 3) / 4);
+  const fixed = 160 + path.length;
+  return Math.max(0, Math.floor(((plain - fixed) * 3) / 4));
+}
+
+// A body larger than one message crosses as parts of this many bytes, to a
+// desktop that says it can put them back together ("upload" in its features),
+// up to the most it will hold. Both numbers are the desktop's own limits.
+const UPLOAD_PART = 24 * 1024;
+const MAX_UPLOAD = 16 * 1024 * 1024;
+const BUFFER_HIGH = 1024 * 1024;
+
+async function requestBytes(request: Request): Promise<Uint8Array> {
+  const uploadSignal: AbortSignal = request.signal;
+  uploadSignal.throwIfAborted();
+  if (!request.body) return new Uint8Array();
+  const reader = request.body.getReader();
+  const abort = () => { void reader.cancel(uploadSignal.reason); };
+  uploadSignal.addEventListener("abort", abort, { once: true });
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      uploadSignal.throwIfAborted();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_UPLOAD) {
+        await reader.cancel();
+        throw new Error(t("这次发送的内容太大：远程控制最多只能传 {mb} MB。请换一个更小的文件。", { mb: MAX_UPLOAD / (1024 * 1024) }));
+      }
+      chunks.push(value);
+    }
+  } finally {
+    uploadSignal.removeEventListener("abort", abort);
+    reader.releaseLock();
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.length; }
+  return body;
+}
 
 const DEFAULTS: RemoteLinkOptions = {
   requestTimeoutMs: 30_000,
@@ -127,14 +191,31 @@ export class RemoteLink {
   async fetch(request: Request): Promise<Response> {
     if (this.ended) throw new Error(t("远程连接已断开，请重新连接。"));
     const id = crypto.randomUUID();
-    const body = new Uint8Array(await request.arrayBuffer());
-    const command = {
-      v: 1, type: "desktop.request", id, method: request.method,
-      path: request.url.slice(location.origin.length), body: bytesToBase64(body),
-    };
+    const body = await requestBytes(request);
+    const path = request.url.slice(location.origin.length);
+    const room = maxRequestBody(path);
+    const method = request.method;
+    let count = 1;
+    let command: Pending["command"] = () => ({ v: 1, type: "desktop.request", id, method, path, body: bytesToBase64(body) });
+    if (body.length > room) {
+      if (!this.current?.features.includes("upload")) {
+        throw new Error(t("这次发送的内容太大：远程控制每次最多约 {kb} KB（上传文件时约为其四分之三）。请改在电脑上添加，或换一个更小的文件。", { kb: Math.floor(room / 1024) }));
+      }
+      if (body.length > MAX_UPLOAD) {
+        throw new Error(t("这次发送的内容太大：远程控制最多只能传 {mb} MB。请换一个更小的文件。", { mb: MAX_UPLOAD / (1024 * 1024) }));
+      }
+      const parts = Math.ceil(body.length / UPLOAD_PART);
+      count = parts;
+      command = (index) => ({
+        v: 1, type: "desktop.request.part", id, index, total: parts,
+        ...(index === 0 ? { method, path } : {}),
+        body: bytesToBase64(body.subarray(index * UPLOAD_PART, (index + 1) * UPLOAD_PART)),
+      });
+    }
     return new Promise<Response>((resolve, reject) => {
       const entry: Pending = {
-        id, method: request.method.toUpperCase(), command, sentTo: null, chunks: new Map(), resolve, reject,
+        id, method: method.toUpperCase(), count, command,
+        sentTo: null, chunks: new Map(), resolve, reject,
       };
       this.pending.set(id, entry);
       void this.send(entry);
@@ -162,13 +243,27 @@ export class RemoteLink {
   private async sendNow(entry: Pending) {
     const connection = this.current;
     if (!connection || connection.socket.readyState !== WebSocket.OPEN || !this.pending.has(entry.id)) return;
-    const wire = await connection.channel.seal(entry.command);
-    if (this.current !== connection || connection.socket.readyState !== WebSocket.OPEN || !this.pending.has(entry.id)) return;
-    entry.chunks.clear();
-    entry.sentTo = connection;
+    const live = () => this.current === connection && connection.socket.readyState === WebSocket.OPEN && this.pending.has(entry.id);
     clearTimeout(entry.timer);
+    for (let index = 0; index < entry.count; index++) {
+      const wire = await connection.channel.seal(entry.command(index));
+      if (!live()) return;
+      if (index === 0) {
+        entry.chunks.clear();
+        entry.sentTo = connection;
+      }
+      connection.socket.send(wire);
+      // A large upload would otherwise queue all of itself in the socket at once.
+      while (connection.socket.bufferedAmount > BUFFER_HIGH && live()) await new Promise((resolve) => setTimeout(resolve, 20));
+      if (!live()) return;
+    }
+    this.arm(entry);
+  }
+
+  private arm(entry: Pending) {
+    clearTimeout(entry.timer);
+    entry.progressAt = Date.now();
     entry.timer = setTimeout(() => this.timedOut(entry), this.options.requestTimeoutMs);
-    connection.socket.send(wire);
   }
 
   // A desktop that has said nothing at all for a whole request timeout has lost
@@ -179,6 +274,10 @@ export class RemoteLink {
       const stale = this.current;
       this.lost(CLOSE_RESYNC, "Desktop stopped answering");
       try { stale.socket.close(CLOSE_RESYNC, "Resync"); } catch { /* already closing */ }
+      return;
+    }
+    if (Date.now() - (entry.progressAt ?? 0) < MAX_QUEUED_MS) {
+      entry.timer = setTimeout(() => this.timedOut(entry), this.options.requestTimeoutMs);
       return;
     }
     this.pending.delete(entry.id);
@@ -285,7 +384,10 @@ export class RemoteLink {
     pending.contentType = typeof message.contentType === "string" ? message.contentType : pending.contentType;
     pending.etag = typeof message.etag === "string" ? message.etag : pending.etag;
     pending.chunks.set(message.index, message.body);
-    if (message.done !== true) return;
+    if (message.done !== true) {
+      this.arm(pending);
+      return;
+    }
     clearTimeout(pending.timer);
     this.pending.delete(id);
     const headers = new Headers();

@@ -202,7 +202,7 @@ func latestTodoArgsSince(msgs []provider.Message, start int) (string, bool) {
 		for _, v := range slices.Backward(msgs[i].ToolCalls) {
 			tc := v
 			if tc.Name == "todo_write" {
-				return tc.Arguments, true
+				return tc.ExecutionArguments(), true
 			}
 		}
 	}

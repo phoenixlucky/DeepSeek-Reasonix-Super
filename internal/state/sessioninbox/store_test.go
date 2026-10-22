@@ -745,11 +745,11 @@ func TestMoveAndPause(t *testing.T) {
 	if items[0].ID != b.ItemID || items[1].ID != a.ItemID {
 		t.Fatalf("order = %v", items)
 	}
-	if err := s.SetPaused(true); err != nil {
+	if err := s.Pause(PauseUser); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := s.NextQueued(); ok {
-		t.Fatal("paused inbox must not dispatch")
+	if _, ok, err := s.NextQueued(); ok || err != nil {
+		t.Fatalf("paused inbox must not dispatch: ok=%v err=%v", ok, err)
 	}
 }
 

@@ -15,45 +15,14 @@ import (
 	"sync"
 	"time"
 
-	"reasonix/internal/contract/event"
 	"reasonix/internal/contract/provider"
 	"reasonix/internal/ext/extension/uihub"
 	"reasonix/internal/ext/plugin"
 	"reasonix/internal/runtime/delegation"
 	"reasonix/internal/session/control"
 	"reasonix/internal/state/store"
-	"reasonix/internal/tools/builtin"
 	"reasonix/internal/tools/jobs"
 )
-
-// SessionParams is everything a Factory needs to assemble one ACP session's
-// controller. Sink is owned by this package (an updateSink bound to the session
-// id) and must be wired into the controller's event sink; the controller's
-// interactive approval (see control.Controller.EnableInteractiveApproval) then
-// routes "ask" decisions back through that sink as ApprovalRequest events, which
-// the sink forwards to the client over session/request_permission.
-//
-// Cwd roots the session's file tools and bash (built via builtin.Workspace).
-// Model, EffortOverride, and RuntimeProfile are optional session-local selectors
-// from ACP config options. MCPServers are the MCP servers the client asked the
-// agent to connect for this session. OnSessionRecovered is the service's
-// bookkeeping hook for automatic transcript recovery branches (see
-// sessionRecoveredHandler); factories must wire it into the controller they build.
-type SessionParams struct {
-	Cwd                string
-	MCPServers         []plugin.Spec
-	Sink               event.Sink
-	Model              string
-	EffortOverride     *string
-	RuntimeProfile     string
-	OnSessionRecovered func(control.SessionRecoveryInfo) error
-	// FileOverlay and Terminal are non-nil when the client advertised the
-	// matching capability at initialize: file tools then see unsaved editor
-	// buffers, and foreground bash can run in a client-owned terminal.
-	// Factories thread them into the controller's tool assembly.
-	FileOverlay builtin.FileOverlay
-	Terminal    builtin.TerminalRunner
-}
 
 // Factory builds the per-session controller. The composition root (the cli's
 // `reasonix acp` command) implements it by reusing setup()'s assembly: a
@@ -201,29 +170,6 @@ func (s *service) clientCapabilities() ClientCapabilities {
 	return s.clientCaps
 }
 
-// extensionSurfaceSupported reports whether the connected client advertised
-// reasonix.extensionSurface support in its initialize handshake.
-func (s *service) extensionSurfaceSupported() bool {
-	return clientExtensionSurfaceSupported(s.clientCapabilities())
-}
-
-// clientExtensionSurfaceSupported tolerantly parses the client's vendor
-// capability block: _meta["reasonix.io"]["extensionSurface"]["supported"] must
-// be an explicit true. Absent keys, wrong shapes, or a malformed block all
-// mean unsupported — the sink then sends only the text fallback.
-func clientExtensionSurfaceSupported(caps ClientCapabilities) bool {
-	vendor, ok := caps.Meta["reasonix.io"].(map[string]any)
-	if !ok {
-		return false
-	}
-	capability, ok := vendor["extensionSurface"].(map[string]any)
-	if !ok {
-		return false
-	}
-	supported, _ := capability["supported"].(bool)
-	return supported
-}
-
 // bindClientIO fills SessionParams' overlay/terminal fields from the client's
 // declared capabilities. The nil checks keep absent capabilities as nil
 // interface fields (a typed-nil *clientIO must never reach the interface).
@@ -244,6 +190,7 @@ func (s *service) bindClientIO(p *SessionParams, sessionID string) {
 // persistence, turns, approval, and the editor-facing capability surface. It
 // names no checkpoint, memory, skill-authoring or settings port.
 type acpController interface {
+	control.AgentCompositions
 	control.Lifecycle
 	control.TurnControl
 	RunTurnWithRaw(ctx context.Context, input, raw, invokedSkill string) error
@@ -270,11 +217,13 @@ type acpSession struct {
 	transcript string
 	cwd        string
 	mcpServers []plugin.Spec
-	model      string
+	// additionalDirs are the vetted extra workspace roots this session was opened with.
+	additionalDirs []string
+	model          string
 	// nil means use config; non-nil empty string means provider default.
-	effortOverride   *string
-	runtimeProfile   string
-	toolApprovalMode string
+	effortOverride *string
+	runtimeProfile string
+	posture        approvalPosture
 	// runtimeState is the effective planner/sandbox posture captured after CLI
 	// hard overrides. status snapshots never reconstruct it from user config.
 	runtimeState SessionRuntimeState
@@ -534,7 +483,7 @@ func (s *service) emitToolApprovalDrift(ctx context.Context, sess *acpSession) {
 	sess.saveMetaIfPresent()
 }
 
-func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam string, servers []MCPServerSpec, replay bool) (SessionConfigState, error) {
+func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam string, additional []string, servers []MCPServerSpec, replay bool) (SessionConfigState, error) {
 	if err := validateSessionID(method, id); err != nil {
 		return SessionConfigState{}, err
 	}
@@ -546,10 +495,18 @@ func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam 
 	if err != nil {
 		return SessionConfigState{}, &RPCError{Code: ErrInvalidParams, Message: method + ": " + err.Error()}
 	}
+	additionalDirs, rpcErr := vetAdditionalDirs(cwd, additional)
+	if rpcErr != nil {
+		rpcErr.Message = method + ": " + rpcErr.Message
+		return SessionConfigState{}, rpcErr
+	}
 
 	if sess := s.session(id); sess != nil {
 		if sessionstore.IsCleanupPending(sess.transcript) {
 			return SessionConfigState{}, &RPCError{Code: ErrInvalidParams, Message: method + ": unknown session " + id}
+		}
+		if !sameDirs(sess.additionalDirs, additionalDirs) {
+			return SessionConfigState{}, additionalDirsError(method+": the session is open with other additional directories; close it first", AdditionalDirsData{Code: codeAdditionalDirsChanged})
 		}
 		if replay {
 			ctrl := sess.currentCtrl()
@@ -564,18 +521,9 @@ func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam 
 		return cfgState, nil
 	}
 
-	var saved acpSessionMeta
-	persistedPath := ""
-	if dir := s.sessionDir(); dir != "" {
-		persistedPath = resolveTranscriptPath(dir, id)
-		if sessionstore.IsCleanupPending(persistedPath) {
-			return SessionConfigState{}, &RPCError{Code: ErrInvalidParams, Message: method + ": unknown session " + id}
-		}
-		meta, _, metaErr := loadACPMeta(persistedPath)
-		if metaErr != nil {
-			return SessionConfigState{}, &RPCError{Code: ErrInternal, Message: method + ": " + metaErr.Error()}
-		}
-		saved = meta
+	saved, persistedPath, rpcErr := s.persistedSessionMeta(method, id)
+	if rpcErr != nil {
+		return SessionConfigState{}, rpcErr
 	}
 	cfgParams := SessionConfigStateParams{
 		Cwd:            cwd,
@@ -600,9 +548,11 @@ func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam 
 	sink := newUpdateSink(s.conn, id)
 	sink.bindCwd(cwd)
 	sink.bindExtensionSurface(s.extensionSurfaceSupported())
+	sink.bindElicitation(s.clientCapabilities())
 	sessionParams := SessionParams{
 		Cwd:                cwd,
 		MCPServers:         mcpServers,
+		AdditionalDirs:     additionalDirs,
 		Sink:               sink,
 		Model:              cfgState.Model,
 		EffortOverride:     cloneStringPtr(cfgState.EffortOverride),
@@ -610,9 +560,9 @@ func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam 
 		OnSessionRecovered: s.sessionRecoveredHandler(id),
 	}
 	s.bindClientIO(&sessionParams, id)
-	ctrl, err := s.factory.NewSession(ctx, sessionParams)
+	ctrl, err := s.newPersistedSession(ctx, sessionParams, persistedPath)
 	if err != nil {
-		return SessionConfigState{}, &RPCError{Code: ErrInternal, Message: method + ": " + err.Error()}
+		return SessionConfigState{}, newSessionError(method, err)
 	}
 	ctrl.EnableInteractiveApproval()
 	sink.bindApprove(ctrl.Approve)
@@ -645,7 +595,7 @@ func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam 
 	if err := resumeACPControllerForWrite(ctrl, loaded, path, lease); err != nil {
 		return SessionConfigState{}, sessionLeaseBindError(method, err)
 	}
-	toolApprovalMode := normalizeACPToolApprovalMode(saved.ToolApprovalMode)
+	toolApprovalMode, keptApproval := s.restoredPosture(saved.ToolApprovalMode)
 	ctrl.SetToolApprovalMode(toolApprovalMode)
 	modeID := normalizeACPCollaborationMode(saved.CollaborationMode)
 	goalDraftMode := false
@@ -668,28 +618,29 @@ func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam 
 	meta.Model = cfgState.Model
 	meta.EffortOverride = cloneStringPtr(cfgState.EffortOverride)
 	meta.RuntimeProfile = cfgState.RuntimeProfile
-	meta.ToolApprovalMode = toolApprovalMode
+	meta.ToolApprovalMode = firstNonEmpty(keptApproval, toolApprovalMode)
 	meta.CollaborationMode = modeID
-	cfgState = withToolApprovalConfig(cfgState, toolApprovalMode)
+	cfgState = s.withToolApprovalConfig(cfgState, toolApprovalMode)
 	sess := &acpSession{
-		id:               id,
-		ctrl:             ctrl,
-		sink:             sink,
-		transcript:       path,
-		cwd:              meta.Cwd,
-		mcpServers:       clonePluginSpecs(mcpServers),
-		model:            cfgState.Model,
-		effortOverride:   cloneStringPtr(cfgState.EffortOverride),
-		runtimeProfile:   cfgState.RuntimeProfile,
-		toolApprovalMode: toolApprovalMode,
-		runtimeState:     runtimeState,
-		status:           restoreStatusTelemetry(saved.Status),
-		modeID:           modeID,
-		goalDraftMode:    goalDraftMode,
-		title:            meta.Title,
-		createdAt:        meta.CreatedAt,
-		updatedAt:        meta.UpdatedAt,
-		lease:            lease,
+		id:             id,
+		ctrl:           ctrl,
+		sink:           sink,
+		transcript:     path,
+		cwd:            meta.Cwd,
+		mcpServers:     clonePluginSpecs(mcpServers),
+		additionalDirs: additionalDirs,
+		model:          cfgState.Model,
+		effortOverride: cloneStringPtr(cfgState.EffortOverride),
+		runtimeProfile: cfgState.RuntimeProfile,
+		posture:        approvalPosture{mode: toolApprovalMode, kept: keptApproval},
+		runtimeState:   runtimeState,
+		status:         restoreStatusTelemetry(saved.Status),
+		modeID:         modeID,
+		goalDraftMode:  goalDraftMode,
+		title:          meta.Title,
+		createdAt:      meta.CreatedAt,
+		updatedAt:      meta.UpdatedAt,
+		lease:          lease,
 	}
 	s.bindSessionHealthEvents(sess)
 	if err := saveACPMeta(path, sess.meta()); err != nil {
@@ -832,8 +783,10 @@ func (s *service) reloadSessionExtensionsLocked(ctx context.Context, sess *acpSe
 		return nil, &RPCError{Code: ErrInternal, Message: sessionReloadExtensionsMethod + ": session controller does not support rebuild"}
 	}
 	rebuildParams := SessionParams{
+		Composition:        old.CompositionBinding(),
 		Cwd:                cwd,
 		MCPServers:         mcpServers,
+		AdditionalDirs:     sess.additionalDirs,
 		Sink:               sink,
 		Model:              model,
 		EffortOverride:     effortOverride,
@@ -882,8 +835,7 @@ func (s *service) reloadSessionExtensionsLocked(ctx context.Context, sess *acpSe
 		_ = saveACPMeta(sess.transcript, sess.metaLocked())
 	}
 	sess.mu.Unlock()
-	sink.bindApprove(newCtrl.Approve)
-	sink.bindAnswer(newCtrl.AnswerQuestion)
+	s.bindCompositionIO(sess, newCtrl)
 
 	// Release the outgoing controller only after the swap published the
 	// replacement. ReleaseResources (not Close): the session logically
@@ -1021,7 +973,7 @@ func (s *service) rebuildSessionLocked(ctx context.Context, sess *acpSession, cf
 	cwd := sess.cwd
 	modeID := normalizeACPCollaborationMode(sess.modeID)
 	goalDraftMode := sess.goalDraftMode
-	toolApprovalMode := normalizeACPToolApprovalMode(sess.toolApprovalMode)
+	toolApprovalMode := normalizeACPToolApprovalMode(sess.posture.mode)
 	if strings.TrimSpace(cfgState.RuntimeProfile) == "" {
 		cfgState.RuntimeProfile = sess.runtimeProfile
 	}
@@ -1046,14 +998,13 @@ func (s *service) rebuildSessionLocked(ctx context.Context, sess *acpSession, cf
 	// SessionPath is controller-locked, so reading it off sess.mu is safe.
 	prevPath := cur.SessionPath()
 	carried := cur.History()
-	carriedGoal := ""
-	if cur.GoalStatus() == control.GoalStatusRunning {
-		carriedGoal = cur.Goal()
-	}
+	carriedGoal := runningGoal(cur)
 
 	rebuildParams := SessionParams{
+		Composition:        cur.CompositionBinding(),
 		Cwd:                cwd,
 		MCPServers:         mcpServers,
+		AdditionalDirs:     sess.additionalDirs,
 		Sink:               sink,
 		Model:              cfgState.Model,
 		EffortOverride:     cloneStringPtr(cfgState.EffortOverride),
@@ -1069,7 +1020,7 @@ func (s *service) rebuildSessionLocked(ctx context.Context, sess *acpSession, cf
 	}
 	newCtrl.EnableInteractiveApproval()
 	runtimeState, err := s.sessionRuntimeState(ctx, SessionRuntimeStateParams{
-		Cwd: cwd, Model: cfgState.Model, RuntimeProfile: cfgState.RuntimeProfile,
+		Cwd: cwd, Model: cfgState.Model, RuntimeProfile: cfgState.RuntimeProfile, AdditionalDirs: sess.additionalDirs,
 	})
 	if err != nil {
 		newCtrl.ReleaseResources()
@@ -1137,7 +1088,7 @@ func (s *service) rebuildSessionLocked(ctx context.Context, sess *acpSession, cf
 	sess.model = cfgState.Model
 	sess.effortOverride = cloneStringPtr(cfgState.EffortOverride)
 	sess.runtimeProfile = cfgState.RuntimeProfile
-	sess.toolApprovalMode = toolApprovalMode
+	sess.posture.mode = toolApprovalMode
 	sess.runtimeState = runtimeState
 	sess.modeID = modeID
 	sess.goalDraftMode = goalDraftMode
@@ -1145,8 +1096,7 @@ func (s *service) rebuildSessionLocked(ctx context.Context, sess *acpSession, cf
 		_ = saveACPMeta(sess.transcript, sess.metaLocked())
 	}
 	sess.mu.Unlock()
-	sink.bindApprove(newCtrl.Approve)
-	sink.bindAnswer(newCtrl.AnswerQuestion)
+	s.bindCompositionIO(sess, newCtrl)
 
 	cur.ReleaseResources()
 	s.sendAvailableCommands(sess)

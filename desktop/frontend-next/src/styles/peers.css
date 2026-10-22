@@ -1,0 +1,33 @@
+.peerbar { overflow-y: auto; overscroll-behavior: contain; display: grid; gap: 4px; padding: var(--y-line) 12px; border: 1px solid var(--hair); border-radius: var(--r-md); background: var(--surface); }
+.peerheld { display: grid; gap: 4px; }
+.peerrow { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 10px; }
+.peerrow .acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin: 0; max-width: 100%; }
+.peerhead { min-width: 0; flex: 1 1 8em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--w-reg) var(--fs-meta) var(--ui); color: var(--muted); }
+.peerbody { margin: 0; padding: 6px 8px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--hair); border-radius: var(--r-sm); background: var(--raised); font: var(--w-reg) var(--fs-ui) var(--ui); color: var(--text); max-height: 8.5em; }
+.peerbody[data-clamped] { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.peerform { display: grid; gap: 6px; }
+.peerreleased + .peerform, .peernote + .peerform { margin-top: 6px; padding: 10px 12px 4px; border-top: 1px solid var(--hair); }
+.peerfield { box-sizing: border-box; width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--raised); color: var(--text); font: var(--w-reg) var(--fs-ui) var(--ui); }
+textarea.peerfield { min-height: 4.5em; resize: vertical; }
+.peerfield:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.peerform .acts { display: flex; justify-content: flex-end; margin: 0; }
+.wa-sec { display: grid; border-top: 1px solid var(--hair); }
+.wa-sec:first-child { border-top: 0; }
+.wa-list { display: grid; margin: 0; padding: 0; list-style: none; }
+.wa-list > li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 12px; border-top: 1px solid var(--hair); }
+.wa-list > li > .tx { display: grid; flex: 1 1 14em; min-width: 0; }
+.wa-list > li > .acts { display: flex; gap: 4px; }
+.wa-consent { display: flex; flex: 1 1 100%; align-items: center; gap: 10px; padding: 6px 0 2px 14px; }
+.wa-consent > .tx { display: grid; flex: 1 1 12em; min-width: 0; }
+.wa-url { display: grid; gap: 4px; padding: 6px 12px 10px; }
+.wa-test { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.wa-test > .act { flex: none; }
+.wa-test > .peernote { flex: 1 1 14em; padding: 0; }
+.wa-test > .peernote.bad { color: var(--err-ink); }
+.peerreleased { display: grid; margin: 0; padding: 0; list-style: none; }
+.peerreleased li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 12px; border-top: 1px solid var(--hair); }
+.peerreleased .tx { display: grid; min-width: 0; }
+.peerreleased .ds { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.peerheld .apv-note { margin: 0; }
+.peernote { margin: 0; padding: 6px 12px; font: var(--w-reg) var(--fs-meta) var(--ui); color: var(--muted); overflow-wrap: anywhere; }
+.peernote code { font-family: var(--mono); color: var(--text); }

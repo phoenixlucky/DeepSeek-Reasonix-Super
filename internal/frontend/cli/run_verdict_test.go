@@ -85,7 +85,7 @@ func TestRunReportsPermissionDenials(t *testing.T) {
 	runWriteFileFixture(t)
 	code, result, stderr := runCLIJSONResult(t, "run", "--output-format", "json", "write it")
 	wantExit := 0
-	if sandbox.Available() {
+	if sandbox.ConfinesByDefault() {
 		wantExit = runExitUntrustedFolder
 	}
 	if code != wantExit {
@@ -97,7 +97,7 @@ func TestRunReportsPermissionDenials(t *testing.T) {
 	}
 	denial := denials[0].(map[string]any)
 	wantCode := permission.RefusalUnattended
-	if sandbox.Available() {
+	if sandbox.ConfinesByDefault() {
 		wantCode = permission.RefusalUntrustedFolder
 	}
 	if denial["tool_name"] != "write_file" || denial["tool_use_id"] != "call_1" || denial["code"] != wantCode {

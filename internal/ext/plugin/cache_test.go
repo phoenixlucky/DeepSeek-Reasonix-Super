@@ -60,7 +60,7 @@ func TestCacheRoundTrip(t *testing.T) {
 	if err := SaveCachedSchema(spec.Name, cs); err != nil {
 		t.Fatalf("SaveCachedSchema: %v", err)
 	}
-	body, err := os.ReadFile(cachePath(spec.Name))
+	body, err := os.ReadFile(specCachePath(spec.Name, key))
 	if err != nil {
 		t.Fatal(err)
 	}

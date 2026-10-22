@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "./testkit";
-import { BackupRestore } from "./BackupRestore";
+import { accountBackupSource, BackupRestore } from "./BackupRestore";
 import { SsePort } from "../port/sse";
 import { boot, STORAGE } from "../i18n";
 import type { BackupEntry, BackupPlan } from "../port/port";
@@ -51,7 +51,7 @@ function draw(strict: boolean, held: "preview" | "apply" = "preview") {
     throw new Error(`Unexpected ${init?.method} ${path}`);
   }));
   const onClose = vi.fn();
-  const host = <BackupRestore port={new SsePort("http://kernel.example")} backup={entry} onClose={onClose} />;
+  const host = <BackupRestore port={new SsePort("http://kernel.example")} source={accountBackupSource(new SsePort("http://kernel.example"), entry)} onClose={onClose} />;
   return { ...render(strict ? <StrictMode>{host}</StrictMode> : host), pending, previews, applies, onClose };
 }
 

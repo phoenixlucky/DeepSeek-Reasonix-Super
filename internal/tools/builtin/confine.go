@@ -110,6 +110,10 @@ func ConfineWebFetch(proxySpec netclient.ProxySpec) tool.Tool {
 	return webFetch{proxySpec: proxySpec}
 }
 
+func ConfineWebImage(roots []string, guard SessionDataGuard, proxySpec netclient.ProxySpec, receipt func(string, bool, []byte)) tool.Tool {
+	return webImage{roots: realRoots(roots), guard: guard, proxySpec: proxySpec, receipt: receipt}
+}
+
 // ConfineWriters returns the file-writing built-ins (write_file, edit_file,
 // multi_edit, move_file, notebook_edit) bound to roots — the only directories they may
 // modify. The composition root adds these to the per-run registry to override

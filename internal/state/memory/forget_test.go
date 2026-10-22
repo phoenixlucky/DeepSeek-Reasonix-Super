@@ -35,8 +35,8 @@ func TestForgetToolDeletes(t *testing.T) {
 	if strings.Contains(out, store.Dir) {
 		t.Fatalf("forget output exposed the absolute store path: %q", out)
 	}
-	if len(store.List()) != 0 {
-		t.Fatalf("memory not deleted: %+v", store.List())
+	if len(mustStore(t, store).List()) != 0 {
+		t.Fatalf("memory not deleted: %+v", mustStore(t, store).List())
 	}
 }
 
@@ -57,10 +57,10 @@ func TestForgetToolArchivesOnlyQualifiedScope(t *testing.T) {
 	if !strings.Contains(out, "archived from global/shared.md") || strings.Contains(out, root) {
 		t.Fatalf("qualified forget output = %q", out)
 	}
-	if _, ok := store.Read("global/shared.md"); ok {
+	if _, ok := mustStore(t, store).Read("global/shared.md"); ok {
 		t.Fatal("global fact remained active")
 	}
-	if project, ok := store.Read("project/shared.md"); !ok || project.Body != "project body" {
+	if project, ok := mustStore(t, store).Read("project/shared.md"); !ok || project.Body != "project body" {
 		t.Fatalf("project fact was disturbed: %+v, ok=%v", project, ok)
 	}
 }
@@ -74,10 +74,16 @@ func TestForgetToolValidates(t *testing.T) {
 	}
 }
 
-// fakeQueue records the turn-tail notes the remember/forget tools queue.
-type fakeQueue struct{ notes []string }
+// fakeQueue records the notes and typed facts the remember/forget tools queue.
+type fakeQueue struct {
+	notes     []string
+	delivered []Memory
+}
 
-func (f *fakeQueue) QueueMemory(note string) { f.notes = append(f.notes, note) }
+func (f *fakeQueue) QueueMemory(note string, delivered ...Memory) {
+	f.notes = append(f.notes, note)
+	f.delivered = append(f.delivered, delivered...)
+}
 
 // TestForgetToolQueuesDisregardNote verifies a forget injects a turn-tail note so
 // the model stops trusting the still-cached index line this session.

@@ -4,11 +4,12 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import "./testkit";
 import { Feedback } from "./Feedback";
-import { dropDraft } from "./feedbackdraft";
+import { dropDraft, heldDraft } from "./feedbackdraft";
 import { install } from "./filedrop";
 import { MockPort } from "../port/mock";
 import { HttpError, type AgentPort } from "../port/port";
 import { FEEDBACK_CODE, type FeedbackEnv } from "../port/feedback";
+import { host } from "../port/host";
 
 beforeEach(dropDraft);
 
@@ -93,6 +94,16 @@ describe("feedback form", () => {
     expect(screen.getByText("只有被我们登记为议题的反馈才会公开")).toBeTruthy();
     await userEvent.click(screen.getByRole("link", { name: "按安全策略私下报告" }));
     expect(port.openExternal).toHaveBeenCalledWith(expect.stringContaining("/security/policy"));
+  });
+
+  it("sends ideas and questions to the discussions board through the shell's external opener, and says bugs go through Send", async () => {
+    const { port } = setup();
+    await ready();
+    expect(screen.getByText(/建议、想法和提问放在讨论区/)).toBeTruthy();
+    expect(screen.getByText(/bug 和错误请用下面的发送/)).toBeTruthy();
+    await userEvent.click(screen.getByRole("link", { name: "想法与讨论" }));
+    expect(port.openExternal).toHaveBeenCalledWith("https://github.com/esengine/DeepSeek-Reasonix/discussions");
+    expect(port.openExternal).toHaveBeenCalledTimes(1);
   });
 
   it("offers no window-capture control", async () => {
@@ -218,6 +229,18 @@ describe("screenshots", () => {
     fireEvent.change(input, { target: { files: [new File(["x"], "anim.gif", { type: "image/gif" })] } });
     expect(await screen.findByText("anim.gif：只支持 PNG 或 JPEG")).toBeTruthy();
     expect(document.querySelector(".fbk-shots")).toBeNull();
+  });
+
+  it("opens an attached screenshot at full size and keeps it attached", async () => {
+    setup();
+    await ready();
+    await userEvent.upload(document.querySelector<HTMLInputElement>('input[type="file"]')!, png("big.png"));
+    await userEvent.click(await screen.findByRole("button", { name: "查看图片 big.png" }));
+    const dialog = screen.getByRole("dialog", { name: "big.png" });
+    expect(dialog.querySelector("img")).toBeTruthy();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "big.png" })).toBeNull();
+    expect(document.querySelectorAll(".fbk-shots li")).toHaveLength(1);
   });
 
   it("stops at the image limit and past the upload size", async () => {
@@ -595,5 +618,109 @@ describe("the environment block", () => {
     const { port } = setup({ env: { version: "v2.33.0", commit: "5e17135", surface: "studio", os: "windows", osVersion: "10.0.26200", arch: "amd64", locale: "zh-CN", channel: "stable", providerKind: "openai" } } as Partial<FeedbackEnv>);
     expect(await screen.findByText("Windows 11 (10.0.26200) amd64")).toBeTruthy();
     expect(port.feedbackEnv).toHaveBeenCalled();
+  });
+});
+
+describe("capturing the window", () => {
+  const capture = (answer: Uint8Array | null) => {
+    vi.spyOn(host(), "capturesWindow").mockReturnValue(true);
+    return vi.spyOn(host(), "captureWindow").mockImplementation(async () => {
+      expect(document.querySelector<HTMLElement>(".fbk-veil")?.hidden).toBe(true);
+      return answer;
+    });
+  };
+  const button = () => screen.getByRole<HTMLButtonElement>("button", { name: "截取当前窗口" });
+
+  it("hides the dialog for the capture, then shows the picture as a removable thumbnail and does not send", async () => {
+    const take = capture(new Uint8Array([137, 80, 78, 71]));
+    const { port } = setup();
+    const sent = vi.spyOn(port, "sendFeedback");
+    await ready();
+    await userEvent.click(button());
+    await screen.findByRole("button", { name: "移除截图 window.png" });
+    expect(take).toHaveBeenCalledTimes(1);
+    expect(document.querySelector<HTMLElement>(".fbk-veil")?.hidden).toBe(false);
+    expect(document.activeElement).toBe(button());
+    expect(sent).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "移除截图 window.png" }));
+    expect(screen.queryByRole("button", { name: "移除截图 window.png" })).toBeNull();
+  });
+
+  it("warns what the picture contains, and says so when the shell returns nothing", async () => {
+    capture(null);
+    setup();
+    await ready();
+    expect(screen.getByText(/会包含窗口里看到的内容/)).toBeTruthy();
+    await userEvent.click(button());
+    await screen.findByText(/没能截取窗口/);
+    expect(document.querySelector<HTMLElement>(".fbk-veil")?.hidden).toBe(false);
+  });
+
+  it("drops the picture, without error or a draft, when the dialog is closed while the shell is still capturing", async () => {
+    vi.spyOn(host(), "capturesWindow").mockReturnValue(true);
+    let finish: (b: Uint8Array) => void = () => {};
+    vi.spyOn(host(), "captureWindow").mockImplementation(() => new Promise((r) => { finish = r; }));
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { onClose } = setup();
+    await ready();
+    await userEvent.click(button());
+    await waitFor(() => expect(document.querySelector<HTMLElement>(".fbk-veil")?.hidden).toBe(true));
+    await userEvent.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalled();
+    cleanup();
+    await act(async () => { finish(new Uint8Array([137, 80, 78, 71])); });
+    expect(errors).not.toHaveBeenCalled();
+    expect(heldDraft().shots).toEqual([]);
+  });
+
+  it("touches no state at all when the shell answers after the window global is gone", async () => {
+    vi.spyOn(host(), "capturesWindow").mockReturnValue(true);
+    let finish: (b: Uint8Array) => void = () => {};
+    const taking = vi.spyOn(host(), "captureWindow").mockImplementation(() => new Promise((r) => { finish = r; }));
+    const unhandled = vi.fn();
+    const proc = (globalThis as unknown as { process: { on(e: string, f: () => void): void; off(e: string, f: () => void): void } }).process;
+    proc.on("unhandledRejection", unhandled);
+    setup();
+    await ready();
+    await userEvent.click(button());
+    await waitFor(() => expect(taking).toHaveBeenCalled());
+    cleanup();
+    const later = globalThis.setTimeout.bind(globalThis);
+    const own = Object.getOwnPropertyDescriptor(globalThis, "window")!;
+    Object.defineProperty(globalThis, "window", { configurable: true, get() { throw new ReferenceError("window is not defined"); } });
+    try {
+      finish(new Uint8Array([137, 80, 78, 71]));
+      await new Promise((r) => later(r, 30));
+    } finally {
+      Object.defineProperty(globalThis, "window", own);
+      proc.off("unhandledRejection", unhandled);
+    }
+    expect(unhandled).not.toHaveBeenCalled();
+  });
+
+  it("finishes quietly when the shell answers after the page is torn down", async () => {
+    vi.spyOn(host(), "capturesWindow").mockReturnValue(true);
+    let finish: (b: Uint8Array) => void = () => {};
+    const taking = vi.spyOn(host(), "captureWindow").mockImplementation(() => new Promise((r) => { finish = r; }));
+    const unhandled = vi.fn();
+    const proc = (globalThis as unknown as { process: { on(e: string, f: () => void): void; off(e: string, f: () => void): void } }).process;
+    proc.on("unhandledRejection", unhandled);
+    setup();
+    await ready();
+    await userEvent.click(button());
+    await waitFor(() => expect(taking).toHaveBeenCalled());
+    cleanup();
+    vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation(() => { throw new ReferenceError("window is not defined"); });
+    await act(async () => { finish(new Uint8Array([137, 80, 78, 71])); });
+    await new Promise((r) => setTimeout(r, 30));
+    proc.off("unhandledRejection", unhandled);
+    expect(unhandled).not.toHaveBeenCalled();
+  });
+
+  it("offers no button where the shell cannot capture", async () => {
+    vi.spyOn(host(), "capturesWindow").mockReturnValue(false);
+    setup();
+    await ready();
+    expect(screen.queryByRole("button", { name: "截取当前窗口" })).toBeNull();
   });
 });

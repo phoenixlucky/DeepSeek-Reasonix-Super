@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render } from "@testing-library/react";
 import { Nav } from "./Nav";
 import { ICON, type Section } from "./prefsnav";
 
-const props = { at: null, onGo: vi.fn(), onFiles: vi.fn(), onHome: vi.fn(), onRail: vi.fn(), onFeedback: vi.fn(), feedbackUnread: 0, shown: true };
+const props = { at: null, onGo: vi.fn(), onFiles: vi.fn(), onHome: vi.fn(), onRail: vi.fn(), onFeedback: vi.fn(), onNew: vi.fn(), feedbackUnread: 0, shown: true };
 
 afterEach(cleanup);
 
@@ -36,4 +36,16 @@ it("routes Files to the explorer without marking it as Storage", () => {
   fireEvent.click(files);
   expect(props.onFiles).toHaveBeenCalledOnce();
   expect(props.onGo).not.toHaveBeenCalled();
+});
+
+// Clicking the current section's icon folds the sidebar, so starting a session
+// has a button of its own on the rail.
+it("starts a new session from its own rail button", () => {
+  const onNew = vi.fn();
+  const { container } = render(<Nav {...props} onNew={onNew} />);
+  const btn = container.querySelector<HTMLButtonElement>('button[data-action="session.new"]')!;
+  expect(btn.getAttribute("aria-label")).toBe("新建会话");
+  btn.click();
+  expect(onNew).toHaveBeenCalledTimes(1);
+  expect(props.onRail).not.toHaveBeenCalled();
 });

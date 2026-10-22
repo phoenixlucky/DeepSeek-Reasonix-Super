@@ -43,11 +43,11 @@ func TestThinkingParamsSwitchPinsThePlainChatShape(t *testing.T) {
 		t.Fatalf("initial state canSet/sends = %v/%v, want true/true", canSet, sends)
 	}
 
-	resp := postProvider(t, srv.URL, "/providers/thinking", `{"name":"rich","on":false}`)
+	resp := postProvider(t, srv.URL, "/providers/edit", `{"name":"rich","models":["alpha","beta"],"default":"alpha","reasoningProtocol":"none"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
 		b, _ := readAllString(resp)
-		t.Fatalf("POST /providers/thinking = %d: %s", resp.StatusCode, b)
+		t.Fatalf("POST /providers/edit = %d: %s", resp.StatusCode, b)
 	}
 
 	cfg, err := config.Load()
@@ -69,7 +69,7 @@ func TestThinkingParamsSwitchPinsThePlainChatShape(t *testing.T) {
 		t.Fatal("the list still reports thinking parameters as sent")
 	}
 
-	back := postProvider(t, srv.URL, "/providers/thinking", `{"name":"rich","on":true}`)
+	back := postProvider(t, srv.URL, "/providers/edit", `{"name":"rich","models":["alpha","beta"],"default":"alpha","reasoningProtocol":""}`)
 	defer back.Body.Close()
 	if back.StatusCode != http.StatusNoContent {
 		t.Fatalf("turning it back on = %d", back.StatusCode)
@@ -81,21 +81,6 @@ func TestThinkingParamsSwitchPinsThePlainChatShape(t *testing.T) {
 	entry, _ = cfg.Provider("rich")
 	if entry.ReasoningProtocol != "" {
 		t.Fatalf("reasoning_protocol = %q, want cleared", entry.ReasoningProtocol)
-	}
-}
-
-// TestThinkingParamsReleaseKeepsAnExplicitProtocol pins the asymmetry: turning
-// the switch back on clears only the plain-chat pin, never a protocol the user
-// chose on purpose.
-func TestThinkingParamsReleaseKeepsAnExplicitProtocol(t *testing.T) {
-	entry := &config.ProviderEntry{Kind: "openai", ReasoningProtocol: "deepseek"}
-	config.SetThinkingParams(entry, true)
-	if entry.ReasoningProtocol != "deepseek" {
-		t.Fatalf("reasoning_protocol = %q, want the explicit deepseek to survive", entry.ReasoningProtocol)
-	}
-	config.SetThinkingParams(entry, false)
-	if entry.ReasoningProtocol != "none" {
-		t.Fatalf("reasoning_protocol = %q, want none", entry.ReasoningProtocol)
 	}
 }
 

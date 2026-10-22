@@ -39,7 +39,7 @@ func (p *progressEffectProvider) Name() string { return "boot-progress-effect" }
 func (p *progressEffectProvider) Stream(_ context.Context, req provider.Request) (<-chan provider.Chunk, error) {
 	p.mu.Lock()
 	p.reqs = append(p.reqs, req)
-	digest := len(req.Messages) > 0 && strings.Contains(req.Messages[0].Content, "compacting the earlier part")
+	digest := req.Summary
 	round := p.rounds
 	if !digest {
 		p.rounds++

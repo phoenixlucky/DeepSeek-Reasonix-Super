@@ -133,7 +133,7 @@ func scanAnswerRead(path string, bodyLines []string) (bool, error) {
 	return false, nil
 }
 
-func auditAnswerTrajectories(dir string, t task, segments int) (bool, error) {
+func auditAnswerTrajectories(dir, stem string, t task, segments int) (bool, error) {
 	if segments < 1 {
 		return false, fmt.Errorf("run recorded no segments")
 	}
@@ -142,7 +142,7 @@ func auditAnswerTrajectories(dir string, t task, segments int) (bool, error) {
 		return false, err
 	}
 	for index := 1; index <= segments; index++ {
-		path := segmentTrajectoryPath(dir, t.ID, segment{index: index}, segments)
+		path := segmentTrajectoryPath(dir, stem, segment{index: index}, segments)
 		read, err := scanAnswerRead(path, lines)
 		if err != nil || read {
 			return read, err
@@ -170,11 +170,11 @@ func answerTrajectoryDir(dir string, required bool) (string, func(), error) {
 	return dir, cleanup, nil
 }
 
-func auditAnswerRun(r *result, dir string, t task) bool {
+func auditAnswerRun(r *result, dir, stem string, t task) bool {
 	if t.answerRoot == "" {
 		return true
 	}
-	read, err := auditAnswerTrajectories(dir, t, r.Segments)
+	read, err := auditAnswerTrajectories(dir, stem, t, r.Segments)
 	if err != nil {
 		markAnswerAuditIncomplete(r, err)
 		r.Note = "answer audit: " + err.Error()
@@ -203,6 +203,11 @@ func answerLeakDetected(r result) bool {
 }
 
 func recordTaskTrajectory(r *result, path string, t task) {
+	if r.SFT != nil && r.Segments <= 1 {
+		if err := bindSFTTrajectory(path, r.SFT); err != nil {
+			r.Note = appendNote(r.Note, "SFT provenance: "+err.Error())
+		}
+	}
 	if summary, err := summarizeTrajectory(path); err == nil {
 		r.Trajectory = summary
 	}

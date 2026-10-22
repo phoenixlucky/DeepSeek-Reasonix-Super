@@ -34,6 +34,14 @@ function deferredFetch() {
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
+it("typed surface answers retain JSON values on the wire", async () => {
+  const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => ({ ok:true, status:204, text:async () => "" }));
+  vi.stubGlobal("fetch", fetchMock);
+  await new SsePort("", "r1").answer("ask-1", [{ questionId:"surface", selected:[], value:{ count:2, enabled:false, tags:["fast"] } }]);
+  const init = fetchMock.mock.calls[0][1] as RequestInit;
+  expect(JSON.parse(String(init.body))).toEqual({ id:"ask-1", answers:[{ QuestionID:"surface", Selected:[], Value:{ count:2, enabled:false, tags:["fast"] } }] });
+});
+
 describe("idempotent reads", () => {
   it("share one request while it is in flight, with one trailing re-read for the rest", async () => {
     const { fetchMock, pending } = deferredFetch();
@@ -232,5 +240,14 @@ describe("a failed call", () => {
     answer(502, "", "text/plain");
     const err = (await new Probe().call("/providers/edit").catch((e) => e)) as HttpError;
     expect(err.message).toBe("/providers/edit: 502");
+  });
+});
+
+// The kernel answers a closed browser tab with 204 and no body, so closing is
+// settled by the status alone.
+describe("closing a browser tab", () => {
+  it("succeeds on an empty 204 answer", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 204 })));
+    await expect(new SsePort("").browserClose("tab-1")).resolves.toBeUndefined();
   });
 });

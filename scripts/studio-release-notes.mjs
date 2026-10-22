@@ -17,11 +17,20 @@ import {
   unresolvedError,
 } from "./release-credits.mjs";
 
+// A second language rides in the same document after this line; the Versions
+// panel and the GitHub page both read it (desktop/frontend-next notesLanguages.ts).
+const ENGLISH_MARK = "<!-- lang:en -->";
+
 export function renderStudioNotes(markdown, credits) {
   const body = annotateMarkdown(markdown, (ref) => creditSuffix(credits.get(ref))).trimEnd();
-  const contributors = contributorLogins(markdownRefs(markdown), credits);
-  if (!contributors.length) return `${body}\n`;
-  return `${body}\n\n## 贡献者\n\n感谢本版本的贡献者：${contributors.map((login) => `@${login}`).join("、")}\n`;
+  const logins = contributorLogins(markdownRefs(markdown), credits).map((login) => `@${login}`);
+  if (!logins.length) return `${body}\n`;
+  const chinese = `## 贡献者\n\n感谢本版本的贡献者：${logins.join("、")}`;
+  const at = body.indexOf(ENGLISH_MARK);
+  if (at < 0) return `${body}\n\n${chinese}\n`;
+  const first = body.slice(0, at).replace(/\n+---\s*$/, "").trimEnd();
+  const english = `## Contributors\n\nThanks to this release's contributors: ${logins.join(", ")}`;
+  return `${first}\n\n${chinese}\n\n---\n\n${body.slice(at)}\n\n${english}\n`;
 }
 
 async function main() {

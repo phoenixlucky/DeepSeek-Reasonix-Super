@@ -46,8 +46,14 @@ func writeInboxError(w http.ResponseWriter, err error) {
 		refuse(w, http.StatusConflict, "inbox.capacity_bytes", err.Error(), nil)
 	case errors.Is(err, sessioninbox.ErrInvalidState):
 		refuse(w, http.StatusConflict, "inbox.invalid_state", err.Error(), nil)
+	case errors.Is(err, sessioninbox.ErrForeignRun):
+		refuse(w, http.StatusConflict, "inbox.foreign_run", err.Error(), nil)
 	case errors.Is(err, sessioninbox.ErrPaused):
 		refuse(w, http.StatusConflict, "inbox.paused", err.Error(), nil)
+	case errors.Is(err, sessioninbox.ErrUnrecovered):
+		// The bodies could not be read, so the queue's contents are unknown:
+		// a conflict, not an internal fault, and the panel can say which.
+		refuse(w, http.StatusConflict, "inbox.unrecovered", err.Error(), nil)
 	case errors.Is(err, sessioninbox.ErrNotFound):
 		refuse(w, http.StatusConflict, "inbox.not_found", err.Error(), nil)
 	case errors.Is(err, sessioninbox.ErrIdempotencyConflict):
@@ -69,6 +75,9 @@ func writeInboxError(w http.ResponseWriter, err error) {
 func (s *Server) inboxList(w http.ResponseWriter, r *http.Request) {
 	_ = r
 	snap := s.inboxAPI().InboxSnapshot()
+	if snap.Items == nil {
+		snap.Items = []sessioninbox.InboxItemMeta{}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(snap)
 }

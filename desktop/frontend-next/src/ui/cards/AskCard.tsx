@@ -2,20 +2,26 @@ import type { AskReason } from "../../port/session";
 import { Sym } from "../Sym";
 import { useEffect, useRef, useState } from "react";
 import { t } from "../../i18n";
+import { reason } from "../../i18n/kernel";
 import type { Item } from "../../state/session";
 import { answerSource } from "../source";
 import { useViewer } from "../../state/viewer";
 import { useIme } from "../ime";
 import { LazyMarkdown } from "../LazyMarkdown";
+import { clock, useAskCountdown } from "./useAskCountdown";
+import { AskFreeText } from "./AskFreeText";
+import type { AgentPort } from "../../port/port";
 
 const ADVANCE_MS = 220;
 
 interface Props {
   item: Extract<Item, { t: "ask" }>;
   onAnswer: (itemId: string, id: string, answers: { questionId: string; selected: string[] }[]) => Promise<void>;
+  onEngage?: (id: string) => Promise<void>;
+  refine?: AgentPort["refinePrompt"];
 }
 
-export function AskCard({ item, onAnswer }: Props) {
+export function AskCard({ item, onAnswer, onEngage, refine }: Props) {
   const qs = item.ask.questions;
   const answeredBy = answerSource(item.by, useViewer(), item.said);
   const [tab, setTab] = useState(0);
@@ -37,6 +43,22 @@ export function AskCard({ item, onAnswer }: Props) {
   // see what was chosen for each question, and the options stay on screen with
   // the unchosen ones dimmed by the sealed styling.
   const sealed = item.answered !== undefined;
+  const engagement = useRef<"idle" | "pending" | "engaged">("idle");
+  const [engagementError, setEngagementError] = useState("");
+  const [kept, setKept] = useState(false);
+  const skipIn = useAskCountdown(item.skipAt, !sealed && !kept);
+  const engage = () => {
+    if (sealed || !onEngage || engagement.current !== "idle") return;
+    engagement.current = "pending";
+    void onEngage(item.ask.id).then(() => {
+      engagement.current = "engaged";
+      setKept(true);
+      setEngagementError("");
+    }).catch((err: unknown) => {
+      engagement.current = "idle";
+      setEngagementError(reason(err));
+    });
+  };
   const chosen = item.answered ?? picks;
 
   // A single-choice pick keeps the box open as a note that rides with it, so an
@@ -150,7 +172,6 @@ export function AskCard({ item, onAnswer }: Props) {
     <div className="call" data-k="ask" data-prompt={sealed ? "settled" : "pending"}>
       <div className="g">
         <Sym glyph="?" />
-        <span className="line" />
       </div>
       <div className="c">
         <div className="hl">
@@ -158,7 +179,10 @@ export function AskCard({ item, onAnswer }: Props) {
           <span className="tag">{t("{n} 个问题", { n: qs.length })}</span>
         </div>
         <div className="out">
-          <div className="ask" data-sealed={sealed ? "" : undefined} aria-busy={submitting}>
+          <div className="ask" data-sealed={sealed ? "" : undefined} aria-busy={submitting}
+            onPointerDownCapture={engage} onKeyDownCapture={engage} onInputCapture={engage}
+            onWheelCapture={engage} onTouchMoveCapture={engage}>
+            {!sealed && engagementError && <div className="err" role="alert">{engagementError}</div>}
             {qs.length > 1 && (
               <div className="ask-tabs" role="tablist">
                 {qs.map((q, i) => (
@@ -223,22 +247,19 @@ export function AskCard({ item, onAnswer }: Props) {
                   </button>
                 </div>
                 <div className="other-wrap" data-on={customChosen(i) || noteShown(i) ? "" : undefined}>
-                  <input
-                    ref={(el) => {
+                  <AskFreeText
+                    inputRef={(el) => {
                       boxes.current[i] = el;
                     }}
-                    data-action-keydown="ask.answer"
-                    aria-label={noteShown(i) ? t("补充说明（可选）") : (customOption(i)?.label ?? t("其他 —— 自行填写"))}
+                    label={noteShown(i) ? t("补充说明（可选）") : (customOption(i)?.label ?? t("其他 —— 自行填写"))}
                     value={freeShown(i)}
                     readOnly={sealed}
                     placeholder={noteShown(i) ? t("补充说明（可选），会随所选项一起发送") : t("或直接输入你的回答")}
-                    onChange={(e) => type(i, e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key !== "Enter" || sealed || ime.isIme(e.nativeEvent)) return;
-                      e.preventDefault();
-                      onEnter();
-                    }}
-                    {...ime.handlers}
+                    onChange={(text) => type(i, text)}
+                    onEnter={onEnter}
+                    isIme={ime.isIme}
+                    imeHandlers={ime.handlers}
+                    refine={refine}
                   />
                 </div>
               </div>
@@ -266,6 +287,11 @@ export function AskCard({ item, onAnswer }: Props) {
             )}
             {!sealed && (
               <div className="ask-foot">
+                {skipIn !== null && (
+                  <span className="ask-skip" role="timer" aria-live="off">
+                    {t("{time} 后自动跳过这个问题，点任意处保留", { time: skipIn < 60 ? t("{n} 秒", { n: skipIn }) : clock(skipIn) })}
+                  </span>
+                )}
                 {/* An answer batch with nothing selected is the kernel's explicit
                     "don't decide for me" path: it ends the turn rather than
                     feeding a prose dismissal back to the model. */}

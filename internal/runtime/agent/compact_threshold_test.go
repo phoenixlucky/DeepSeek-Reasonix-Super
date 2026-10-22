@@ -20,9 +20,10 @@ func TestCompactTriggerIndependentOfOutputBudget(t *testing.T) {
 	if got := a.window().compactTrigger(); got != want {
 		t.Fatalf("trigger after larger output budget = %d, want %d", got, want)
 	}
+	// The reply reserve is a constant of the window, never the budget's size.
 	hard := a.window().hardInputCeiling()
-	if hard != 128_000-protocolReserveTokens {
-		t.Fatalf("hard ceiling = %d, want window-protocolReserve", hard)
+	if want := 128_000 - outputBudgetReserveFor(128_000); hard != want {
+		t.Fatalf("hard ceiling = %d, want the window less the output reserve (%d)", hard, want)
 	}
 }
 

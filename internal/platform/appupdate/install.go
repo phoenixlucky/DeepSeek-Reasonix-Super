@@ -291,11 +291,16 @@ func (c *capability) handOver(ctx context.Context) {
 // report narrates a full download; deltaSkipped is why an offered delta was
 // not used, carried on every frame so a panel opened mid-download can say so.
 func (c *capability) report(target, deltaSkipped string) update.Report {
-	var total int64
+	var total, received int64
+	var stalls int
 	return update.Report{
-		Bytes: func(received, size int64) {
-			total = size
-			c.install.set(update.Progress{Version: target, Phase: update.PhaseDownloading, Received: received, Total: size, DeltaSkipped: deltaSkipped})
+		Bytes: func(got, size int64) {
+			total, received = size, got
+			c.install.set(update.Progress{Version: target, Phase: update.PhaseDownloading, Received: got, Total: size, DeltaSkipped: deltaSkipped, Stalls: stalls})
+		},
+		Stalled: func() {
+			stalls++
+			c.install.set(update.Progress{Version: target, Phase: update.PhaseDownloading, Received: received, Total: total, DeltaSkipped: deltaSkipped, Stalls: stalls})
 		},
 		Phase: func(phase string) {
 			if phase != update.PhaseDownloading {

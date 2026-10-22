@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "./testkit";
-import { BackupRestore } from "./BackupRestore";
+import { accountBackupSource, BackupRestore } from "./BackupRestore";
 import { MockPort } from "../port/mock";
 import type { AgentPort, BackupEntry, PluginPlan } from "../port/port";
 
@@ -37,7 +37,7 @@ async function setup() {
   });
   const preview = vi.spyOn(port, "planPlugin").mockImplementation(async ({ source }) => plan(source === sources.alpha ? "alpha" : "beta"));
   const install = vi.spyOn(port, "installPlugin").mockResolvedValue({ ...plan("alpha"), status: "done", applied: true, actions: [] });
-  render(<BackupRestore port={port} backup={backup} onClose={() => {}} />);
+  render(<BackupRestore port={port} source={accountBackupSource(port, backup)} onClose={() => {}} />);
   await userEvent.type(screen.getByLabelText("加密口令"), "local passphrase");
   await userEvent.click(screen.getByRole("button", { name: "预览差异" }));
   await userEvent.click(await screen.findByRole("button", { name: /恢复所选/ }));

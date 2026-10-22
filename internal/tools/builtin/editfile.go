@@ -16,9 +16,10 @@ func init() { tool.RegisterBuiltin(editFile{}) }
 // targets (see SessionDataGuard); workDir, when non-empty, is the directory a
 // relative path resolves against (see resolveIn).
 type editFile struct {
-	roots   []string
-	guard   SessionDataGuard
-	managed ManagedConfigPaths
+	readPolicy editReadPolicy
+	roots      []string
+	guard      SessionDataGuard
+	managed    ManagedConfigPaths
 	// sessionTemp, when non-nil, adds the session's own temporary directory
 	// to the writable surface — the same directory bash writes through $TMPDIR.
 	sessionTemp *sessiontemp.Manager
@@ -61,7 +62,7 @@ func (e editFile) Execute(ctx context.Context, args json.RawMessage) (string, er
 		return "", err
 	}
 
-	src, err := readEditSource(ctx, e.overlay, p.Path)
+	src, err := e.readPolicy.source(ctx, e.overlay, p.Path)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", p.Path, err)
 	}

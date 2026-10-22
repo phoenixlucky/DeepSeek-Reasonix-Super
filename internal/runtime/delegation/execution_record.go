@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reasonix/internal/runtime/agent"
+	"reasonix/internal/runtime/writeclaim"
 
 	"reasonix/internal/contract/agentgraph"
 	"reasonix/internal/contract/event"
@@ -64,7 +65,7 @@ func (t *TaskTool) openExecutions(ctx context.Context, group string, openings []
 // it and before the run does anything at all — and that is all the grant does
 // here. What the store and the picture then say comes from the boundary the run
 // crosses next, the same one a lone delegation crosses.
-func (t *TaskTool) itemHooks(ctx context.Context, sink event.Sink, id string) (func(agentgraph.WaitCause) error, func() error) {
+func (t *TaskTool) itemHooks(ctx context.Context, sink event.Sink, id, label string) (func(agentgraph.WaitCause) error, func() error, func(writeclaim.Held)) {
 	onWait := fanOutItemWaitHook(sink, id)
 	queued := func(cause agentgraph.WaitCause) error {
 		if err := t.queueExecution(ctx, id, cause); err != nil {
@@ -72,7 +73,7 @@ func (t *TaskTool) itemHooks(ctx context.Context, sink event.Sink, id string) (f
 		}
 		return onWait(cause)
 	}
-	return queued, func() error { return t.startExecution(ctx, id) }
+	return queued, func() error { return t.startExecution(ctx, id) }, waitingNotice(sink, label)
 }
 
 // queueExecution records the scheduler's first refusal. An item reaches the

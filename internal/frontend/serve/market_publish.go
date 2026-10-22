@@ -89,6 +89,8 @@ func refusePublish(w http.ResponseWriter, err error) {
 		refuse(w, http.StatusConflict, "market.version_exists", "that version is already published", detail)
 	case errors.Is(err, market.ErrRateLimited):
 		refuse(w, http.StatusTooManyRequests, "market.rate_limited", "too many submissions; wait a minute", detail)
+	case errors.Is(err, market.ErrInvalidPluginSource):
+		refuse(w, http.StatusUnprocessableEntity, "market.invalid_plugin_source", "plugin or theme source must be an HTTPS GitHub tree URL pinned to a full 40-character lowercase hexadecimal commit; correct the source and resubmit", detail)
 	case errors.Is(err, market.ErrUnpublishable):
 		refuse(w, http.StatusUnprocessableEntity, "market.unpublishable", "the market could not install this source once approved", detail)
 	case errors.As(err, &rejected):

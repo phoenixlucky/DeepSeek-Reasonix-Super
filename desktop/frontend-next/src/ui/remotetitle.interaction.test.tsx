@@ -67,17 +67,20 @@ describe("a remote session's title", () => {
     far.names("把这个仓库的构建跑通");
     render(<Rail hub={far.hub} />);
     expect(await screen.findByText("把这个仓库的构建跑通")).toBeTruthy();
+    expect(screen.getByTitle("把这个仓库的构建跑通").textContent).toBe("把这个仓库的构建跑通");
   });
 
   it("arrives on the re-read, rather than keeping the name from before it had one", async () => {
     const far = farKernel();
     render(<Rail hub={far.hub} />);
     await screen.findByText("training");
+    expect(screen.getByTitle("s1").textContent).toBe("s1");
     expect(screen.queryByText("把这个仓库的构建跑通")).toBeNull();
 
     far.names("把这个仓库的构建跑通");
     await userEvent.click(screen.getByText("再读一次"));
     await waitFor(() => expect(screen.queryByText("把这个仓库的构建跑通")).toBeTruthy());
+    expect(screen.getByTitle("把这个仓库的构建跑通").textContent).toBe("把这个仓库的构建跑通");
   });
 
   // The defect was never in the reading — it was that nothing asked. This

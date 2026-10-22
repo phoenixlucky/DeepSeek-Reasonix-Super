@@ -32,6 +32,9 @@ type treeReplay struct {
 func TestTreeChangesReachBothClientsAndReplayAfterDisconnect(t *testing.T) {
 	t.Setenv("REASONIX_HOME", testenv.TempDir(t))
 	root := testenv.TempDir(t)
+	if err := addRememberedWorkspace(t.Context(), root); err != nil {
+		t.Fatal(err)
+	}
 	h := NewHub(HubOptions{})
 	hubRuntime(t, h, root)
 	path := filepath.Join(SessionDirFor(root), "shared.jsonl")

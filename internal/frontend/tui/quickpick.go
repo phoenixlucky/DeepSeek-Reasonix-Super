@@ -26,6 +26,10 @@ type quickPicker struct {
 	query string
 	sel   int
 	pick  func(chooseItem) tea.Cmd
+	// onMove, when set, sees the row under the cursor each time it changes, and
+	// onCancel runs when the picker closes without a choice: a live preview.
+	onMove   func(chooseItem)
+	onCancel func()
 }
 
 func newQuickPicker(title string, items []chooseItem, pick func(chooseItem) tea.Cmd) *quickPicker {
@@ -61,6 +65,10 @@ func (m *model) quickKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	switch k := msg.String(); k {
 	case "esc", "ctrl+c":
 		m.quick = nil
+		if p.onCancel != nil {
+			p.onCancel()
+		}
+		return nil, true
 	case "up", "ctrl+p":
 		p.sel = max(p.sel-1, 0)
 	case "down", "tab", "ctrl+n":
@@ -78,6 +86,11 @@ func (m *model) quickKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	default:
 		if t := typedText(msg); t != "" && !hasControl(t) {
 			p.query, p.sel = p.query+t, 0
+		}
+	}
+	if p.onMove != nil {
+		if rows := p.shown(); p.sel < len(rows) {
+			p.onMove(rows[p.sel])
 		}
 	}
 	return nil, true

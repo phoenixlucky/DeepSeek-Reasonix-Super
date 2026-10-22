@@ -100,7 +100,7 @@ func TestThemeListsSwitchesAndPersists(t *testing.T) {
 	m, k, cfgPath := miscModel(t)
 	prev := termrender.ActiveTheme()
 	t.Cleanup(func() { termrender.SetThemeStyle(prev.Style) })
-	sendLine(m, "/theme")
+	sendLine(m, "/theme list")
 	if got := notices(m); !strings.Contains(got, "graphite") || !strings.Contains(got, i18n.M.ThemeHint) {
 		t.Fatalf("listing = %q", got)
 	}
@@ -203,5 +203,83 @@ func TestThemeAndVerboseNeverWriteIntoAProjectFile(t *testing.T) {
 	raw, _ := os.ReadFile(userPath)
 	if !strings.Contains(string(raw), "glacier") || !strings.Contains(string(raw), "show_reasoning = true") {
 		t.Fatalf("user config missing the preferences:\n%s", raw)
+	}
+}
+
+func themePickerModel(t *testing.T) (*model, string) {
+	t.Helper()
+	m, _, cfgPath := miscModel(t)
+	termrender.SetThemeStyle("graphite")
+	t.Cleanup(func() { termrender.SetThemeStyle("graphite") })
+	sendLine(m, "/theme")
+	if m.quick == nil {
+		t.Fatal("/theme did not open the picker")
+	}
+	return m, cfgPath
+}
+
+func TestThemePickerPreviewsWhileMovingAndWritesNothing(t *testing.T) {
+	m, cfgPath := themePickerModel(t)
+	before := termrender.ActiveTheme()
+	run(m, press(m, "down"))
+	moved := m.quick.shown()[m.quick.sel]
+	if got := termrender.ActiveTheme(); got.Style == before.Style && got.Name == before.Name {
+		t.Fatalf("moving to %q did not preview it: still %s/%s", moved.ID, got.Name, got.Style)
+	}
+	if _, err := os.Stat(cfgPath); err == nil {
+		t.Fatal("browsing wrote the configuration")
+	}
+	run(m, press(m, "down"))
+	run(m, press(m, "up"))
+	if _, err := os.Stat(cfgPath); err == nil {
+		t.Fatal("browsing wrote the configuration")
+	}
+}
+
+func TestThemePickerEscapeRestoresTheOriginal(t *testing.T) {
+	m, cfgPath := themePickerModel(t)
+	before := termrender.ActiveTheme()
+	for range 3 {
+		run(m, press(m, "down"))
+	}
+	run(m, press(m, "esc"))
+	if m.quick != nil {
+		t.Fatal("Escape left the picker open")
+	}
+	if got := termrender.ActiveTheme(); got != before {
+		t.Fatalf("Escape left %s/%s, want %s/%s", got.Name, got.Style, before.Name, before.Style)
+	}
+	if _, err := os.Stat(cfgPath); err == nil {
+		t.Fatal("cancelling wrote the configuration")
+	}
+}
+
+func TestThemePickerEnterKeepsTheChoiceAndStoresIt(t *testing.T) {
+	m, cfgPath := themePickerModel(t)
+	for m.quick.shown()[m.quick.sel].ID != "glacier" {
+		run(m, press(m, "down"))
+	}
+	run(m, press(m, "enter"))
+	if m.quick != nil {
+		t.Fatal("Enter left the picker open")
+	}
+	if got := termrender.ActiveTheme(); got.Style != "glacier" || got.Name != "light" {
+		t.Fatalf("active = %s/%s, want light/glacier", got.Name, got.Style)
+	}
+	raw, _ := os.ReadFile(cfgPath)
+	if !strings.Contains(string(raw), "glacier") {
+		t.Fatalf("choice not stored:\n%s", raw)
+	}
+}
+
+func TestThemePickerFilterPreviewsTheFirstMatch(t *testing.T) {
+	m, _ := themePickerModel(t)
+	typeText(m, "glac")
+	if got := termrender.ActiveTheme(); got.Style != "glacier" {
+		t.Fatalf("filtering to glacier previewed %s", got.Style)
+	}
+	run(m, press(m, "esc"))
+	if got := termrender.ActiveTheme(); got.Style != "graphite" {
+		t.Fatalf("Escape left %s, want graphite", got.Style)
 	}
 }

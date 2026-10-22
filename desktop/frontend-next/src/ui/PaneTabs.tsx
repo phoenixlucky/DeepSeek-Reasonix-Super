@@ -5,7 +5,7 @@ import { arrowTabs } from "./tablist";
 import { pinToViewport } from "./place";
 import { useMarker } from "./marker";
 import { useDismiss } from "./dismiss";
-import { UnreadDot } from "./UnreadMark";
+import { PeerThreadMark } from "./peerthreads";
 
 export interface TabView {
   rt: RuntimeView;
@@ -23,7 +23,7 @@ interface Props {
   showRoot: boolean;
   onFocus: (id: string) => void;
   onClose: (ids: string[]) => void;
-  onRename: (rt: RuntimeView, title: string) => void;
+  onRename: (rt: RuntimeView, title: string, mode?: "inline" | "dialog") => void;
 }
 
 export function PaneTabs({ tabs, active, showRoot, onFocus, onClose, onRename }: Props) {
@@ -33,14 +33,6 @@ export function PaneTabs({ tabs, active, showRoot, onFocus, onClose, onRename }:
   // 裁掉（点了像没反应），所以菜单挂在 fixed 上，位置由触发点决定。
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [editing, setEditing] = useState("");
-  // Enter commits and then blurs, and both would otherwise send the same name.
-  const renamed = useRef<Record<string, string>>({});
-  const rename = (rt: RuntimeView, was: string, raw: string) => {
-    const next = raw.trim();
-    if (!next || next === was || renamed.current[rt.id] === next) return;
-    renamed.current[rt.id] = next;
-    onRename(rt, next);
-  };
   // Which close is waiting on an answer. The ids only: which of them still
   // exist and which are still running are read off the current tabs on every
   // render and again when the answer comes, because a set captured when the
@@ -151,7 +143,8 @@ export function PaneTabs({ tabs, active, showRoot, onFocus, onClose, onRename }:
           data-run={run}
           title={rt.root}
           onClick={() => onFocus(rt.id)}
-          onDoubleClick={() => setEditing(rt.id)}
+          data-action-doubleclick="session.rename-start"
+          onDoubleClick={() => { if (rt.sessionPath) setEditing(rt.id); }}
           onContextMenu={(ev) => {
             // The system context menu is this window's only copy/paste route,
             // so a field or a live selection yields to it: the custom menu is a
@@ -162,41 +155,35 @@ export function PaneTabs({ tabs, active, showRoot, onFocus, onClose, onRename }:
             setMenu({ id: rt.id, x: ev.clientX, y: ev.clientY });
           }}
         >
-          <i className="pip" />
+          <i className="pip" data-unread={unread ? "" : undefined} role={unread ? "img" : undefined} aria-label={unread ? t("未读") : undefined} />
           {editing === rt.id ? (
-            <input
-              className="ptab-in"
-              autoFocus
-              defaultValue={title}
+            <input className="ptab-in" aria-label={t("重命名该会话")} placeholder={t("聊天标题")} autoFocus defaultValue={title}
               onClick={(ev) => ev.stopPropagation()}
+              data-action-blur="session.rename" data-action-keydown="session.rename" data-target={rt.id}
               onBlur={(ev) => {
+                const next = ev.currentTarget.value.trim();
                 setEditing("");
-                rename(rt, title, ev.currentTarget.value);
+                if (next !== "" && next !== title.trim()) onRename(rt, next, "inline");
               }}
-              data-action-keydown="session.rename"
-              data-target={rt.id}
               onKeyDown={(ev) => {
                 if (ev.key === "Enter") {
-                  // The aimed-at commit; the blur it causes is guarded above.
-                  rename(rt, title, ev.currentTarget.value);
+                  ev.preventDefault();
                   ev.currentTarget.blur();
-                }
-                if (ev.key === "Escape") {
-                  // Abandoning a rename is not stopping the run behind it.
+                } else if (ev.key === "Escape") {
+                  ev.preventDefault();
                   ev.stopPropagation();
                   ev.currentTarget.value = title;
                   ev.currentTarget.blur();
                 }
-              }}
-            />
+              }} />
           ) : (
             <span className="ptab-nm">{title}</span>
           )}
-          {unread && <UnreadDot kind="tab" />}
           {showRoot && <span className="ptab-ws">{rt.name}</span>}
           {/* Which machine is running this. Panes from two hosts sit side by
               side, and a command lands wherever the focused tab points. */}
           {rt.host && <span className="ptab-host">{rt.host}</span>}
+          <PeerThreadMark path={rt.sessionPath} />
           <button
             className="ptab-x"
             data-action="pane.close"
@@ -270,7 +257,13 @@ export function PaneTabs({ tabs, active, showRoot, onFocus, onClose, onRename }:
           }}
           onClick={(ev) => ev.stopPropagation()}
         >
-          <button role="menuitem" onClick={() => { const id = menu.id; setMenu(null); setEditing(id); }}>
+          <button role="menuitem" data-action="session.rename-start" data-target={menu.id}
+            disabled={!tabs.find((tab) => tab.rt.id === menu.id)?.rt.sessionPath}
+            onClick={() => {
+              const tab = tabs.find((tab) => tab.rt.id === menu.id);
+              setMenu(null);
+              if (tab) onRename(tab.rt, tab.title);
+            }}>
             {t("重命名")}
           </button>
           <button role="menuitem" data-action="pane.close" data-value="one" onClick={() => { const id = menu.id; setMenu(null); close([id], "one", id); }}>

@@ -20,6 +20,19 @@ export function nestLabel(who: string | undefined, count: number | undefined, st
   return t("子代理做了 {n} 步", { n: steps });
 }
 
+// What a child ran on, as the kernel recorded it when the run started: the
+// provider/model reference and the effort. The full reference is the title.
+export const ranLabel = (p: Tool["profile"]): string => (p?.model ? [p.model, p.effort].filter(Boolean).join(" · ") : "");
+
+// The same, for a row with no room: the model name is what tells two runs apart,
+// so it is all the row keeps ("…/deepseek-v4-pro"); the provider and the effort are
+// the title.
+export const ranShort = (p: Tool["profile"]): string => {
+  if (!p?.model) return "";
+  const at = p.model.lastIndexOf("/");
+  return at >= 0 ? `…/${p.model.slice(at + 1)}` : p.model;
+};
+
 export type DelegateStatus = "running" | "refused" | "failed" | "done";
 
 // A host refusal names a call that never started; "interrupted" is only true of

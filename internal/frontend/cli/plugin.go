@@ -487,7 +487,7 @@ func pluginDoctorCommand(args []string) int {
 	cfg, _ := config.LoadForRootReadOnly(workspaceRoot)
 	runtimeOptions := hook.RuntimeOptions{}
 	if cfg != nil {
-		runtimeOptions = hook.RuntimeOptionsForShell(cfg.Tools.Shell.Prefer, cfg.Tools.Shell.Path)
+		runtimeOptions = hook.RuntimeOptionsForShell(cfg.Tools.Shell.Prefer, cfg.Tools.Shell.Path, cfg.Tools.Shell.Args...)
 	}
 	runtimeIssues := hook.CheckPackageRuntime(pkg, runtimeOptions)
 	for _, issue := range runtimeIssues {

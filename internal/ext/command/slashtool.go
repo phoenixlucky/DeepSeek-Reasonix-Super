@@ -34,9 +34,14 @@ type SlashEntry struct {
 // and acts on within the same turn — mirroring what typing "/name" does for a
 // human. Calling with no name (or "list") returns the available commands.
 type slashCommandTool struct {
+	source  func() ([]SlashEntry, error)
 	gate    func() func(name string) error // one snapshot per call; nil admits everything
 	entries map[string]SlashEntry
 	names   []string // sorted, for a stable listing
+}
+
+func NewLiveSlashCommandTool(source func() ([]SlashEntry, error), gate func() func(name string) error) tool.Tool {
+	return &slashCommandTool{source: source, gate: gate}
 }
 
 // NewSlashCommandTool builds the tool from the invocable entries (custom commands
@@ -80,7 +85,14 @@ func (*slashCommandTool) Schema() json.RawMessage {
 	}`)
 }
 
-func (t *slashCommandTool) Execute(_ context.Context, raw json.RawMessage) (string, error) {
+func (t *slashCommandTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
+	if t.source != nil {
+		entries, err := t.source()
+		if err != nil {
+			return "", err
+		}
+		return NewSlashCommandTool(entries, t.gate).Execute(ctx, raw)
+	}
 	var p struct {
 		Command   string `json:"command"`
 		Arguments string `json:"arguments"`

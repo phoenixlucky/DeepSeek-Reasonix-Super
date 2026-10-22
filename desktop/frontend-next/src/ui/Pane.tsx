@@ -1,8 +1,12 @@
-import { memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import { streamBudget } from "../port/streambudget";
 import { loadReceiptPref, receiptPrefOf } from "../state/receiptpref";
 import { ReceiptPrefContext } from "../state/foldpref";
 import { money } from "../i18n/format";
+import { pushToast } from "../state/toasts";
 import { reason } from "../i18n/kernel";
+import { noteFault } from "./fault";
+import { ErrorBar } from "./ErrorBar";
 import { t } from "../i18n";
 import { hasPendingDecision, posture, runState } from "./decisions";
 import { createPortal } from "react-dom";
@@ -28,14 +32,16 @@ import { key as slotKey } from "./slots";
 import { Metrics } from "./Metrics";
 import { railOf } from "./panels/derive";
 import { accountOf, useHidesAmounts, useWallet } from "./wallet";
-import { PaneNav } from "./PaneNav";
 import { useOnBump } from "./useOnBump";
 import { useShowView } from "./showview";
 import { useSubmit } from "./usesubmit";
 import { useSurfaceSlots } from "./usesurfaceslots";
+import { useSurfaceReplay } from "./surface-replay";
 import { MeterRail } from "./MeterRail";
 import { PlanFold } from "./PlanFold";
+import { useBroughtResults } from "./useBroughtResults";
 import { RunLine } from "./RunLine";
+import { AgentCompositionPicker } from "./AgentCompositionPicker";
 import type { PaneProps, PaneReport } from "./panetypes";
 import { useRate, useTrail } from "./num";
 import { useCompactNow } from "./CompactNow";
@@ -50,13 +56,23 @@ import { useBrowserWide } from "./browserwide";
 import { refreshTodos } from "../state/restore";
 import { speedOf } from "./speed";
 import { RuntimeBar } from "./RuntimeBar";
-import { PostureNote } from "./PostureNote";
+import { PeerHeldBar } from "./PeerHeldBar";
+import { PostureNote, postureNote } from "./PostureNote";
+import { SidePanel } from "./SidePanel";
+import { cancelJob } from "./jobcancel";
+import { ConnectNote } from "./ConnectNote";
 import { useStatusPoll } from "./useStatusPoll";
+import { useStatusRefresh } from "./useStatusRefresh";
 import { useCheckpointRefresh } from "./useCheckpointRefresh";
 import { LiveWork, useLiveWork } from "../state/foldpref";
 import { loadChangedFilesPref, useShowsChangedFiles } from "../state/changedfiles";
 import { loadFoldWorkPref, useFoldsTurnWork } from "../state/foldwork";
 import { ChangedFilesPill } from "./ChangedFilesPill";
+import { RootMissingBanner } from "./RootMissingBanner";
+import { useConversationFiles } from "./useConversationFiles";
+import { NewAnswerAnchor } from "./NewAnswerLine";
+import { useFrozenNewAnswerAnchor } from "./newAnswerMark";
+import { onNewAnswerMarkerChange, sessionKey, showsNewAnswerMarker, useUnreadSince } from "../state/newAnswers";
 
 export type { PaneReport };
 
@@ -76,15 +92,16 @@ const totalsOf = (st: SessionStatus) => ({
   incompleteReason: st.sessionCostQuote?.incompleteReason,
 });
 
-function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, onReport, onSessionChanged, onTurnDone, pulse, findPulse, filesPulse = 0, onSettings, onOpenSession, needsProject, onOpenProject, onKeepHere, theme, dockW, dockMax, onDockW, manualBrowser = false, browserAsk = 0, onManualBrowser, alert }: PaneProps) {
+function PaneView({ port, hub, rt, title, active, visible, sideHost, side, onFocus, onReport, onSessionChanged, onTurnDone, pulse, findPulse, findTogglePulse = 0, filesPulse = 0, viewRequest, sessionRef, onSettings, onFeedback, onOpenSession, needsProject, onOpenProject, onKeepHere, connect, theme, dockW, dockMax, onDockW, manualBrowser = false, onManualBrowser, alert }: PaneProps) {
   const [s, dispatch] = useReducer(reduce, initialState);
   const [traj, trajDispatch] = useReducer(reduceTraj, initialTraj);
   const [sessionRead, setSessionRead] = useState<SessionRead>({ kind: "pending" });
   const status = sessionRead.kind === "settled" ? sessionRead.status : null;
   const ready = sessionRead.kind === "settled";
   const [tab, showView] = useShowView(rt.id, onManualBrowser);
-  const [pinned, setPinned] = useState(true);
-  const [jump, setJump] = useState(0);
+  const [sideAsk, setSideAsk] = useState(false);
+  const [worktreeTarget, setWorktreeTarget] = useState<HTMLDivElement | null>(null);
+  const [worktreePhase, setWorktreePhase] = useState<string | null>(null);
   const [mcp, setMcp] = useState<McpEntry[]>([]);
   const [askFocus, setAskFocus] = useState(0);
   const [tree, setTree] = useState<WorkspaceChanges | null>(null);
@@ -100,14 +117,26 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
   // are useful while talking to the agent, but both compete with the timeline
   // for exactly the horizontal/vertical space the analysis view explains.
   const docked = manualBrowser && tab === "flow";
-  const browserSize = useBrowserWide(docked, active && visible);
   const workbench = docked || tab === "browser";
   const flow = useRef<HTMLDivElement>(null);
   const running = s.running || !!status?.running; // A paired device can join after turn_started.
-  const fail = useCallback((e: unknown) => {
-    dispatch({ kind: "__error", text: reason(e) } as never);
+  const marker = useSyncExternalStore(onNewAnswerMarkerChange, showsNewAnswerMarker, showsNewAnswerMarker);
+  const newAnswerAt = useFrozenNewAnswerAnchor(s.items, useUnreadSince(rt.sessionPath ? sessionKey(rt.host, rt.sessionPath) : undefined), running);
+  const fail = useCallback((e: unknown, from?: string) => {
+    const shown = reason(e);
+    noteFault(e, shown);
+    dispatch({ kind: "__error", text: shown, from } as never);
   }, []);
-  const compact = useCompactNow(port, running || s.items.some((item) => item.t === "compaction" && !item.done), fail);
+  // What failed beside the work (a setting that did not apply, a link that would
+  // not open) goes to the corner; only a refused send or a failed read keeps the bar.
+  const notify = useCallback((e: unknown) => {
+    const shown = reason(e);
+    noteFault(e, shown);
+    pushToast(shown);
+  }, []);
+  const statusRead = useCallback(() => dispatch({ kind: "__error_clear", from: "status" } as never), []);
+  const conversationFiles = useConversationFiles(port, status?.workspaceRoot ?? rt.root, !!rt.host, visible && tab === "flow", revealBrowser, notify);
+  const compact = useCompactNow(port, running || s.items.some((item) => item.t === "compaction" && !item.done), notify);
   // Elapsed is a clock reading and belongs on the tick. Throughput is not: it
   // follows the deltas themselves, and expires rather than being re-derived.
   const tps = useRate(s.outWindow, running);
@@ -124,6 +153,8 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
 
   const { pacer, shown } = useBackgroundDeltas(visible, dispatch, trajDispatch);
 
+  const surfaceReplay = useSurfaceReplay(port, dispatch);
+
   const reloadMcp = useCallback(() => {
     void port.mcp().then((c) => setMcp(c.servers)).catch(() => setMcp([]));
   }, [port]);
@@ -132,6 +163,7 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
   // stream could not close: the transcript is the record, so rebuilding from it
   // is how a hole gets filled rather than rendered as a quiet turn.
   const rebuild = useCallback(() => {
+    void surfaceReplay.refresh();
     port
       .history()
       .then((msgs) => {
@@ -139,17 +171,23 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
         dispatch({ kind: "__restore", ...restored });
       })
       .catch(() => {});
-  }, [port]);
+  }, [port, surfaceReplay.refresh]);
 
   // /status is polled four times a second while a turn runs, and most of those
   // answers are word-for-word the previous one. Swapping in an equal object
   // would repaint the rail and the composer for no news at all.
   const applyStatus = useCallback((next: SessionStatus) => {
+    // The typed half /history cannot carry rides every status read: the
+    // kernel commits a text-only round before it decides to continue the
+    // turn, so only this read closes one or vouches one still runs. A
+    // payload that cannot say leaves the wire's own running standing.
+    if (next.running !== undefined) dispatch({ kind: "__running", running: next.running });
     setSessionRead((prev) => (prev.kind === "settled" && prev.status && JSON.stringify(prev.status) === JSON.stringify(next)
       ? prev : { kind: "settled", status: next }));
   }, []);
 
-  const refreshStatus = useCallback(() => port.status().then(applyStatus).catch(() => {}), [port, applyStatus]);
+  const readJob = useCallback((id: string) => port.jobOutput(id), [port]);
+  const refreshStatus = useStatusRefresh(port, applyStatus, statusRead);
 
   const [wallet, refreshWallet] = useWallet(port, accountOf(status?.modelRef));
   const hideAmounts = useHidesAmounts();
@@ -164,10 +202,10 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
   // A hole in the stream is the transport's fact; which authority answers it is
   // each model's own. The transcript is rebuilt from /history, the run graph
   // from the read the kernel rebuilds — one gap, two different re-reads.
-  useEffect(
-    () =>
-      port.subscribe(
+  useEffect(() => {
+    const sub = port.subscribe(
         (ev) => {
+          surfaceReplay.observe(ev);
           compact.onEvent(ev);
           pacer.push(ev); if (ev.kind === "turn_done") onTurnDone?.(rt.id);
           // A server finishing its handshake changes what /mcp answers, and this
@@ -192,9 +230,18 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
           rebuild();
           refreshStatus();
         },
-      ),
-    [port, pacer, rt.id, onTurnDone, reloadMcp, rebuild, refreshStatus, revalue, compact.onEvent, compact.release],
-  );
+      );
+    // Only a few panes keep a live stream (see streambudget.ts); this one says
+    // whether it is on screen or busy and the budget gives or takes its connection.
+    const release = streamBudget.attach(rt.id, sub, refreshStatus, wantRef.current);
+    return () => {
+      release();
+      sub();
+    };
+  }, [port, pacer, rt.id, onTurnDone, reloadMcp, rebuild, refreshStatus, revalue, compact.onEvent, compact.release, surfaceReplay.observe]);
+  const wantRef = useRef({ visible, busy: running });
+  wantRef.current = { visible, busy: running };
+  useEffect(() => streamBudget.update(rt.id, { visible, busy: running }), [rt.id, visible, running]);
 
   // What the rows cover is dispatched before the rows themselves, so the table
   // never spends a frame showing a prefix as if it were the whole record.
@@ -238,13 +285,17 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
   }, [running, refreshWallet, port]);
 
   useEffect(() => {
-    if (pulse) refreshStatus();
-  }, [pulse, refreshStatus]);
+    if (pulse) {
+      refreshStatus();
+      void surfaceReplay.refresh();
+    }
+  }, [pulse, refreshStatus, surfaceReplay.refresh]);
 
   // Everything on screen belongs to one session; when the kernel moves this
   // pane to another one — a switch, a new session, a rewind — all of it has to
   // be re-read rather than patched.
   const reloadSession = useCallback((current: () => boolean = () => true) => {
+    void surfaceReplay.refresh(current);
     trajDispatch({ kind: "__clear" } as never);
     port.trajectory().then((r) => { if (current()) replayTrajectory(r); }).catch(() => {});
     port.checkpoints().then((cps) => { if (current()) setCheckpoints(cps); }).catch(() => { if (current()) setCheckpoints([]); });
@@ -258,12 +309,13 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
     port.status().then((st) => {
       if (!current()) return;
       applyStatus(st);
+      statusRead();
       dispatch(totalsOf(st) as never);
-    }).catch((e) => { if (current()) fail(e); });
+    }).catch((e) => { if (current()) fail(e, "status"); });
     refreshWallet();
     onSessionChanged();
     return history;
-  }, [port, applyStatus, refreshWallet, onSessionChanged, replayTrajectory, fail]);
+  }, [port, applyStatus, statusRead, refreshWallet, onSessionChanged, replayTrajectory, fail, surfaceReplay.refresh]);
 
   // Both of these read only the user and tool cards, so they key off the
   // revision rather than the items array: a streamed answer leaves every card
@@ -300,11 +352,27 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
     setRevealChanges((n) => n + 1);
     showView("browser");
   }, [showView]);
-  useOnBump(filesPulse, openChanges);
+  const [toggleFiles, setToggleFiles] = useState(0);
+  // The workbench knows whether its explorer is the open one, so a press on
+  // Files is handed to it to decide; a column that is not showing is opened.
+  const pressFiles = useCallback(() => {
+    if (visible && workbench) setToggleFiles((n) => n + 1);
+    else openChanges();
+  }, [visible, workbench, openChanges]);
+  useOnBump(filesPulse, pressFiles);
+  useOnBump(sessionRef?.n ?? 0, () => sessionRef && setInserted((was) => ({ n: was.n + 1, text: "", session: { id: sessionRef.id, title: sessionRef.title } })));
+  useOnBump(viewRequest?.n ?? 0, () => {
+    if (viewRequest && (viewRequest.to !== "analysis" || traj.rows.length > 0)) showView(viewRequest.to);
+  });
   useEffect(() => { void loadChangedFilesPref(port); }, [port]);
   useEffect(() => { void loadFoldWorkPref(port); }, [port]);
   const foldWork = useFoldsTurnWork(port);
-  const refreshTree = useCallback(() => { void port.changes().then(setTree).catch(() => setTree(null)); void port.workspaceGit().then(setGit).catch(() => setGit(null)); }, [port]);
+  const brought = useBroughtResults(s.items);
+  const refreshTree = useCallback((git?: WorkspaceGit) => {
+    void port.changes().then(setTree).catch(() => setTree(null));
+    if (git) setGit(git);
+    else void port.workspaceGit().then(setGit).catch(() => setGit(null));
+  }, [port]);
   useEffect(() => { if (ready || counts.wrote) refreshTree(); }, [ready, refreshTree, status?.sessionPath, running, counts.wrote]);
 
   // One turn can be dozens of model round trips — the session this was measured
@@ -321,24 +389,23 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
   useEffect(() => {
     if (!ready && !roundTrips && !folds) return;
     port.context().then(setCtx).catch(() => setCtx(null));
-  }, [ready, port, roundTrips, folds, status?.sessionPath, running]);
+  }, [ready, port, roundTrips, folds, status?.sessionPath, running, pulse]);
 
-  // The sidebar has to hear about this pane's session twice: when the first
-  // turn mints the file (before that there is no row to show) and when the turn
-  // ends (that is when it has a generated title and a turn count). Without it a
-  // brand-new conversation only appeared in the tree once its pane was closed.
+  // Workspace preparation can move an empty pane before its first turn mints
+  // a transcript; the sidebar needs that root as well as later session updates.
   useEffect(() => {
     onSessionChanged();
-  }, [status?.sessionPath, running, onSessionChanged]);
+  }, [status?.workspaceRoot, status?.sessionPath, running, onSessionChanged]);
 
   // /status is the only source for background jobs and for settings the run does
   // not echo, so a live turn has to re-read it rather than infer from events.
   useStatusPoll(running && visible, refreshStatus);
 
-  const { slots, moveSurface, atComposer, inRail } = useSurfaceSlots(port, s.views, fail);
+  const { slots, moveSurface, atComposer, inRail } = useSurfaceSlots(port, s.views, notify);
 
   const submit = useSubmit({ port, running, dispatch, trajDispatch, refreshStatus, fail });
 
+  const [inserted, setInserted] = useState<{ n: number; text: string; session?: { id: string; title: string } }>({ n: 0, text: "" });
   const { queue, restored, onRestoreText, onQueueEdit, onQueueMove, onQueueRetry, onQueueRefresh, onQueuePause, onQueueRead, onQueueSendNow, onQueueCancel } = useQueueActions({
     port,
     dispatch,
@@ -359,24 +426,42 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
   });
 
   const receiptPref = receiptPrefOf(port);
-  const find = useFind(s.items, findPulse, active, useCallback(() => showView("flow"), [showView]), receiptPref);
+  const find = useFind(s.items, findPulse, active, useCallback(() => showView("flow"), [showView]), receiptPref, findTogglePulse);
 
   const onRunDetail = useCallback(() => showView("analysis"), [showView]);
-  const { quote, reply, onResend } = useReplyActions({ port, items: s.items, checkpoints, running, model: status?.label, submit, reloadSession, onSettings, onRunDetail, onError: fail, branchName: `${title} · ${t("分支")}`, onBranched: onOpenSession });
+  const previewScope = JSON.stringify([rt.id, rt.root, status?.sessionPath ?? rt.sessionPath]);
+  const [previewFile, setPreviewFile] = useState<{ port: typeof port; scope: string; path?: string }>();
+  const onActiveFile = useCallback((path: string | undefined) => {
+    setPreviewFile((old) => old?.port === port && old.scope === previewScope && old.path === path
+      ? old : { port, scope: previewScope, path });
+  }, [port, previewScope]);
+  const activeFile = visible && workbench && previewFile?.port === port && previewFile.scope === previewScope ? previewFile.path : undefined;
+  const { quote, reply, onResend } = useReplyActions({ port, items: s.items, checkpoints, running, model: status?.label, submit: (line) => submit(line).then((r) => r === true), reloadSession, onSettings, onRunDetail, onError: fail, branchName: `${title} · ${t("分支")}`, onBranched: onOpenSession });
+  const fileReply = useMemo(() => ({
+    ...reply, files: conversationFiles.refs, activeFile,
+    onAddFile: (reference: string) => setInserted((was) => ({ n: was.n + 1, text: reference })),
+    openDeliveredFile: !rt.host && port.opensFiles() ? (path: string) => port.openDocument(path) : undefined,
+    revealDeliveredFile: !rt.host && port.revealsFiles() ? (path: string) => port.revealInFileManager(path) : undefined,
+  }), [reply, conversationFiles.refs, rt.host, port, activeFile]);
 
   // Where the bottom is moves as blocks mount under it, so this only asks the
   // transcript to follow again and lets it scroll itself into place.
-  const toLatest = () => setJump((n) => n + 1);
 
   // Who is waited on is the kernel's answer, read from the decision list it
   // already publishes. This used to compare the label on screen against two
   // Chinese literals that the reducer had written — a translation key deciding
   // whether the run reads as moving.
   const blocked = hasPendingDecision(status);
+  const browserSize = useBrowserWide(docked, active && visible, blocked);
   const run = runState({ blocked, running, hasItems: s.items.length > 0, terminal: s.terminal });
-  const cost = money(s.metrics.cost, s.metrics.currency);
+  const cost = s.metrics.coverage === "none" ? "" : money(s.metrics.cost, s.metrics.currency);
   const contextPercent = ctx && ctx.window > 0 ? Math.min(100, Math.round((ctx.used / ctx.window) * 100)) : null;
   const walletDisplay = wallet.kind === "read" ? wallet.reading.display : "";
+
+  // A pane out of sight that is asking whether to trust its folder is waiting on
+  // the person, though the kernel counts no decision for it; the one in front
+  // shows the card itself.
+  const trustWaiting = !active && postureNote(status) === "trust";
 
   // The chrome reads the focused pane. Reporting from an effect keeps it out of
   // render, where it would set state on the parent mid-paint.
@@ -385,15 +470,19 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
       status,
       title,
       steer: waiting(queue).filter((it) => it.intent === "steer").length,
-      run,
-      live: running || blocked,
+      run: trustWaiting && run === "idle" ? "halt" : run,
+      live: running || blocked || trustWaiting,
       cost,
       contextPercent,
       context: ctx,
       mcp,
       wallet: walletDisplay,
+      interactions:s.interactions,
+      view: docked ? "browser" : tab,
+      rows: traj.rows.length,
+      surfaces,
     });
-  }, [rt.id, onReport, status, title, queue, run, running, blocked, cost, contextPercent, ctx, mcp, walletDisplay]);
+  }, [rt.id, onReport, status, title, queue, run, running, blocked, trustWaiting, cost, contextPercent, ctx, mcp, walletDisplay, s.interactions, docked, tab, traj.rows.length, surfaces]);
 
   return (
     <section
@@ -407,26 +496,23 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
       onMouseDownCapture={active ? undefined : onFocus}
       onFocusCapture={active ? undefined : onFocus}
     >
-      <PaneNav
-        view={docked ? "browser" : tab}
-        onPick={showView}
-        rows={traj.rows.length} plan={s.plan} goal={status?.goal}
-        surfaces={surfaces}
-      />
-
       <Find find={find} />
 
       <div className="pbody rewind-notice-host" data-dock={tab === "flow" ? "" : undefined} data-full={tab === "browser" ? "" : undefined}>
       <RewindNotice key={JSON.stringify([rt.id, rt.root, status?.sessionPath ?? rt.sessionPath])} readUndo={onReadUndo} onUndo={onUndoAvailable} busy={!!restoreNotice?.working || !!reloadFailure?.working} refreshKey={checkpoints} moved={s.rewindMoved} running={running} shown={visible && tab === "flow" && !rt.readOnly} />
       <div className="pviews">
+      <div className="worktree-stage-host" ref={setWorktreeTarget} hidden={tab !== "flow" || !worktreePhase}/>
 
       <ReceiptPrefContext.Provider value={receiptPref}>
       <PaneShown.Provider value={shown}>
       <LiveWork.Provider value={live}>
+      <NewAnswerAnchor.Provider value={marker ? newAnswerAt : null}>
       <Transcript port={port}
+        onSettings={onSettings}
+        brought={brought}
         foldWork={foldWork}
         turnRunning={running}
-        reply={reply}
+        reply={fileReply}
         onResend={onResend}
         items={s.items}
         entering={s.entranceOwed}
@@ -435,9 +521,7 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
         takeovers={s.takeovers}
         waiting={s.waiting}
         scroll={flow}
-        hidden={tab !== "flow"}
-        onPinned={setPinned}
-        jump={jump}
+        hidden={tab !== "flow" || !!worktreePhase}
         focus={null}
         find={find.at}
         query={find.query}
@@ -457,9 +541,11 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
         onOpenProject={onOpenProject}
         onKeepHere={onKeepHere}
       />
+      </NewAnswerAnchor.Provider>
       </LiveWork.Provider>
       </PaneShown.Provider>
       </ReceiptPrefContext.Provider>
+      {conversationFiles.menuView}
 
       <div className="scroll" data-pane="analysis" hidden={tab !== "analysis"}>
         {tab === "analysis" && (
@@ -481,20 +567,25 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
       <div className="scroll" data-pane="browser" hidden={tab === "analysis"} inert={!workbench}>
           <WorkbenchPanel
             port={port}
+            hub={hub}
+            fileRequest={conversationFiles.request}
             tabs={pages}
             wideMode={docked ? { wide: browserSize.size === "wide", onToggle: browserSize.toggle } : undefined}
+            fullMode={docked ? { full: browserSize.size === "full", onToggle: browserSize.toggleFull } : undefined}
             manual={manualBrowser}
-            browserAsk={browserAsk}
             shown={visible && workbench}
             onSurfaces={setSurfaces}
+            onActiveFile={onActiveFile}
             scheme={theme === "light" ? "light" : "dark"}
-            changes={tree?.changes ?? []} onTreeChanged={refreshTree} revealChanges={revealChanges}
+            changes={tree?.changes ?? []} onTreeChanged={refreshTree} revealChanges={revealChanges} toggleFiles={toggleFiles}
             running={running}
             wrote={counts.wrote}
             remote={!!rt.host}
-            workspaceRoot={status?.workspaceRoot}
+            workspaceRoot={status?.workspaceRoot ?? rt.root}
             onCloseManual={() => onManualBrowser?.(false)}
-            onExternal={(url) => void port.openExternal(url).catch(fail)}
+            onExternal={(url) => void port.openExternal(url).catch(notify)}
+            onAddToChat={(reference) => setInserted((was) => ({ n: was.n + 1, text: reference }))}
+            onQuoteSelection={reply.onQuoteFile}
           />
       </div>
 
@@ -502,16 +593,15 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
           analysis; hidden removes it from layout without throwing its state
           away. */}
       <div className="compose" hidden={tab !== "flow"}>
-        <button className="jump" hidden={pinned || tab !== "flow"} onClick={toLatest}>
-          {t("↓ 回到最新")}
-        </button>
         <span className="glowring" aria-hidden="true">
           <i />
         </span>
         {/* Everything stacked above the input box shares one ceiling, so no
             child of this region may grow without bound. */}
-        <PlanFold plan={s.plan} shown={tab === "flow"} paused={blocked} />
-        {tab === "flow" && <RunLine label={chipLabel(s, running)} running={running} blocked={blocked} sent={sent} received={received} estimated={s.outLive > 0} />}
+        <PlanFold plan={s.plan} goal={status?.goal} goalStatus={status?.goalStatus} goalRuntime={status?.goalRuntime} shown={tab === "flow"} paused={blocked} />
+        {tab === "flow" && <RunLine label={worktreePhase ? t(["failed", "cleanup_failed"].includes(worktreePhase) ? "创建失败" : worktreePhase === "cancelled" ? "创建已取消" : "准备工作目录") : chipLabel(s, running)} running={running} blocked={blocked} since={s.running ? s.runSince : undefined} sent={sent} received={received} estimated={s.outLive > 0}>
+          <AgentCompositionPicker port={port} binding={status?.agentComposition} locked={status?.agentCompositionLocked} running={running} onChanged={refreshStatus} onSettings={() => onSettings("persona")} onError={notify} />
+        </RunLine>}
         <div className="composeaux">
           <Queue
             queue={queue}
@@ -525,6 +615,8 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
             onRefresh={onQueueRefresh}
             onPause={onQueuePause}
           />
+          <PeerHeldBar port={port} project={rt.host ? undefined : { path: rt.root, name: rt.name }} />
+          {connect && <ConnectNote offer={connect} />}
           <PostureNote port={port} status={status} onChanged={refreshStatus} />
         {/* Views the user (or the extension) put next to the composer. They sit
             above it rather than inside it: the input box is the one thing an
@@ -536,7 +628,7 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
                   key={slotKey(ext)}
                   ext={ext}
                   assigned={slots}
-                  onAction={(id) => void port.invokeExtensionAction(id).catch(fail)}
+                  onAction={(id) => void port.invokeExtensionAction(id).catch(notify)}
                   onMove={(slot) => void moveSurface(ext, slot)}
                 />
               ))}
@@ -544,12 +636,15 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
           )}
         </div>
         {alert && <div className="cmpalert">{alert}</div>}
+        <RootMissingBanner items={s.items} onPick={onOpenProject} />
         {pill && <ChangedFilesPill changes={tree?.changes ?? []} onOpen={openChanges} />}
-        <Composer port={port} status={status} running={running} quote={quote} restore={restored} focus={askFocus} onSubmit={submit} onChanged={refreshStatus} onError={fail} onSettings={onSettings} changeCount={changeCount} countElsewhere={pill} git={git} onTreeChanged={refreshTree} pulse={pulse} draftKey={draftKey(rt.host ?? "", rt.root, rt.sessionPath || status?.sessionPath || "")} />
+        <Composer worktreeTarget={worktreeTarget} onWorktreePhase={setWorktreePhase} port={port} fresh={ready && !rt.host && s.items.length === 0} status={status} running={running} quote={quote} restore={restored} inject={inserted} focus={askFocus} onSubmit={submit} onChanged={refreshStatus} onError={notify} onSettings={onSettings} side={sideAsk} onSide={() => setSideAsk((on) => !on)} sidePanel={sideAsk ? <SidePanel port={port} onClose={() => setSideAsk(false)} /> : null} changeCount={changeCount} countElsewhere={pill} git={git} onTreeChanged={refreshTree} pulse={pulse} draftKey={draftKey(rt.host ?? "", rt.root, rt.sessionPath || status?.sessionPath || "")} />
         <MeterRail
           tps={tps} trail={trail} running={running} speed={speed} metrics={s.metrics} ctx={ctx} mcp={mcp} compact={compact} cost={cost}
           wallet={wallet} hideAmounts={hideAmounts} tasks={rail.tasks} jobs={jobs} onSettings={onSettings}
-          onCancelJob={(id) => port.cancelJob(id).then(refreshStatus, fail)}
+          onCancelJob={(id) => cancelJob(port, id, notify, refreshStatus).then(() => {})}
+          onReadJob={readJob}
+          usage={status?.sessionUsage} quote={status?.sessionCostQuote} tariff={status?.tariff} onTariffFlip={refreshStatus}
         />
         {reloadFailure && <ReloadNotice failure={reloadFailure} onReload={onReloadSession} />}
         {/* Below the box, under a ceiling of their own. Both arrive unbidden and
@@ -557,10 +652,7 @@ function PaneView({ port, rt, title, active, visible, sideHost, side, onFocus, o
             be on screen at once. */}
         <div className="composenotes">
           {s.error && (
-            <div className="errbar" role="alert">
-              <span>{s.error}</span>
-              <button onClick={() => dispatch({ kind: "__error", text: "" } as never)}>{t("知道了")}</button>
-            </div>
+            <ErrorBar text={s.error} onDismiss={() => dispatch({ kind: "__error", text: "" } as never)} onReport={onFeedback} />
           )}
           <RuntimeBar notices={s.runtime} onSettings={onSettings} onSeen={(id) => dispatch({ kind: "__runtime_seen", id } as never)} watch={s} onStall={(a) => a === "stop" ? void port.cancel().catch(fail) : a === "continue" ? void submit(t("继续")) : dispatch({ kind: a === "mute" ? "__stall_mute" : "__stall_dismiss" } as never)} />
         </div>

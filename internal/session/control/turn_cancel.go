@@ -75,6 +75,7 @@ func (c *Controller) finishGuardedTurn(err error, completion *guardedTurnComplet
 			}
 			// No parked compatibility body: admit the next durable inbox item.
 			c.maybeDispatchInbox()
+			c.notifyIdle()
 			return
 		}
 		next := c.parkedTurns[0]
@@ -100,6 +101,7 @@ func (c *Controller) finishGuardedTurn(err error, completion *guardedTurnComplet
 		Outcome:        turnOutcome(err),
 		CheckpointTurn: c.validatedCheckpointTurn(completion),
 		WorkDurationMs: turnWorkMs(err, cancelRequested, completion),
+		WorkStartedAt:  turnWorkStartedAt(err, cancelRequested, completion),
 		Receipt:        c.executor.CompletionReceipt(),
 		ItemID:         activeInboxID,
 	}
@@ -626,7 +628,7 @@ func interruptedToolSummary(call provider.ToolCall) provider.InterruptedToolSumm
 		summary.Files = append(summary.Files, path)
 	}
 	var args map[string]any
-	if json.Unmarshal([]byte(call.Arguments), &args) == nil {
+	if json.Unmarshal([]byte(call.ExecutionArguments()), &args) == nil {
 		for _, key := range []string{"path", "file", "file_path", "filename"} {
 			if value, ok := args[key].(string); ok && strings.TrimSpace(value) != "" {
 				addFile(value)
@@ -658,4 +660,13 @@ func turnWorkMs(err error, cancelled bool, completion *guardedTurnCompletion) in
 		return 0
 	}
 	return completion.workMs.Load()
+}
+
+// turnWorkStartedAt is when the turn that reports a run time began; it is
+// reported with that run time or not at all.
+func turnWorkStartedAt(err error, cancelled bool, completion *guardedTurnCompletion) int64 {
+	if turnWorkMs(err, cancelled, completion) == 0 {
+		return 0
+	}
+	return completion.startedAt
 }

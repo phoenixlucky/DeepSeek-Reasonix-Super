@@ -66,6 +66,8 @@ func (m *model) queueSlash(display string) (tea.Cmd, bool) {
 			}
 			return msg
 		}
+	case "/btw":
+		run = m.btwRun(rest)
 	case "/export":
 		run = m.exportSession()
 	case "/copy":
@@ -195,6 +197,8 @@ func (m *model) onQueueMsg(msg tea.Msg) (tea.Cmd, bool) {
 		return m.onCopyParts(msg), true
 	case copiedMsg:
 		return m.onCopiedResponse(msg), true
+	case btwMsg:
+		return m.onBtw(msg), true
 	}
 	return nil, false
 }

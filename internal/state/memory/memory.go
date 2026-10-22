@@ -22,6 +22,7 @@ type Set struct {
 	CWD                    string   // project working dir used for discovery
 	UserDir                string   // user config root (may be "")
 	InstructionDiagnostics []instruction.Diagnostic
+	StoreError             error `json:"-"`
 
 	// recall is the snapshot's prebuilt retrieval index (nil when memory is
 	// hidden or empty); Set.AutoRecall serves each turn from it without disk.
@@ -45,8 +46,8 @@ type Options struct {
 }
 
 // Load discovers all memory for a session: the hierarchical docs and the
-// auto-memory index. It is best-effort and never errors — missing files just
-// mean less memory — so boot can call it unconditionally.
+// auto-memory index. Missing directories are empty; other store read failures
+// are retained in StoreError and surfaced by automatic recall.
 func Load(opts Options) *Set {
 	cwd := opts.CWD
 	if cwd == "" {
@@ -62,14 +63,23 @@ func Load(opts Options) *Set {
 	}
 	store := StoreFor(opts.UserDir, cwd)
 	store.PinnedBudgetChars = opts.PinnedBudgetChars
+	pinned, storeErr := store.pinnedGuidanceForProject()
+	var recall *RecallIndex
+	if storeErr == nil {
+		recall, storeErr = BuildRecallIndex(store)
+	}
+	if storeErr != nil {
+		pinned = nil
+	}
 	return &Set{
 		Docs:                   resolved.Documents,
-		PinnedGuidance:         store.pinnedGuidanceForProject(),
+		PinnedGuidance:         pinned,
 		Store:                  store,
 		CWD:                    cwd,
 		UserDir:                opts.UserDir,
 		InstructionDiagnostics: resolved.Diagnostics,
-		recall:                 BuildRecallIndex(store),
+		recall:                 recall,
+		StoreError:             storeErr,
 		opts:                   opts,
 	}
 }

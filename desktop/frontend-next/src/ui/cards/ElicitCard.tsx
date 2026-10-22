@@ -50,7 +50,6 @@ function ElicitFormCard({ item, onAnswer }: ElicitProps) {
     <div className="call" data-k="ask" data-prompt={sealed ? "settled" : "pending"}>
       <div className="g">
         <Sym glyph="?" />
-        <span className="line" />
       </div>
       <div className="c">
         <div className="hl">

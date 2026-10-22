@@ -215,7 +215,7 @@ func (p *ParallelTasksTool) Execute(ctx context.Context, args json.RawMessage) (
 		running[idx] = true
 		label := items[idx].Label
 		subID := parallelNodeID(parentID, idx)
-		onWait, onSlot := p.taskTool.itemHooks(ctx, sink, subID)
+		onWait, onSlot, _ := p.taskTool.itemHooks(ctx, sink, subID, "")
 		dispatchArgs, _ := json.Marshal(map[string]string{"prompt": t.Prompt, "description": label})
 		sink.Emit(event.Event{
 			Kind: event.ToolDispatch,

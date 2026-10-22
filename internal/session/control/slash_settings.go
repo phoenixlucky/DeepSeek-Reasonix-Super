@@ -55,6 +55,9 @@ func (c *Controller) effortStatusText() string {
 	}
 	capability := config.EffortCapabilityForEntry(entry)
 	if !capability.Supported {
+		if config.EffortUndeclared(entry) {
+			return fmt.Sprintf(i18n.M.EffortUndeclaredFmt, entry.Name)
+		}
 		return fmt.Sprintf(i18n.M.EffortUnsupportedFmt, entry.Name)
 	}
 	text := fmt.Sprintf(i18n.M.EffortStatusFmt,

@@ -130,7 +130,7 @@ type queryAudit struct {
 func auditQueries(runs []contextMetrics) queryAudit {
 	a := queryAudit{Reformulations: map[string]int{}, MissedProbeTerms: map[string]int{}}
 	for _, r := range runs {
-		if r.Contaminated {
+		if r.Failed || r.Contaminated {
 			continue
 		}
 		a.Runs++

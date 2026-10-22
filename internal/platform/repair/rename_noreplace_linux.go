@@ -2,8 +2,8 @@
 
 package repair
 
-import "golang.org/x/sys/unix"
+import "reasonix/internal/base/fileutil"
 
 func renameRepairNodeNoReplace(oldPath, newPath string) error {
-	return unix.Renameat2(unix.AT_FDCWD, oldPath, unix.AT_FDCWD, newPath, unix.RENAME_NOREPLACE)
+	return fileutil.RenameNoReplace(oldPath, newPath)
 }

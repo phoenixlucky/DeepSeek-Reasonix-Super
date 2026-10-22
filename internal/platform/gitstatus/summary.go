@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"reasonix/internal/platform/gitcmd"
 )
@@ -28,24 +29,47 @@ func Summary(ctx context.Context, repo gitcmd.Repo) (Info, bool) {
 	}
 	top := repo.Top()
 	info := Info{Name: filepath.Base(top.WorkTree)}
+	var reads sync.WaitGroup
+	reads.Go(func() { info.Branch, info.Detached = branchOf(ctx, top) })
+	reads.Go(func() {
+		if raw, err := top.Command(ctx, "diff", "--numstat", "-z", "HEAD", "--").Output(); err == nil {
+			for _, n := range ParseNumstatZ(raw) {
+				if n.added != nil {
+					info.Added += *n.added
+				}
+				if n.removed != nil {
+					info.Removed += *n.removed
+				}
+			}
+		}
+	})
+	reads.Go(func() {
+		if raw, err := top.Command(ctx, "status", "--porcelain=v1", "-z", "--untracked-files=normal").Output(); err == nil {
+			for _, c := range ParsePorcelainZ(raw) {
+				if c.Status == "??" {
+					info.Untracked++
+				}
+			}
+		}
+	})
+	reads.Wait()
+	if ctx.Err() != nil {
+		return Info{}, false
+	}
+	return info, true
+}
+
+// Identity is the part of Info that costs one process: where the work tree is
+// and which branch it is on, with no counts. A caller that only names a
+// repository (a heading, a list of them) reads this and leaves the diff to the
+// repository that is open.
+func Identity(ctx context.Context, repo gitcmd.Repo) (Info, bool) {
+	if !repo.Valid() {
+		return Info{}, false
+	}
+	top := repo.Top()
+	info := Info{Name: filepath.Base(top.WorkTree)}
 	info.Branch, info.Detached = branchOf(ctx, top)
-	if raw, err := top.Command(ctx, "diff", "--numstat", "-z", "HEAD", "--").Output(); err == nil {
-		for _, n := range ParseNumstatZ(raw) {
-			if n.added != nil {
-				info.Added += *n.added
-			}
-			if n.removed != nil {
-				info.Removed += *n.removed
-			}
-		}
-	}
-	if raw, err := top.Command(ctx, "status", "--porcelain=v1", "-z", "--untracked-files=normal").Output(); err == nil {
-		for _, c := range ParsePorcelainZ(raw) {
-			if c.Status == "??" {
-				info.Untracked++
-			}
-		}
-	}
 	if ctx.Err() != nil {
 		return Info{}, false
 	}

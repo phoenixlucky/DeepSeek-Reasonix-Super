@@ -490,3 +490,25 @@ func TestOutputBudgetKeepsAWindowProportionalMarginOnALargeWindow(t *testing.T) 
 		t.Fatalf("a prompt 1%% above its estimate plus the %d-token budget is %d, past the %d window", got, actual+got, window)
 	}
 }
+
+// The prompt size at which the send-time output check refuses a request is the
+// size at which a fold must free room. The fold's hard ceiling used to sit above
+// it, so a prompt in between was neither folded nor sendable, and the person
+// saw the refusal beside a fold that declined for being worth too little.
+func TestTheFoldCeilingStopsWhereTheSendTimeOutputCheckStops(t *testing.T) {
+	prov := &sharedWindowTestProvider{budget: 8 * 1024, shared: true}
+	a := &Agent{agentConfig: agentConfig{contextWindow: 128_000}, svc: agentServices{prov: prov, sink: event.Discard}, sess: sessionRuntime{output: outputBudgetState{outputBudget: prov.budget}}}
+	w := a.window()
+	ceiling := w.hardInputCeiling()
+	atCeiling := provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: strings.Repeat("x", 4)}}}
+	if _, _, err := w.effectiveOutputBudget(atCeiling); err != nil {
+		t.Fatalf("a tiny prompt is refused: %v", err)
+	}
+	if want := 128_000 - outputBudgetReserveFor(128_000); ceiling != want {
+		t.Fatalf("hardInputCeiling = %d, want the window less the output reserve (%d)", ceiling, want)
+	}
+	prov.shared = false
+	if got := w.hardInputCeiling(); got != 128_000-protocolReserveTokens {
+		t.Fatalf("a provider whose reply does not share the window keeps the protocol reserve only, got %d", got)
+	}
+}

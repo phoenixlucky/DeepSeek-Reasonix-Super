@@ -18,6 +18,7 @@ func TestAppearanceSurvivesSaveAndLoad(t *testing.T) {
 	cfg := LoadForEdit(path)
 	cfg.Desktop.Appearance.Zoom = 1.2
 	cfg.Desktop.Appearance.ReadSize = 15
+	cfg.Desktop.Appearance.TextSize = 1.15
 	cfg.Desktop.Appearance.FontUI = "Inter"
 	cfg.Desktop.Appearance.Wallpaper = WallpaperConfig{File: "a1b2.png", Opacity: 0.5, Dim: 0.55, FocusX: 0.4, FocusY: 0.6}
 	// The [desktop] table only belongs to a user config, so ask for that scope
@@ -34,8 +35,8 @@ func TestAppearanceSurvivesSaveAndLoad(t *testing.T) {
 	if got.Wallpaper.Opacity != 0.5 || got.Wallpaper.Dim != 0.55 || got.Wallpaper.FocusX != 0.4 || got.Wallpaper.FocusY != 0.6 {
 		t.Fatalf("wallpaper settings = %+v, want the values saved", got.Wallpaper)
 	}
-	if got.Zoom != 1.2 || got.ReadSize != 15 || got.FontUI != "Inter" {
-		t.Fatalf("appearance = %+v, want zoom/read size/font kept", got)
+	if got.Zoom != 1.2 || got.ReadSize != 15 || got.TextSize != 1.15 || got.FontUI != "Inter" {
+		t.Fatalf("appearance = %+v, want zoom/read size/text size/font kept", got)
 	}
 
 	// Saving again must not lose what the first save wrote.
@@ -44,6 +45,14 @@ func TestAppearanceSurvivesSaveAndLoad(t *testing.T) {
 	}
 	if again := LoadForEdit(path).Desktop.Appearance; again.Wallpaper.File != "a1b2.png" || again.Zoom != 1.2 {
 		t.Fatalf("second save lost fields: %+v", again)
+	}
+}
+
+func TestClampTextSizeHoldsTheDeclaredRange(t *testing.T) {
+	for _, c := range []struct{ in, want float64 }{{0, 0}, {-1, 0}, {5, TextSizeMax}, {0.2, TextSizeMin}, {1.1, 1.1}} {
+		if got := ClampTextSize(c.in); got != c.want {
+			t.Errorf("ClampTextSize(%v) = %v, want %v", c.in, got, c.want)
+		}
 	}
 }
 

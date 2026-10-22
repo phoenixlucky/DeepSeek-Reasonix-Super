@@ -11,6 +11,8 @@ const user = (id: string, text: string): Item => ({ t: "user", id, text });
 const say = (id: string, text: string): Item => ({ t: "say", id, text, done: true });
 const call = (id: string, name: string): Item => ({ t: "tool", id, tool: { id, name, readOnly: true }, running: false, children: [] });
 
+const running = (id: string, name: string): Item => ({ t: "tool", id, tool: { id, name, readOnly: true }, running: true, children: [] });
+
 const noop = async () => undefined as never;
 
 function draw(items: Item[]) {
@@ -23,8 +25,6 @@ function draw(items: Item[]) {
       waiting={{}}
       scroll={{ current: null }}
       hidden={false}
-      onPinned={() => {}}
-      jump={0}
       focus={null}
       onApprove={noop}
       onFullAccess={noop}
@@ -115,5 +115,25 @@ describe("the blocks a transcript mounts in", () => {
     draw([user("u1", "做这件事"), say("s1", "在做"), { t: "user", id: "st", text: "顺便看下测试", steer: true }, say("s2", "好")]);
 
     expect(document.querySelectorAll(".turn-rule")).toHaveLength(1);
+  });
+});
+
+describe("the reply's actions while its own work is still running", () => {
+  const actsOf = (chunk: HTMLElement) => chunk.querySelectorAll(".call[data-k='say'] .acts").length;
+
+  it("stay out of the way while a tool under the sentence runs, so the reply does not read as finished", () => {
+    const chunk = draw([user("u", "做这件事"), say("s1", "先看看代码"), running("t1", "bash")]);
+    expect(chunk.querySelector(".activity-group[data-running]")).toBeTruthy();
+    expect(actsOf(chunk)).toBe(0);
+  });
+
+  it("appear once the work under the sentence is done", () => {
+    const chunk = draw([user("u", "做这件事"), say("s1", "先看看代码"), call("t1", "bash")]);
+    expect(actsOf(chunk)).toBe(1);
+  });
+
+  it("stay on an earlier sentence when only a later stretch of work runs", () => {
+    const chunk = draw([user("u", "做这件事"), say("s1", "先看看代码"), call("t1", "bash"), say("s2", "再改这里"), running("t2", "edit_file")]);
+    expect(actsOf(chunk)).toBe(1);
   });
 });

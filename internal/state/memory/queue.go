@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 )
 
-// Queue receives a one-line note about a memory change a tool just made, so the
-// controller can fold it into the current turn — taking effect this session
-// without touching the cache-stable system prefix. The remember/forget tools
-// read it from their call context the same way background tools read the job
-// manager.
-type Queue interface{ QueueMemory(note string) }
+// Queue receives a one-line note about a memory change a tool just made, plus
+// the typed facts that change wrote, so the controller can fold it into the
+// current turn. The typed facts are the contract: the controller records what
+// the tool wrote and never parses the note's prose back into memory. A delete
+// passes no fact, because there is nothing left to re-check.
+type Queue interface {
+	QueueMemory(note string, delivered ...Memory)
+}
 
 type autoMemoryWriteClaimer interface {
 	ClaimAutoMemoryWrite(args json.RawMessage) bool

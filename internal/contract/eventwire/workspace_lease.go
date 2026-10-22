@@ -13,6 +13,7 @@ type WorkspaceLease struct {
 	HolderSessionID string   `json:"holderSessionId,omitempty"`
 	Paths           []string `json:"paths,omitempty"`
 	RequestedPaths  []string `json:"requestedPaths,omitempty"`
+	Repository      string   `json:"repository,omitempty"`
 }
 
 func toWireWorkspaceLease(l *event.WorkspaceLease) *WorkspaceLease {
@@ -23,7 +24,7 @@ func toWireWorkspaceLease(l *event.WorkspaceLease) *WorkspaceLease {
 		Contended: l.Contended, Reported: l.Reported,
 		WaitedMs: l.WaitedMs, HeldMs: l.HeldMs, IdleMs: l.IdleMs,
 		Holder: l.Holder, HolderSessionID: l.HolderSessionID,
-		Paths: l.Paths, RequestedPaths: l.RequestedPaths,
+		Paths: l.Paths, RequestedPaths: l.RequestedPaths, Repository: l.Repository,
 	}
 }
 

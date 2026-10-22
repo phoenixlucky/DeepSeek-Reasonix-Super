@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { t } from "../i18n";
 import { reason } from "../i18n/kernel";
 import type { AgentPort } from "../port/port";
@@ -14,6 +14,7 @@ export function WorkbenchExplorerHead({
   hidden,
   onHidden,
   onReveal,
+  openWith,
 }: {
   port: AgentPort;
   count: number;
@@ -21,6 +22,7 @@ export function WorkbenchExplorerHead({
   hidden: boolean;
   onHidden: (on: boolean) => void;
   onReveal: () => void;
+  openWith?: ReactNode;
 }) {
   // Which editor opened it, or why none did. The host knows both and says so,
   // because a button that does nothing is indistinguishable from a broken one.
@@ -65,6 +67,7 @@ export function WorkbenchExplorerHead({
           <StudioIcon name="reveal" />
         </button>
       )}
+      {openWith}
     </div>
   );
 }

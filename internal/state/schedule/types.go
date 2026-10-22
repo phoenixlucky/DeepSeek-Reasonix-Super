@@ -56,6 +56,9 @@ const (
 
 const ConfirmedByHuman = "human-frontend"
 
+// ConfirmedViaTerminal records that the confirmation was typed at a terminal.
+const ConfirmedViaTerminal = "terminal"
+
 type Trigger struct {
 	Kind     TriggerKind `json:"kind"`
 	At       time.Time   `json:"at,omitzero"`
@@ -91,6 +94,7 @@ type Budget struct {
 type Confirmation struct {
 	At     time.Time `json:"at"`
 	By     string    `json:"by"`
+	Via    string    `json:"via,omitempty"`
 	Digest string    `json:"digest"`
 }
 

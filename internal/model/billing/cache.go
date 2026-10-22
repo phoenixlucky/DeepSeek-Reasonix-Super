@@ -23,6 +23,7 @@ const (
 type Cache struct {
 	client *http.Client
 	url    string
+	format Format
 	key    string
 
 	mu       sync.Mutex
@@ -41,8 +42,8 @@ type cacheState struct {
 
 // NewCache returns a cache for url; an empty url yields a cache that answers
 // (nil, nil) without ever reaching the network.
-func NewCache(client *http.Client, url, key string) *Cache {
-	return &Cache{client: client, url: strings.TrimSpace(url), key: key}
+func NewCache(client *http.Client, url string, format Format, key string) *Cache {
+	return &Cache{client: client, url: strings.TrimSpace(url), format: format, key: key}
 }
 
 // Store hands the same cache to everyone reading one wallet. Opening a
@@ -56,17 +57,17 @@ type Store struct {
 
 // Cache returns the shared cache for this endpoint and credential. A nil Store
 // answers with a private cache, so a caller with no store still works.
-func (s *Store) Cache(client *http.Client, url, key string) *Cache {
+func (s *Store) Cache(client *http.Client, url string, format Format, key string) *Cache {
 	if s == nil {
-		return NewCache(client, url, key)
+		return NewCache(client, url, format, key)
 	}
-	id := strings.TrimSpace(url) + "\x00" + key
+	id := strings.TrimSpace(url) + "\x00" + string(format) + "\x00" + key
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if held, ok := s.by[id]; ok {
 		return held
 	}
-	made := NewCache(client, url, key)
+	made := NewCache(client, url, format, key)
 	if s.by == nil {
 		s.by = map[string]*Cache{}
 	}
@@ -97,6 +98,9 @@ func (c *Cache) Read(ctx context.Context) Reading {
 	if c == nil || c.url == "" {
 		return Reading{}
 	}
+	if _, ok := Resolve(c.url, c.format); !ok {
+		return Reading{Configured: true, Err: ErrFormatNotDeclared}
+	}
 	for {
 		c.mu.Lock()
 		if time.Since(c.state.tried) < freshFor {
@@ -117,7 +121,7 @@ func (c *Cache) Read(ctx context.Context) Reading {
 		c.inflight = done
 		c.mu.Unlock()
 
-		balance, err := FetchWithClient(ctx, c.client, c.url, c.key)
+		balance, err := FetchFormat(ctx, c.client, c.url, c.format, c.key)
 
 		c.mu.Lock()
 		c.state.tried = time.Now()

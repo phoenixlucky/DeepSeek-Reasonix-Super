@@ -57,9 +57,9 @@ export function Policy({ port, status, onChanged, onBoundary }: Props) {
             : <svg viewBox="0 0 16 16"><path d="M8 2.2 13 4v3.5c0 3-1.8 5.1-5 6.3-3.2-1.2-5-3.3-5-6.3V4l5-1.8Z" /></svg>}
         </span>
         <span className={apv === "yolo" ? "lb polrisk" : "lb"} data-display={label}>{label}</span>
-        <span className="studio-control-chevron" aria-hidden="true">⌄</span>
+        <StudioIcon name="down" className="studio-control-chevron" />
       </button>
-      <div className="menu modemenu polmenu" role="group" aria-label={t("执行权限")} hidden={!open}>
+      <div className="menu modemenu polmenu composer-menu" role="group" aria-label={t("执行权限")} hidden={!open}>
         <div className="studio-policy-head"><b>{t("执行权限")}</b><small>{t("当前任务")}</small></div>
         <div className="studio-policy-primary">
           {APPROVALS.map(([value, name, note]) => (

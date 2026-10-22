@@ -34,7 +34,10 @@ type Store struct {
 	limits   Limits
 	man      *manifest
 	readonly bool
-	closed   bool
+	// unrecovered records that the queue bodies could not be read, so the
+	// manifest on disk is not a statement about the queue's contents.
+	unrecovered bool
+	closed      bool
 	// listeners receive revision bumps after durable commits (non-blocking).
 	listeners []func(InboxSnapshot)
 }
@@ -163,6 +166,7 @@ func (s *Store) loadOrInitLocked() error {
 	if errors.Is(err, os.ErrNotExist) {
 		s.man = emptyManifest(s.runID)
 		s.readonly = false
+		s.unrecovered = false
 		return nil
 	}
 	if err != nil {
@@ -172,15 +176,28 @@ func (s *Store) loadOrInitLocked() error {
 	if err != nil {
 		// Corrupt manifest → quarantine, salvage orphan blobs as uncertain
 		// items, pause for user inspection. Never present "0 recovered".
+		salvaged, salvageErr := s.salvageOrphanBlobsLocked()
+		if salvageErr != nil {
+			// The bodies could not be read, so no manifest here can state the
+			// queue's contents. Leave the corrupt bytes in place as evidence
+			// and pause instead of committing a fabricated empty queue.
+			s.man = emptyManifest(s.runID)
+			s.man.Paused = true
+			s.readonly = false
+			s.unrecovered = true
+			return nil
+		}
 		_ = s.quarantineFileLocked(path, "manifest-corrupt")
-		salvaged := s.salvageOrphanBlobsLocked()
 		s.man = emptyManifest(s.runID)
 		s.man.Paused = true
+		s.man.PauseCode = PauseRecovered
 		s.man.Recovered = true
 		s.man.RecoveredN = len(salvaged)
 		s.man.Items = salvaged
+		s.unrecovered = false
 		return s.commitManifestLocked(s.man)
 	}
+	s.unrecovered = false
 	if man.SchemaVersion > SchemaVersion {
 		s.man = man
 		s.readonly = true
@@ -226,6 +243,7 @@ func (s *Store) loadOrInitLocked() error {
 		}
 		if recovered > 0 || len(man.Items) > 0 {
 			man.Paused = true
+			man.PauseCode = PauseRecovered
 			man.Recovered = true
 			man.RecoveredN = recovered
 		}
@@ -263,15 +281,17 @@ func (s *Store) snapshotLocked() InboxSnapshot {
 	return InboxSnapshot{
 		SchemaVersion: m.SchemaVersion,
 		Revision:      m.Revision,
-		Paused:        m.Paused,
+		Paused:        m.Paused || s.unrecovered,
+		PauseCode:     m.PauseCode,
 		Recovered:     m.Recovered,
 		RecoveredN:    m.RecoveredN,
+		Unrecovered:   s.unrecovered,
 		Readonly:      s.readonly,
 		RunID:         m.RunID,
 		Items:         items,
 		Capacity: Capacity{
 			Items:        len(items),
-			MaxItems:     s.limits.MaxItems,
+			MaxItems:     max(s.limits.MaxItems, 0),
 			Bytes:        m.totalBytes(),
 			MaxBytes:     s.limits.MaxTotalBytes,
 			MaxItemBytes: s.limits.MaxItemBytes,
@@ -325,10 +345,15 @@ func (s *Store) Enqueue(req EnqueueRequest) (InboxReceipt, error) {
 	if receipt, found, err := s.idempotentReceiptLocked(idem, requestHash); err != nil || found {
 		return receipt, err
 	}
+	if idem == "" && !req.Origin.IsHost() {
+		if receipt, found, err := s.heldDuplicateLocked(checksum, req.Origin); err != nil || found {
+			return receipt, err
+		}
+	}
 	if byteSize > s.limits.MaxItemBytes {
 		return InboxReceipt{}, ErrItemTooLarge
 	}
-	if len(s.man.Items) >= s.limits.MaxItems {
+	if s.limits.MaxItems > 0 && len(s.man.Items) >= s.limits.MaxItems {
 		return InboxReceipt{}, ErrCapacityItems
 	}
 	if s.man.totalBytes()+byteSize > s.limits.MaxTotalBytes {
@@ -354,6 +379,7 @@ func (s *Store) Enqueue(req EnqueueRequest) (InboxReceipt, error) {
 		Idempotency: idem,
 		Origin:      req.Origin,
 		Refs:        refSummaries(env.Refs),
+		Images:      len(env.FrozenImages) > 0,
 		RunID:       s.runID,
 	}
 
@@ -484,6 +510,7 @@ func (s *Store) UpdateItemWithIdempotency(id string, env PromptEnvelope, alias s
 	next.Items[i].Checksum = checksum
 	next.Items[i].Preview = PreviewText(env.DisplayText, DefaultPreviewRunes)
 	next.Items[i].Refs = refSummaries(env.Refs)
+	next.Items[i].Images = len(env.FrozenImages) > 0
 	next.Items[i].UpdatedAt = time.Now().UTC()
 	next.Items[i].Revision = next.Revision + 1
 	bindIdempotency(next, alias, id, aliasHash)

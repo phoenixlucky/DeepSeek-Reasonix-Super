@@ -33,7 +33,6 @@ export function SessionBatch({ hub, selection, selected, displayed, onSelect, on
   onError: (e: unknown) => void;
 }) {
   const [phase, setPhase] = useState<"idle" | "confirm" | "archive" | "restore" | "delete">("idle");
-  const entryButton = useRef<HTMLButtonElement>(null);
   const wasSelecting = useRef(selection !== null);
   const deleteButton = useRef<HTMLButtonElement>(null);
   const doneButton = useRef<HTMLButtonElement>(null);
@@ -45,7 +44,7 @@ export function SessionBatch({ hub, selection, selected, displayed, onSelect, on
   const cancel = () => { setPhase("idle"); onBusy(false); deleteButton.current?.focus(); };
   useEffect(() => {
     if (wasSelecting.current && selection === null) {
-      if (entryButton.current?.disabled) onExit(); else entryButton.current?.focus();
+      onExit();
     }
     wasSelecting.current = selection !== null;
   }, [selection !== null]);
@@ -86,11 +85,7 @@ export function SessionBatch({ hub, selection, selected, displayed, onSelect, on
     deleteButton.current?.focus();
   };
 
-  if (selection === null) return (
-    <div className="session-batch-entry">
-      <button ref={entryButton} data-action="session.selection" data-value="start" disabled={displayed.length === 0} onClick={() => onSelect(new Set())}>{t("选择本机会话")}</button>
-    </div>
-  );
+  if (selection === null) return null;
   return (
     <div className="session-batch" aria-busy={pending}>
       <div className="session-batch-head">

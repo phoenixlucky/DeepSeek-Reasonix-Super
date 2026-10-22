@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import "./testkit";
 import { Pane } from "./Pane";
@@ -30,23 +30,19 @@ it("reads the host plan after reload, retains the composer entry, and follows to
     title="w" active visible sideHost={null} side={false} onFocus={() => {}} onReport={() => {}}
     onSessionChanged={() => {}} pulse={0} findPulse={0} onSettings={() => {}} needsProject={false}
     onOpenProject={() => {}} onKeepHere={() => {}} theme="dark" dockW={560} dockMax={880} onDockW={() => {}} />);
-  await waitFor(() => expect(view.container.querySelector('.plan-peek-trigger')?.textContent).toContain("1/3"));
-  const composerPlan = view.container.querySelector<HTMLButtonElement>('.studio-todo [data-action="plan.fold"]')!;
-  fireEvent.click(composerPlan);
+  const fold = () => view.container.querySelector<HTMLButtonElement>('.studio-todo [data-action="plan.fold"]')!;
+  await waitFor(() => expect(view.container.querySelector(".studio-todo small")?.textContent).toBe("1/3"));
+  fireEvent.click(fold());
+  expect(view.container.querySelector(".studio-todo-body")?.textContent).toContain("验证当前修复");
   expect(view.container.querySelector(".studio-todo-body")?.textContent).toContain("正在修复问题");
-  fireEvent.click(view.container.querySelector('.plan-peek-trigger')!);
-  expect(screen.getByRole("dialog", { name: "计划" }).textContent).toContain("验证当前修复");
-  expect(screen.getByRole("dialog", { name: "计划" }).textContent).toContain("正在修复问题");
-  expect(view.container.querySelector('[data-value="flow"]')?.getAttribute("aria-selected")).toBe("true");
+  expect(view.container.querySelector(".plan-peek")).toBeNull();
   todos = todos.map((todo, index) => ({ ...todo, status: index < 2 ? "completed" : "in_progress" }));
   await act(async () => emit({ kind: "todo_progress" } as WireEvent));
-  await waitFor(() => expect(screen.getByRole("dialog", { name: "计划" }).querySelectorAll(".s[data-done]")).toHaveLength(2));
-  expect(view.container.querySelector('.plan-peek-trigger')?.textContent).toContain("2/3");
+  await waitFor(() => expect(view.container.querySelector(".studio-todo small")?.textContent).toBe("2/3"));
   expect(view.container.querySelector(".studio-todo-body")?.textContent).toContain("修复问题");
   expect(view.container.querySelector(".studio-todo-body")?.textContent).not.toContain("正在修复问题");
   todos = todos.map((todo) => ({ ...todo, status: "completed" }));
   await act(async () => emit({ kind: "todo_progress" } as WireEvent));
-  await waitFor(() => expect(screen.queryByRole("dialog", { name: "计划" })).toBeNull());
-  expect(screen.getByRole("dialog", { name: "目标" }).textContent).toContain("验证当前修复");
-  expect(view.container.querySelector(".studio-todo")).toBeNull();
+  await waitFor(() => expect(view.container.querySelector(".studio-todo small")).toBeNull());
+  expect(view.container.querySelector(".studio-todo")?.textContent).toContain("验证当前修复");
 });
