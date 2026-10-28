@@ -139,7 +139,7 @@ rm -rf "$contract_snapshot"
 # The packaging script drives the frontend (build:electron) and shell builds
 # through pnpm; make sure the workspace dependencies (Electron, the packager)
 # are installed first. A warm store makes this a no-op.
-if [ ! -d "$ROOT/desktop/node_modules/@electron/packager" ] || [ ! -d "$ROOT/desktop/electron/node_modules/electron" ]; then
+if [ ! -d "$ROOT/desktop/node_modules/@electron/packager" ] || [ ! -d "$ROOT/desktop/electron/node_modules/electron" ] || [ ! -d "$ROOT/desktop/electron/node_modules/esbuild" ]; then
 	echo "==> pnpm install desktop workspace"
 	pnpm_command=pnpm
 	if ! command -v "$pnpm_command" >/dev/null 2>&1 && command -v pnpm.cmd >/dev/null 2>&1; then

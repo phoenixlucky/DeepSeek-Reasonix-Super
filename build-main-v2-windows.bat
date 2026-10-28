@@ -3,6 +3,7 @@ setlocal
 cd /d "%~dp0"
 
 where git >nul 2>nul || goto :missing_git
+set "PATH=%~dp0scripts\pnpm-shim;%PATH%"
 set "GIT_EXE="
 for /f "delims=" %%I in ('where git 2^>nul') do if not defined GIT_EXE set "GIT_EXE=%%I"
 set "BASH_EXE="
@@ -13,7 +14,18 @@ if not defined BASH_EXE goto :missing_bash
 where go >nul 2>nul || goto :missing_go
 where node >nul 2>nul || goto :missing_node
 where pnpm >nul 2>nul || goto :missing_pnpm
+set "PNPM_MAJOR="
+for /f "tokens=1 delims=." %%V in ('pnpm --version 2^>nul') do set "PNPM_MAJOR=%%V"
+if not "%PNPM_MAJOR%"=="10" goto :wrong_pnpm
+where makensis >nul 2>nul || goto :find_nsis
+goto :have_nsis
+
+:find_nsis
+if exist "%ProgramFiles(x86)%\NSIS\makensis.exe" set "PATH=%ProgramFiles(x86)%\NSIS;%PATH%"
+if exist "%ProgramFiles%\NSIS\makensis.exe" set "PATH=%ProgramFiles%\NSIS;%PATH%"
 where makensis >nul 2>nul || goto :missing_nsis
+
+:have_nsis
 
 for /f "delims=" %%B in ('git rev-parse --abbrev-ref HEAD 2^>nul') do set "CURRENT_BRANCH=%%B"
 if not "%CURRENT_BRANCH%"=="main-v2" (
@@ -48,6 +60,10 @@ echo Error: Node.js 24 or newer is required and must be available on PATH.
 goto :failed
 :missing_pnpm
 echo Error: pnpm 10 is required and must be available on PATH.
+goto :failed
+:wrong_pnpm
+echo Error: pnpm 10 is required, but the active pnpm command is not version 10.
+echo Activate the workspace-pinned pnpm 10.34.5 and ensure it is first on PATH.
 goto :failed
 :missing_nsis
 echo Error: NSIS (makensis.exe) is required and must be available on PATH.
