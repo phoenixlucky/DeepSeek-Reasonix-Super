@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 
 	"reasonix/internal/event"
@@ -8,6 +9,24 @@ import (
 	"reasonix/internal/secrets"
 	"reasonix/internal/session"
 )
+
+// Both synchronous and asynchronous turns publish through the same boundary.
+// Keep failure classification there so live and reopened notices agree.
+func withTerminalFailureDiagnostic(e event.Event) event.Event {
+	if e.Kind == event.TurnDone {
+		if e.Diagnostic == nil {
+			cause := e.Err
+			if e.Cancelled {
+				cause = context.Canceled
+			}
+			e.Diagnostic = provider.DiagnoseFailure(cause)
+		}
+		if e.Detail == "" {
+			e.Detail = provider.FailureDiagnosticDetail(e.Diagnostic)
+		}
+	}
+	return e
+}
 
 // One bounded, optional record shares the terminal commit. Cold exports can
 // inspect it without a resident controller; older readers skip it safely.
@@ -34,7 +53,7 @@ func (c *Controller) providerDiagnosticEvent(e event.Event) (*session.Event, err
 		Requests      []providerDiagnostic        `json:"requests"`
 		Dropped       *uint64                     `json:"dropped,omitempty"`
 		Truncated     bool                        `json:"truncated"`
-	}{1, failure, 128, requests, dropped, truncated})
+	}{2, failure, 128, requests, dropped, truncated})
 	if err != nil {
 		return nil, err
 	}

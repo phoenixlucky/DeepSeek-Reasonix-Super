@@ -70,6 +70,7 @@ type Config struct {
 	Serve            ServeConfig         `toml:"serve"`
 	Secrets          SecretsConfig       `toml:"secrets"`
 	Remote           RemoteConfig        `toml:"remote"`
+	Attachments      AttachmentsConfig   `toml:"attachments,omitempty"`
 
 	systemPromptFileSource     promptFileSource
 	providerSources            map[string]providerSourceScope
@@ -1820,7 +1821,7 @@ const LanguagePolicy = `Reply in the same language the user is using in their mo
 // Default returns the built-in default configuration.
 func Default() *Config {
 	return &Config{
-		ConfigVersion:    mimoCatalogUpgradeVersion,
+		ConfigVersion:    openCodeGoInferenceUpgradeVersion,
 		DefaultModel:     "deepseek-flash",
 		CredentialsStore: CredentialsStoreAuto,
 		UI:               UIConfig{Theme: "auto", ShowTurnUsage: true},

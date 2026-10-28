@@ -3,7 +3,7 @@
 
 export const DESKTOP_PROTOCOL_VERSION = 11;
 
-export const DESKTOP_CONTRACT_DIGEST = "sha256:93a2a52482051450ba41c6609e83c9378ee01f17d1dddbf5a16657f71d603286";
+export const DESKTOP_CONTRACT_DIGEST = "sha256:08e24da81b976ea92a394cf41d9a2800e48a718bd38b4ae18cd60450f3ecf8df";
 
 export const DESKTOP_COMMANDS = [
   "AIRenameSession",
@@ -446,6 +446,7 @@ export const DESKTOP_COMMANDS = [
   "RemoteSessionMessageFieldForTab",
   "RemoteSessionOpenForTab",
   "RemoteTabBranches",
+  "RemoteTabHydrationState",
   "RemoteTabMetadata",
   "RemoteTabSkills",
   "RemoteTabSnapshot",
@@ -3919,6 +3920,12 @@ export interface RemoteTabSnapshot {
   pendingEvents?: unknown[];
 }
 
+export interface RemoteTabStateView {
+  state: string;
+  error?: string;
+  hydrationRevision?: number;
+}
+
 export interface RemoteTranscriptSnapshot {
   supported: boolean;
   snapshot?: Snapshot | null;
@@ -6408,6 +6415,7 @@ export interface GeneratedDesktopCommands {
   RemoteSessionMessageFieldForTab(arg0: string, arg1: string, arg2: number, arg3: string, arg4: number, arg5: number): Promise<MessageFieldPage>;
   RemoteSessionOpenForTab(arg0: string): Promise<SessionOpenView>;
   RemoteTabBranches(arg0: string): Promise<unknown>;
+  RemoteTabHydrationState(arg0: string): Promise<RemoteTabStateView>;
   RemoteTabMetadata(arg0: string): Promise<RemoteTabSnapshot>;
   RemoteTabSkills(arg0: string): Promise<unknown>;
   RemoteTabSnapshot(arg0: string): Promise<RemoteTabSnapshot>;

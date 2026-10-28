@@ -333,7 +333,14 @@ Responses 变体使用无状态上下文回放。原有混合 OpenCode Go Anthro
 Completions 预设中，因为真实 Anthropic
 和 Responses 请求目前会在 OpenCode Go 的上游转换阶段失败。OpenCode Go 预设原生包含
 订阅线路的 `kimi-k3`，并配置图像输入、`high`/`max` 推理强度和 1,048,576 token 上下文窗口。未修改过
-模型目录的既有 OpenCode Go 预设会自动升级；用户编辑过的模型目录保持不变。
+模型目录的既有 OpenCode Go 预设会自动升级。从配置版本 13 起，标准 Go 连接使用
+[官方 inference 地址](https://opencode.ai/v2/docs/console/go/#endpoints)：Chat/Responses 的基础地址为
+`/inference/go/openai/v1`，Messages 为 `/inference/go/anthropic`，模型发现使用
+`/inference/go/v1/models`。已有包含 DeepSeek 的 Go Chat 连接会一次性追加
+`deepseek-v4.1-flash`，保留原默认模型、密钥引用和自定义字段；之后删除该模型不会在重启时恢复。
+自定义请求端点和自定义请求体保持原样，需要手动核对。V4.1 Flash 使用 DeepSeek 思考参数
+（关闭/`low`/`high`/`max`，默认 `high`），并在工具调用和后续轮次中保留思考内容。
+旧 `/zen/go` 地址仍受识别，新旧地址均发送稳定的会话标识用于 OpenCode 缓存路由。
 Kimi CN 和 Kimi Global 直连 API 预设也包含 `kimi-k3`，支持图像输入、1,048,576 token
 上下文窗口以及官方 `low`/`high`/`max` 推理强度（默认 `max`）。对官方 K3 端点，Reasonix
 会在多轮请求中保留完整 assistant message，使用 `max_completion_tokens` 传递输出上限，
@@ -499,6 +506,10 @@ CLI/TUI 文本输入可通过 `[ui].cursor_shape` 设置光标形状，支持 `u
 超过后，在输入框内滚轮只滚动草稿视图，不移动插入光标，在 transcript 区域滚轮仍滚动
 对话。使用 `/theme auto|light|dark` 选择背景模式，也可运行不带参数的 `/theme` 查看
 命名配色，再用 `/theme <style>` 选择强调色。
+
+长待办和问题选择卡共用输入框与状态栏上方的有界区域。将鼠标移到该区域滚动，或使用
+`Alt+PageUp` / `Alt+PageDown` 查看隐藏行；键盘切换选项时，选中项会保持可见。
+关闭鼠标接管或使用 Termux 时，仍可通过这组快捷键滚动面板。
 
 响应式底栏左侧保留当前权限预设、Plan 状态和交互状态；终端较宽时，模型、推理
 强度作为一组靠右显示，第二行按可用性显示 Git 标识、缓存命中率、上下文占用、

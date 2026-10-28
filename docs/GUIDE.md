@@ -397,8 +397,17 @@ live Anthropic and Responses requests currently fail in the OpenCode Go upstream
 conversion. The OpenCode Go preset includes its native `kimi-k3` subscription
 route with image input,
 `high`/`max` reasoning effort, and a 1,048,576-token context window. Existing untouched
-OpenCode Go preset installs are upgraded automatically; edited model catalogs
-are preserved. The Kimi CN and Kimi Global direct-API presets also include
+OpenCode Go preset installs are upgraded automatically. Since config schema 13,
+standard Go connections use the [documented inference endpoints](https://opencode.ai/v2/docs/console/go/#endpoints):
+`/inference/go/openai/v1` for Chat/Responses and `/inference/go/anthropic` for Messages.
+Discovery uses `/inference/go/v1/models`. Existing Go Chat connections containing
+DeepSeek gain `deepseek-v4.1-flash` once, without changing their selected model,
+credential reference, or custom fields. Later model deletions survive restarts;
+custom request endpoints and custom bodies require manual review and stay unchanged.
+V4.1 Flash uses DeepSeek thinking (`disabled`/`low`/`high`/`max`, default `high`)
+and preserves reasoning across tool calls and subsequent turns. Old `/zen/go`
+routes remain recognized, and both route generations send a stable conversation
+header for OpenCode cache routing. The Kimi CN and Kimi Global direct-API presets also include
 `kimi-k3` with image input, a 1,048,576-token context window, and the official
 `low`/`high`/`max` effort scale (default `max`). For the official K3 endpoints,
 Reasonix preserves complete assistant messages across turns, sends output limits
@@ -629,6 +638,11 @@ wheel events inside the composer scroll the draft without moving the insertion
 cursor, while wheel events in the transcript keep scrolling the conversation.
 Use `/theme auto|light|dark` to select the background mode, or `/theme <style>`
 to select one of the named accent palettes shown by bare `/theme`.
+
+Long to-do and question panels share a bounded area above the composer and
+status footer. Scroll over that area or use `Alt+PageUp` / `Alt+PageDown` to read
+the hidden rows; keyboard navigation keeps the selected option visible. The
+keyboard shortcuts also work when mouse capture is off and in Termux.
 
 The responsive footer keeps the active permission preset, Plan state, and current
 interaction state on the left. On wider terminals, model and effort

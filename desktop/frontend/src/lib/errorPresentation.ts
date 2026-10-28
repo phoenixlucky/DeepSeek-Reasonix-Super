@@ -26,11 +26,18 @@ const codeKeys: Record<string, DictKey> = {
   stream_interrupted: "error.interrupted", empty_response: "error.empty", stale_generation: "error.conflict",
   provider_connection: "error.connection", cancelled: "error.cancelled",
   transport_protocol: "error.transportProtocol",
+  request_send_timeout: "error.requestSendTimeout",
+  transport_eof: "error.transportEOF",
+  transport_reset: "error.transportReset",
+  transport_timeout: "error.timeout",
+  transport_dns: "error.dns",
+  no_deliverable_output: "error.noDeliverable",
 };
 
 // Narrow legacy matches bridge errors from older services and OS libraries.
 // Unknown errors deliberately keep a neutral summary instead of guessing.
 const legacyKeys: [RegExp, DictKey][] = [
+  [/\bno_deliverable_output\b/, "error.noDeliverable"],
   [/\b(?:insufficient_quota|insufficient balance|quota exhausted)\b|余额不足|額度不足|额度不足/i, "error.quota"],
   [/\b(?:context_length_exceeded|context (?:window|length).*(?:exceed|limit)|maximum context length)\b|超出.*上下文/i, "error.context"],
   [/\b(?:ENOSPC|no space left on device|disk full)\b/i, "error.diskFull"],
@@ -67,6 +74,9 @@ export function presentError(error: unknown, translate: Translator = t, locale: 
   const detail = errorDetail(error).trim();
   if (diagnostic?.kind === "transport_protocol") {
     return { summary: translate("error.transportProtocol"), detail: [detail, diagnostic.transportCode ? `HTTP/2: ${diagnostic.transportCode}` : ""].filter(Boolean).join("\n") };
+  }
+  if (diagnostic?.kind && codeKeys[diagnostic.kind]) {
+    return { summary: translate(codeKeys[diagnostic.kind]), detail };
   }
   const structured = error && typeof error === "object" ? error as { code?: unknown; status?: unknown } : undefined;
   const code = typeof structured?.code === "string" ? structured.code : detail;

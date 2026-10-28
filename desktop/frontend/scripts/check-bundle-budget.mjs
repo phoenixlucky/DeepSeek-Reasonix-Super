@@ -314,8 +314,11 @@ for (const path of localeChunks) {
   // 64606 / 65349 B, so both dialect ceilings ratchet to the next tenth.
   // Model-application copy on the read-pause base measures 64734 / 65499 B,
   // adding 128 / 150 B. Retain only the next one-decimal ceiling.
-  // Cognee and skill-update copy brings zh-TW to 65655 B; round to 64.2 KiB.
-  const budget = name.startsWith("zh-TW-") ? 64.2 * 1024 : 63.3 * 1024;
+  // The localized Studio introduction and the provider-failure causes bring zh
+  // to 64826 B and zh-TW to 65714 B measured. Each ceiling keeps about 100 B of
+  // cross-platform headroom. Preserve the larger ceiling required by local
+  // Cognee and skill-update copy; compressed initial budgets stay fixed.
+  const budget = name.startsWith("zh-TW-") ? 64.3 * 1024 : 63.4 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 
@@ -559,8 +562,19 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // native paging stay lazy. The Linux producer measured 2106070 B; round the
 // gate to the smallest passing 2056.8 KiB ceiling and retain every compressed,
 // chunk, CSS, and residency budget.
-// The current main-v2 Windows build measures 2109722 B. Preserve the measured
-// 186 B Linux producer difference with headroom at the next 2060.6 KiB ceiling.
+// Ready-event cold-history joining adds 163 B locally (2106326 B versus
+// 2106163 B); retain the producer margin and round to the smallest 2057.2 KiB
+// ceiling that covers the same Linux build. Other bundle budgets stay fixed.
+// The Studio introduction and the provider-failure causes measure 2107767 B in
+// the initial raw boundary; the ceiling keeps 341 B of producer headroom, and
+// compressed initial JS, per-chunk and CSS ceilings remain unchanged.
+// Session navigation, alias ownership and remote ready barriers add 1810 B
+// (0.086%) over isolated main-v2 8cc804e687 with the same toolchain:
+// 2109672 B versus 2107862 B, including 311 B for service-restart recovery.
+// Keep the 186 B producer margin at the smallest one-decimal ceiling; gzip,
+// chunk, CSS, locale, and resident-history limits remain unchanged.
+// The current main-v2 Windows build measures 2109722 B; retain that larger
+// local ceiling and its measured 186 B Linux producer margin.
 const rawInitialBudgetKiB = 2_060.6;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
